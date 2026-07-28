@@ -1,162 +1,200 @@
-# telegram-tmux-channels — a Telegram channel for Claude Code with topic bindings
+# telegram-tmux-channels
 
-One Telegram bot drives **many Claude Code sessions** (hub-and-spoke). A forum topic
-or a DM binds to a project folder with `/bind` right from Telegram; the session replies
-strictly into its own topic. Unlike mirrors such as ccgram, **not the whole transcript**
-goes to chat — only what the agent sends via the reply tool (native Claude Code channels).
-Cross-platform: **Linux and macOS**.
+Run Claude Code from Telegram. One bot, many sessions — each forum topic is its own project.
 
-Beyond plain messaging: the CLI's own interactive prompts (`AskUserQuestion`, `/model`) show
-up as real Telegram inline-keyboard buttons; incoming voice notes are transcribed and replies
-can be spoken back; running subagents, the todo list, and skill calls each get a self-updating
-status message.
+```
+You  → #frontend:  fix the login redirect
+Bot  → #frontend:  Done — the guard now waits for the session. PR #481.
 
-A fork of the official `telegram@claude-plugins-official`.
+You  → #infra:     why is staging down?
+Bot  → #infra:     Postgres hit max_connections. Raised to 200, staging is back.
+```
 
-## Architecture
+Two topics, two folders, two independent Claude sessions. Same bot. Nothing gets crossed.
 
-- **Hub** `src/hub.ts` — the sole owner of the token and the getUpdates poller. Routing:
-  chat key (`chatId/topicId`, `chatId`, `dm:userId`) → `bindings.json` → project folder
-  → live sessions with that cwd. Unix socket `~/.claude/channels/telegram/hub.sock`; tmux
-  ops; permission buttons for admins. **Starts itself** (autospawned from the first stub) —
-  no service manager required.
-- **Stub** `src/stub.ts` — a per-session MCP pipe: reports the session's folder/pane/pid/argv
-  to the hub, relays events and RPCs (`reply`/`react`/`edit_message`/`download_attachment`).
-  If the socket is absent it autospawns the hub (detached, survives the session; Linux and macOS).
-- **Picker bridge** (`src/picker.ts`, wired into the hub's `pollScreens` loop) — screen-scrapes
-  each live pane at a fixed interval; any TUI prompt it recognizes (`AskUserQuestion`, `/model`)
-  becomes a Telegram message with inline-keyboard buttons, and a tap is replayed as real
-  keystrokes into the pane. No MCP permission-prompt hook involved — it's a tmux screen diff.
-- **Status messages** (`hooks/hooks.json` → `src/subagent-hook.ts` → hub) — one self-editing
-  Telegram message per binding per turn for: running subagents (🤖 Агенты), the `TaskCreate`/
-  `TaskUpdate` todo list (📋 Задачи), and `Skill` tool calls. Finished items keep a ✅ rather
-  than disappearing — the message is the turn's history, not just a live snapshot.
-- **Per-project config** `.tmux-channels.json` — in a bound folder's root, the project half of the config
-  (named after the plugin). Optional; two keys, both optional:
-  `stand: {up, down, status}` — shell for `/stand_up`/`/stand_down` and the `/status` stand line
-  (`status` exit 0 = up); print `internal=<url>`/`external=<url>` for the links. `worktree:
-  {create, delete}` — replaces the trusted-group `hook` for this folder (create prints the new
-  dir on its last line). `{branch}`/`{dir}` are substituted; hooks run with `stdin` closed.
-- State lives in `~/.claude/channels/telegram/`: `.env` (token + `TELEGRAM_ADMINS`, not in git),
-  `bindings.json` (hub-managed, hot-reloaded), `known-chats.json` — every chat the bot has seen
-  with its forum topics (`topics: {<threadId>: {title?}}`), so a chat/topic id is one `cat` away.
-  Titles track renames; a topic first seen through a plain message is id-only until it's created
-  or renamed under the hub's nose (the Bot API can't look a topic name up on demand).
-- **Debug log** — dev opt-in, **off by default** (enable with `TELEGRAM_DEBUG_LOG=1`; the public
-  plugin doesn't log anyone's traffic). When on, `~/.claude/channels/telegram/screenlog.jsonl` is
-  one correlated timeline of everything through the hub: entry types `screen` (pane snapshots),
-  `tg_in`, `tg_out` (the latter holds the **final** payload actually sent, incl. hub-injected bits
-  like the context badge). Ring buffer, last 1000 entries. Ground truth for "what really went
-  in/out" — read it instead of guessing (a `reply` call only returns `sent, id`).
+A fork of the official `telegram@claude-plugins-official`. Linux and macOS.
 
-## Requirements
+## Why this and not a mirror
 
-- [Bun](https://bun.sh) (`curl -fsSL https://bun.sh/install | bash`).
-- tmux (for the tmux ops `/compact`/`/restart`/`/new`; without it the channel still works, ops don't).
-- A Telegram bot from @BotFather. In a group: privacy mode **off**, topics **on**, bot is a member.
+Tools like ccgram stream the whole transcript into chat. This one doesn't: **only what the
+agent deliberately sends** shows up — the `reply` tool from Claude Code's native channels.
+Your phone stays readable while the agent grinds through 40 tool calls.
 
-## Install (Linux / macOS)
+What you get beyond plain messaging:
+
+- **The CLI's own prompts become buttons.** `AskUserQuestion` and `/model` show up as real
+  inline keyboards; tapping one types the answer into the session.
+- **Voice both ways.** Send a voice note — it's transcribed. Ask for a spoken reply — you get one.
+- **Live status.** Running subagents, the todo list and skill calls each get one self-updating
+  message, so you can see work in progress without a wall of noise.
+- **Full session control from the phone.** Restart, compact, interrupt, switch model, peek at
+  the terminal — see [Commands](#commands).
+
+## Quick start
+
+You need [Bun](https://bun.sh), tmux, and a bot from [@BotFather](https://t.me/BotFather).
+In a group the bot needs privacy mode **off**, topics **on**, and to actually be a member.
 
 ```
 /plugin marketplace add <git-url of this marketplace>
 /plugin install telegram-tmux-channels@<marketplace>
-/telegram:configure <bot-token>        # registers the stub, saves the token, asks for admin ids
+/telegram:configure <bot-token>
 ```
 
-The `configure` skill locates the plugin path, runs `claude mcp add --scope user`, and writes
-`.env`. Then launch a session inside a project folder:
+`configure` registers the MCP stub, saves the token and asks for your Telegram user id
+(that makes you the admin). Then start a session inside any project folder:
 
 ```
 claude --dangerously-load-development-channels server:telegram
 ```
 
-(The dev flag is mandatory: third-party channels aren't on Claude Code's approved allowlist —
-a platform limitation, not a plugin one.) The hub autospawns on the first stub connection.
+The dev flag is required — third-party channels aren't on Claude Code's approved allowlist.
+That's a platform rule, not ours. The hub starts itself on the first session; no service to set up.
 
-## Access
+Now in Telegram: create a topic, send `/bind myproject`, and talk to it.
 
-- **Admins** (`TELEGRAM_ADMINS` in `.env`) — converse with every binding, receive permission
-  buttons, and are the only ones who may `/bind`, `/unbind`, `/allow`.
-- **Extra users** — `/allow <id>` in a topic: conversation and tmux ops for that binding only.
-  Empty allow = admins only. Remove by editing `bindings.json`.
+## Commands
 
-## Chat commands (not forwarded into the session)
+Sent in a bound topic or DM. These are handled by the bot and never reach the agent.
 
-- `/bind <folder>` — bind this topic/DM to a folder (name under `$TELEGRAM_PROJECTS_DIR`,
-  default `~/projects`, or an absolute path/`~/…`); `/unbind` also kills the tmux session the
-  hub created for this binding (in `worktree` mode, after any configured delete hook runs);
-  `/allow <id …>`.
-- **Trusted groups** — a group can be configured (`trusted-groups.json`) to bind any new forum
-  topic without `/bind`, in `folder` mode (shared project dir) or `worktree` mode (its own git
-  worktree + branch per topic, with a `{create, delete}` shell-command hook, e.g. `wt.py`).
-  A new topic always asks first — mode buttons plus **✏️ Своя папка** for a one-off path — so
-  the folder stays choosable and nothing races an ops command typed right away. Cyrillic topic
-  names get transliterated before becoming a branch/tmux-session name.
-- `/status` — folder + git branch, tmux session name, claude session id, whether claude is
-  alive, 5h/7d limits and context fill.
-- `/resume` — bring a session up (`--continue`), or `/resume <id|prefix>` for one specific past
-  conversation of this folder — no picker, works with tmux down too (a live session is stopped
-  first, so `--resume` can't fork it); `/new` — a fresh one; the hub creates the tmux session
-  (named after the folder) and clicks through the startup prompts (folder trust, dev warning).
-- `/pin`, `/unpin` — exempt this topic's session from idle-unload (below), or re-allow it.
-- **Idle-unload** — with `TELEGRAM_IDLE_UNLOAD_MINUTES` > 0, a session with no activity (no
-  message, no pane movement, not mid-turn/subagent/workflow) for that many minutes is gracefully
-  stopped to free RAM (a claude session + its MCP children is ~0.5 GB); the next inbound message
-  auto-resumes it via the normal revive path (`--resume`, full history). No suspend message (a new
-  message would mark the topic unread); one silent line on wake, state also in `/status` and the
-  dashboard. `/pin`ned bindings are never touched. `0`/unset disables it (default), so
-  the public plugin never stops anyone's sessions.
-- `/stand_up`, `/stand_down` — raise / tear down this folder's dev stand via hooks in the
-  project's own `.tmux-channels.json` (see below); the hook's `internal=…`/`external=…` output lines
-  become the links echoed back, the rest is shown as a log tail. No `.tmux-channels.json` → no stand.
-- `/compact`, `/clear`, `/esc`, `/enter` (submit whatever's in the input line, e.g. a `/compact` that got typed but not sent), `/restart`, `/stop` (graceful, no relaunch) — for a live session.
-- `/model` — opens the CLI's model picker as Telegram buttons (via the picker bridge).
-- `/screen` — live, self-updating PNG of the pane (headless-chrome render of the ANSI capture),
-  with a Close button — escape hatch for any TUI state the picker bridge doesn't recognize.
-- `/last` — same live view as `/screen` but as text: a digest of the pane (recent output the
-  user sees + the live bottom — spinner, token %, permission mode), border/blank noise stripped.
-  No chrome, so it's also `/screen`'s fallback when chrome is unavailable. Both refresh every 5s
-  and auto-stop after 3 min (the message + Close button stay).
-- `/lang en` | `/lang ru` (admin) — switch the interface language **globally** (one setting
-  for the whole hub, persisted to `<state>/lang`), including the bot command descriptions
-  (re-registered on switch). Default is English; override the initial value with `TELEGRAM_LANG`.
-  Strings live in `src/i18n/{en,ru}.ts` (`en` is canonical, `ru` typed against it).
-- Won't start a second session if claude is already running in the folder (so `--continue`
-  doesn't fork a foreign conversation).
-- An unexpected death (tmux/process gone without an explicit `/restart`) gets a 💀 notice after
-  a grace period, rather than silently going quiet.
+**Binding**
 
-## Config (env in `~/.claude/channels/telegram/.env`)
+| Command | What it does |
+|---|---|
+| `/bind <folder>` | Bind this topic to a folder — a name under `$TELEGRAM_PROJECTS_DIR` or an absolute path |
+| `/unbind` | Unbind and kill the tmux session it created |
+| `/allow <id…>` | Let another Telegram user into this binding |
+| `/delete` | Unbind, tear down the worktree, and delete the topic itself — one move |
+| `/pin` · `/unpin` | Protect this session from idle-unload, or release it |
+
+**Session**
+
+| Command | What it does |
+|---|---|
+| `/status` | Folder, branch, tmux name, session id, whether claude is alive, usage limits, context fill |
+| `/resume` | Bring the session back. `/resume <id>` picks one specific past conversation — works even with tmux down |
+| `/new` | Start fresh |
+| `/restart` · `/stop` | Graceful restart / stop |
+| `/compact` · `/clear` | Compact or clear the conversation |
+| `/esc` · `/enter` | Interrupt the current turn / submit what's sitting in the input line |
+| `/model` | The CLI's model picker, as buttons |
+
+**Looking inside**
+
+| Command | What it does |
+|---|---|
+| `/screen` | Live PNG of the terminal, refreshing every 5s, with a Close button |
+| `/last` | The same view as text — useful when you just want to read it |
+| `/skills` | Project skills of this folder, as tappable buttons |
+| `/stand_up` · `/stand_down` | Bring this project's dev stand up or down (see [project config](#per-project-config)) |
+| `/lang en\|ru` | Interface language, for the whole bot |
+| `/reload` | Re-scan plugin skills and refresh the bot's command list |
+
+Both live views stop refreshing after 3 minutes; the message stays.
+
+## Who can use it
+
+- **Admins** (`TELEGRAM_ADMINS`) talk to every binding, get permission buttons, and are the
+  only ones who can bind, unbind or grant access.
+- **Everyone else** must be added per topic with `/allow <id>`. No allow list means admins only.
+
+## Trusted groups: a topic per branch
+
+Point a group at a project once (`trusted-groups.json`) and every new topic in it becomes a
+working session automatically — no `/bind` needed. Two modes:
+
+- **folder** — all topics share one project directory.
+- **worktree** — each topic gets its own git worktree and branch. Hand it a `{create, delete}`
+  shell hook (e.g. a script that also provisions a per-branch database) or let it run plain
+  `git worktree add`.
+
+A new topic always asks first — mode buttons, plus **✏️ own folder** for a one-off path — so
+nothing starts in the wrong directory behind your back. Cyrillic topic names are transliterated
+before they become branch and tmux-session names.
+
+## Per-project config
+
+Drop a `.tmux-channels.json` in a project root to teach the bot about that project. Both keys
+are optional:
+
+```jsonc
+{
+  // /stand_up, /stand_down, and the stand line in /status
+  "stand": {
+    "up":     "docker compose up -d && echo internal=http://localhost:8080",
+    "down":   "docker compose down",
+    "status": "curl -fsS localhost:8080 >/dev/null"   // exit 0 = up
+  },
+  // replaces plain `git worktree add` for this project
+  "worktree": { "create": "scripts/wt.py new {branch}", "delete": "scripts/wt.py rm {branch}" }
+}
+```
+
+Print `internal=<url>` / `external=<url>` from a stand hook and the bot posts those links back.
+`{branch}` and `{dir}` are substituted; hooks run with stdin closed, so nothing hangs on a prompt.
+
+## Idle-unload: stop paying for sessions you're not using
+
+An idle Claude session still holds ~0.5 GB with its MCP children. Set
+`TELEGRAM_IDLE_UNLOAD_MINUTES` and the bot gracefully stops sessions that have gone quiet —
+no messages, no terminal activity, not mid-turn. Your next message brings the session back with
+its full history (`--resume`), announced by one quiet line.
+
+`/pin` exempts a topic. Unset (the default) means the plugin never stops anything.
+
+## Configuration
+
+Environment, in `~/.claude/channels/telegram/.env`:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `TELEGRAM_BOT_TOKEN` | — | bot token (required) |
-| `TELEGRAM_ADMINS` | — | admin ids, comma-separated |
-| `TELEGRAM_LANG` | `en` | initial UI language (`en`/`ru`); `/lang` overrides it at runtime (persisted) |
-| `TELEGRAM_PROJECTS_DIR` | `$HOME/projects` | base for `/bind <name>` |
-| `TELEGRAM_LAUNCH_CMD` | `claude --permission-mode bypassPermissions` | base launch for `/new`,`/resume` (channel flags appended automatically) |
-| `TELEGRAM_HUB_AUTOSPAWN` | `1` | `0` disables autospawn (for a service-only install) |
-| `TELEGRAM_CONTEXT_WARN_PCT` | `80` | append `⚠️ Context: NN%` (localized) under an agent's text reply once its context-window usage reaches this %; `0` disables |
-| `TELEGRAM_DEBUG_LOG` | `0` | `1` enables the debug log (`screenlog.jsonl`, all hub traffic); off by default |
-| `TELEGRAM_IDLE_UNLOAD_MINUTES` | `0` | idle minutes before a session is stopped (auto-resumes on next message); `0`/unset disables. `/pin` exempts a topic |
-| `OPENAI_API_KEY` | — | enables voice (STT + TTS); unset = voice silently disabled |
-| `STT_OPENAI_MODEL` | `gpt-4o-transcribe` | transcription model for incoming voice notes |
-| `STT_OPENAI_BASE_URL` | `https://api.openai.com/v1` | override for an OpenAI-compatible endpoint |
-| `TTS_OPENAI_MODEL` | `gpt-4o-mini-tts` | speech model for `reply(..., voice: true)` |
-| `TTS_OPENAI_VOICE` | `onyx` | TTS voice |
-| `TTS_OPENAI_BASE_URL` | `https://api.openai.com/v1` | override for an OpenAI-compatible endpoint |
+| `TELEGRAM_BOT_TOKEN` | — | Bot token (required) |
+| `TELEGRAM_ADMINS` | — | Admin user ids, comma-separated |
+| `TELEGRAM_LANG` | `en` | Initial UI language (`en`/`ru`); `/lang` overrides at runtime |
+| `TELEGRAM_PROJECTS_DIR` | `$HOME/projects` | Where `/bind <name>` looks |
+| `TELEGRAM_LAUNCH_CMD` | `claude --permission-mode bypassPermissions` | Launch command for `/new` and `/resume` |
+| `TELEGRAM_IDLE_UNLOAD_MINUTES` | `0` | Idle minutes before a session is stopped; `0` disables |
+| `TELEGRAM_CONTEXT_WARN_PCT` | `80` | Warn under a reply once the context window is this full; `0` disables |
+| `TELEGRAM_HUB_AUTOSPAWN` | `1` | `0` if you run the hub as a service instead |
+| `TELEGRAM_DEBUG_LOG` | `0` | `1` records all hub traffic to `screenlog.jsonl` (off by default — the plugin logs nobody's messages) |
+| `OPENAI_API_KEY` | — | Enables voice; without it voice is silently off |
+| `STT_OPENAI_MODEL` | `gpt-4o-transcribe` | Transcription model |
+| `TTS_OPENAI_MODEL` | `gpt-4o-mini-tts` | Speech model for `reply(voice: true)` |
+| `TTS_OPENAI_VOICE` | `onyx` | Voice |
+| `STT_OPENAI_BASE_URL` · `TTS_OPENAI_BASE_URL` | OpenAI | Point at any OpenAI-compatible endpoint |
 
-## Voice
+State lives next to it: `bindings.json` (topic → folder, hot-reloaded) and `known-chats.json`
+(every chat and forum topic the bot has seen, so ids are one `cat` away).
 
-Incoming Telegram voice notes are auto-transcribed (their text stands in for the message).
-The `reply` tool takes an optional `voice: true` to also send the text as a spoken voice note.
-Both go straight to OpenAI's audio endpoints (no ffmpeg — Telegram's `.oga` is a plain
-Ogg/Opus container, byte-compatible with what the TTS endpoint returns and what `sendVoice`
-expects).
+## Keeping the bot up without a session
 
-## Optional always-on hub
+Autospawn keeps the hub alive only while at least one session exists. If you want the bot to
+answer when nothing is running, install a service from `examples/` — `telegram-hub.service`
+for systemd, `dev.windbit.claude-telegram.plist` for launchd. Whichever holds the socket wins,
+so sessions will connect to your service instead of spawning their own hub.
 
-Autospawn keeps the hub up only while at least one session exists. To have the bot answer
-with no sessions running, install a service from `examples/` (`telegram-hub.service` for
-systemd, `dev.windbit.claude-telegram.plist` for launchd), filling in the absolute paths.
-"Service wins" comes for free: while it holds the socket, stubs connect instead of spawning.
+## How it works
+
+Two processes and a Unix socket:
+
+- **Hub** (`src/hub.ts`) — the only thing holding the bot token and polling Telegram. It maps
+  chat → binding → the live session in that folder, drives tmux, and renders buttons. Starts
+  itself when the first session connects.
+- **Stub** (`src/stub.ts`) — a tiny MCP server inside each Claude session. Tells the hub where
+  the session lives (folder, tmux pane, pid) and relays `reply` / `react` / `edit_message`.
+
+Two details worth knowing, because they explain most of the behaviour:
+
+- **The picker bridge is a screen scraper.** The hub reads each tmux pane on a timer; when it
+  recognizes a TUI prompt, it posts buttons, and a tap is replayed as real keystrokes. There's
+  no API for those prompts — this is a diff of the terminal.
+- **Status messages are edited, not re-sent.** One message per turn accumulates subagents,
+  todos and skill calls, with finished items marked ✅ instead of vanishing, so the message
+  ends up being the history of that turn.
+
+### Debugging
+
+Set `TELEGRAM_DEBUG_LOG=1` and everything through the hub lands in `screenlog.jsonl` as one
+timeline: pane snapshots, inbound updates, and the **final** payload actually sent to Telegram.
+That last part matters — a `reply` call only returns `sent, id`, so when you're chasing "what
+did the user actually see", read the log instead of guessing. Ring buffer, last 1000 entries.
