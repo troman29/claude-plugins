@@ -19,6 +19,7 @@ import {
   paneDigest,
   isHeadlessArgv,
   isIdleToUnload,
+  tmuxSessionName,
 } from '../src/tmux-ops'
 import { isClaudeArgv, claudePidsInDir, cmdlineOf, findClaudeAncestor } from '../src/proc'
 import {
@@ -183,6 +184,16 @@ describe('tmux-ops', () => {
     expect(parseOpsCommand('/stand_up')).toEqual({ cmd: 'stand_up' })
     expect(parseOpsCommand('compact')).toBeUndefined()
     expect(parseOpsCommand('/unknown x')).toBeUndefined()
+  })
+
+  test('tmuxSessionName: dots/colons rewritten like tmux does', () => {
+    // tmux сам переписывает '.' и ':' в '_' — если не повторить, потом не найдём сессию
+    expect(tmuxSessionName('agentek-console--GPT-5.6', '-1003837420846/3867'))
+      .toBe('agentek-console--GPT-5_6---1003837420846-3867')
+    expect(tmuxSessionName('repo', '-100/2')).toBe('repo---100-2')
+    expect(tmuxSessionName('a.b:c', 'dm:5')).toBe('a_b_c--dm-5') // ':' в ключе → '-' ещё первым проходом
+    // обычные имена не трогаем
+    expect(tmuxSessionName('homelab', '-1004495746357/2')).toBe('homelab---1004495746357-2')
   })
 
   test('isIdleToUnload: threshold, pinned, working guards', () => {

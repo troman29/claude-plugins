@@ -109,6 +109,15 @@ export function parseWorkflow(text: string): { name: string; done: number; total
   return undefined
 }
 
+// tmux session name for a binding. MUST match what tmux will actually create: tmux rejects
+// '.' and ':' in session names and silently rewrites them to '_' (they are target syntax —
+// `session:window.pane`). Without the same rewrite here, a repo dir like `console--GPT-5.6`
+// yields a name we can never address again: `send-keys -t =…GPT-5.6---123` parses `.6---123`
+// as a pane and dies with "can't find session". Pure — tested in core.test.ts.
+export function tmuxSessionName(dirBase: string, key: string): string {
+  return `${dirBase}--${key.replace(/[^\w.-]/g, '-')}`.replace(/[.:]/g, '_')
+}
+
 // Idle-unload decision: is this binding idle enough to stop? False while working, for a
 // pinned binding, or before the threshold. thresholdMs<=0 disables. Pure — tested in core.test.ts.
 export function isIdleToUnload(
