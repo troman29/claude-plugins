@@ -214,8 +214,8 @@ export const ru: Strings = {
 
   // ── new-topic mode prompt ──
   ownDirLabel: '✏️ Своя папка',
-  sendFolderPromptBind: '📁 Пришли папку для этого топика — как в <code>/bind</code>: имя в ~/projects или абсолютный путь.',
-  sendFolderPromptShort: '📁 Пришли папку — как в <code>/bind</code>: имя в ~/projects или абсолютный путь.',
+  sendFolderPromptBind: projects => `📁 Пришли папку для этого топика — как в <code>/bind</code>: имя в ${projects} или абсолютный путь.`,
+  sendFolderPromptShort: projects => `📁 Пришли папку — как в <code>/bind</code>: имя в ${projects} или абсолютный путь.`,
   branchNote: branch => `, ветка <code>${branch}</code>`,
   preparingSession: (mode, branchNote) => `⏳ Готовлю сессию (<code>${mode}</code>${branchNote})…`,
   notAFolder: err => `⚠️ <b>Не похоже на папку</b>: ${err}\n\nПришли ещё раз.`,

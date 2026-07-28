@@ -2235,7 +2235,7 @@ function beginTopicSession(
   say: (html: string) => void,
 ): void {
   if (!cfg.dir) {
-    say(t().sendFolderPromptBind)
+    say(t().sendFolderPromptBind(codePath(PROJECTS_DIR)))
     pendingTopics.set(key, { cfg, mode, topicName, say })
     return
   }
@@ -3303,7 +3303,7 @@ bot.on('callback_query:data', async ctx => {
     pendingModeChoice.delete(key)
     await ctx.answerCallbackQuery({ text: ownDirLabel() }).catch(() => {})
     await ctx.editMessageText(t().modeChosen(ownDirLabel())).catch(() => {})
-    pending.say(t().sendFolderPromptShort)
+    pending.say(t().sendFolderPromptShort(codePath(PROJECTS_DIR)))
     pendingTopics.set(key, { cfg: pending.cfg, mode: 'folder', topicName: pending.topicName, say: pending.say })
     return
   }

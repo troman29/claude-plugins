@@ -224,8 +224,8 @@ export const en = {
 
   // ── new-topic mode prompt ──
   ownDirLabel: '✏️ Own folder',
-  sendFolderPromptBind: '📁 Send the folder for this topic — like <code>/bind</code>: a name in ~/projects or an absolute path.',
-  sendFolderPromptShort: '📁 Send a folder — like <code>/bind</code>: a name in ~/projects or an absolute path.',
+  sendFolderPromptBind: (projects: string) => `📁 Send the folder for this topic — like <code>/bind</code>: a name in ${projects} or an absolute path.`,
+  sendFolderPromptShort: (projects: string) => `📁 Send a folder — like <code>/bind</code>: a name in ${projects} or an absolute path.`,
   branchNote: (branch: string) => `, branch <code>${branch}</code>`,
   preparingSession: (mode: string, branchNote: string) => `⏳ Preparing the session (<code>${mode}</code>${branchNote})…`,
   notAFolder: (err: string) => `⚠️ <b>Doesn't look like a folder</b>: ${err}\n\nSend it again.`,
