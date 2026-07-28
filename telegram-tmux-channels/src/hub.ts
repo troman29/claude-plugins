@@ -72,9 +72,6 @@ function codePath(p: string): string {
 // margin, while still far below the every-1.5s rate that first triggered 429 (and auto-retry
 // now backs up the rare 429 anyway).
 const lastTyping = new Map<string, number>()
-// Временный флаг: логировать каждую отправку «печатает» (TELEGRAM_TYPING_DEBUG=1).
-const TYPING_DEBUG = /^(1|true|yes|on)$/i.test(process.env.TELEGRAM_TYPING_DEBUG ?? '')
-
 function typing(chatId: string, threadId?: number): void {
   const k = `${chatId}:${threadId ?? ''}`
   const now = Date.now()
@@ -82,9 +79,6 @@ function typing(chatId: string, threadId?: number): void {
     return
   }
   lastTyping.set(k, now)
-  if (TYPING_DEBUG) {
-    log(`typing → ${k}`) // временная диагностика: индикатор «печатает» не виден в длинных ходах
-  }
   void bot.api
     .sendChatAction(chatId, 'typing', threadId != null ? { message_thread_id: threadId } : {})
     .catch(err => {
