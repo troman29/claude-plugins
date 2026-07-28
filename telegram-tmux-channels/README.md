@@ -35,6 +35,36 @@ What you get beyond plain messaging:
 You need [Bun](https://bun.sh), tmux, and a bot from [@BotFather](https://t.me/BotFather).
 In a group the bot needs privacy mode **off**, topics **on**, and to actually be a member.
 
+<details>
+<summary><b>Installing tmux</b> (Linux / macOS)</summary>
+
+```bash
+# Debian / Ubuntu
+sudo apt install tmux
+
+# Fedora / RHEL
+sudo dnf install tmux
+
+# Arch
+sudo pacman -S tmux
+
+# macOS — Homebrew (https://brew.sh)
+brew install tmux
+```
+
+Check it: `tmux -V`. Anything from **2.9** on is fine — that's when `new-session -x/-y` landed,
+which the hub uses to give detached sessions a usable size.
+
+No `~/.tmux.conf` needed. The hub creates its sessions detached at 200×100 itself, so Claude
+Code's TUI has room to render and `/screen` isn't a squashed 80×24 snapshot. Your own tmux
+config is left alone — sessions are separate and named after the bound folder.
+
+Without tmux the channel still works (messages in, replies out), but everything that drives the
+terminal is gone: `/new`, `/resume`, `/restart`, `/compact`, `/screen`, `/last`, and the button
+bridge for `AskUserQuestion` / `/model`.
+
+</details>
+
 ```
 /plugin marketplace add <git-url of this marketplace>
 /plugin install telegram-tmux-channels@<marketplace>
@@ -124,14 +154,59 @@ are optional:
     "up":     "docker compose up -d && echo internal=http://localhost:8080",
     "down":   "docker compose down",
     "status": "curl -fsS localhost:8080 >/dev/null"   // exit 0 = up
-  },
-  // replaces plain `git worktree add` for this project
-  "worktree": { "create": "scripts/wt.py new {branch}", "delete": "scripts/wt.py rm {branch}" }
+  }
 }
 ```
 
 Print `internal=<url>` / `external=<url>` from a stand hook and the bot posts those links back.
 `{branch}` and `{dir}` are substituted; hooks run with stdin closed, so nothing hangs on a prompt.
+
+### Worktree hooks
+
+In `worktree` mode every topic gets its own branch. By default the bot just runs
+`git worktree add` — fine until a branch needs more than a directory: its own database, an
+`.env`, seeded fixtures, a free port. Then hand it your own script:
+
+```jsonc
+{
+  "worktree": {
+    "create": "scripts/wt.py new {branch} --db clean",
+    "delete": "scripts/wt.py rm {branch}"          // optional
+  }
+}
+```
+
+**The contract for `create` is one line: print the path of the new worktree as the last line of
+stdout.** That's what the bot binds the topic to. Everything else you print is treated as log
+noise, so you can be as chatty as you like above it:
+
+```bash
+#!/usr/bin/env bash
+set -e
+branch="$1"
+dir="$HOME/worktrees/$branch"
+
+git worktree add "$dir" -b "$branch"      # be as chatty as you like...
+createdb "app_$branch"
+cp .env "$dir/.env"
+echo "DATABASE_URL=postgres:///app_$branch" >> "$dir/.env"
+
+echo "$dir"                                # ...the LAST line is the path
+```
+
+How it's run:
+
+- `sh -c` from the group's base directory, with **stdin closed** — an interactive prompt can't
+  hang the topic, your script just gets non-interactive defaults.
+- `{branch}` and `{dir}` are substituted in the command string; the same values also arrive as
+  `TELEGRAM_TOPIC_BRANCH` and `TELEGRAM_GROUP_DIR` environment variables, which is easier to
+  quote correctly.
+- A non-zero exit aborts the topic setup and the error text goes to the chat — nothing is bound
+  to a half-built worktree.
+- `delete` runs on `/unbind` and `/delete`. Skip it and the bot falls back to
+  `git worktree remove` — which will leave your database behind, so define it if you created one.
+- A project's own `.tmux-channels.json` wins over the group-level hook in `trusted-groups.json`:
+  one group can hold several repos, each with its own way of making a branch.
 
 ## Idle-unload: stop paying for sessions you're not using
 
