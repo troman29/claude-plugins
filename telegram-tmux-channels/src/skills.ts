@@ -189,6 +189,21 @@ export async function discoverGlobalSkills(): Promise<{ skills: Skill[]; failed:
   return { skills: [...names].sort().map(name => ({ name, description: idx.get(name) ?? name })), failed }
 }
 
+// Telegram-команды не допускают дефис, поэтому скилл `add-model` публикуется как
+// `/add_model` — и обратный перевод обязателен, иначе Claude получит несуществующую
+// команду и просто ответит "Unknown command" В ПЕЙН, а пользователь в чате не увидит
+// ничего (ход не стартует → нечего слать). Ищем среди глобальных И проектных скиллов
+// по тому же mangleCmd. Пусто → возвращаем как есть: это может быть встроенная команда
+// Claude Code (/compact, /model, …), их хаб не знает и знать не должен.
+// Pure — tested in core.test.ts.
+export function resolveSkillCommand(
+  name: string,
+  globalMap: Map<string, string>,
+  projectSkills: Skill[],
+): string {
+  return globalMap.get(name) ?? projectSkills.find(s => mangleCmd(s.name) === name)?.name ?? name
+}
+
 export function discoverProjectSkills(dir: string): Skill[] {
   const out: Skill[] = []
   for (const f of walkSkillMd(join(dir, '.claude', 'skills'), 2)) {

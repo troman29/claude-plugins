@@ -28,7 +28,7 @@ import {
   capturePane, capturePaneAnsi, type OpsCommand,
 } from './tmux-ops'
 import { ansiToHtml } from './ansi-html'
-import { discoverGlobalSkills, discoverProjectSkills, mangleCmd, tgDescription, type Skill } from './skills'
+import { discoverGlobalSkills, discoverProjectSkills, mangleCmd, resolveSkillCommand, tgDescription, type Skill } from './skills'
 import { claudePidsInDir, cmdlineOf } from './proc'
 import { readLimits, formatLimits } from './limits'
 import { rmQuiet } from './util'
@@ -2441,7 +2441,8 @@ async function handleInbound(inbound: Inbound): Promise<void> {
   if (text.trim().startsWith('/') && !attachment && !downloadImage) {
     const [head, ...rest] = text.trim().split(/\s+/)
     const name = head!.slice(1).replace(/@\w+$/, '').toLowerCase() // drop leading "/" and "@bot"
-    const real = globalSkillMap.get(name) ?? name
+    // глобальные И проектные скиллы: /add_model → /add-model (Telegram не даёт дефис)
+    const real = resolveSkillCommand(name, globalSkillMap, discoverProjectSkills(binding.dir))
     const cmd = ['/' + real, ...rest].join(' ')
     const ok = await injectSlashToPanes(conns, cmd, key, binding.dir, chat_id, threadId, msgId)
     if (!ok) {

@@ -21,6 +21,7 @@ import {
   isIdleToUnload,
   tmuxSessionName,
 } from '../src/tmux-ops'
+import { resolveSkillCommand, mangleCmd as mangleSkillCmd } from '../src/skills'
 import { isClaudeArgv, claudePidsInDir, cmdlineOf, findClaudeAncestor } from '../src/proc'
 import {
   isExcludedTopic, slugFromTopicName, mergeGroupConfig,
@@ -184,6 +185,19 @@ describe('tmux-ops', () => {
     expect(parseOpsCommand('/stand_up')).toEqual({ cmd: 'stand_up' })
     expect(parseOpsCommand('compact')).toBeUndefined()
     expect(parseOpsCommand('/unknown x')).toBeUndefined()
+  })
+
+  test('resolveSkillCommand: /add_model → /add-model (project skill)', () => {
+    const global = new Map([['deep_research', 'deep-research']])
+    const project = [{ name: 'add-model' }, { name: 'add-mcp' }] as never[]
+    // проектный скилл резолвится по тому же mangle, что использует публикация команд
+    expect(resolveSkillCommand('add_model', global, project)).toBe('add-model')
+    expect(mangleSkillCmd('add-model')).toBe('add_model')  // публикация ↔ резолв согласованы
+    // глобальный по-прежнему приоритетен
+    expect(resolveSkillCommand('deep_research', global, project)).toBe('deep-research')
+    // встроенные команды Claude не трогаем
+    expect(resolveSkillCommand('compact', global, project)).toBe('compact')
+    expect(resolveSkillCommand('unknown_thing', global, [] as never[])).toBe('unknown_thing')
   })
 
   test('tmuxSessionName: dots/colons rewritten like tmux does', () => {
