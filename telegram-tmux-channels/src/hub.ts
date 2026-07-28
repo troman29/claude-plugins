@@ -3215,8 +3215,13 @@ bot.on('callback_query:data', async ctx => {
   const sc = /^scrclose:(\S+)$/.exec(ctx.callbackQuery.data)
   if (sc) {
     const v = closeLiveScreen(sc[1])
-    if (v) {
-      await bot.api.deleteMessage(v.chatId, v.msgId).catch(() => {})
+    // Живые просмотры лежат в памяти, поэтому после рестарта хаба токен неизвестен —
+    // но кнопка на старом сообщении остаётся рабочей у пользователя. Берём координаты
+    // из самого апдейта, иначе Close отвечал бы "Closed", ничего не закрывая.
+    const chatId = v?.chatId ?? String(ctx.callbackQuery.message?.chat.id ?? '')
+    const msgId = v?.msgId ?? ctx.callbackQuery.message?.message_id
+    if (chatId && msgId != null) {
+      await bot.api.deleteMessage(chatId, msgId).catch(() => {})
     }
     await ctx.answerCallbackQuery({ text: t().toastClosed }).catch(() => {})
     return
