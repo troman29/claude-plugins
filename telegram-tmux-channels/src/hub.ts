@@ -2885,6 +2885,22 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
         void say(L.revivingForCommand(cmd))
         await spawnSession(key, binding, 'resume', () => {})
         live = await waitForBinding(key, 30_000)
+        // Стаб подключился ≠ пейн готов принять команду: свежий --resume может встретить
+        // промпт (напр. «сессия большая, сжать при возобновлении?»). Наберём туда — текст
+        // съест промпт, а Enter выберет его вариант по умолчанию, и вместо /clear поедет
+        // компакция. Ждём, пока промпт уйдёт (его снимает авто-ack или пользователь кнопкой).
+        const pane = live.length > 0 ? router.get(live[0])?.pane : undefined
+        if (pane) {
+          let prompt = parsePicker(await capturePane(pane).catch(() => ''))
+          for (let i = 0; i < 12 && prompt; i++) {
+            await new Promise(r => setTimeout(r, 1000))
+            prompt = parsePicker(await capturePane(pane).catch(() => ''))
+          }
+          if (prompt) {
+            void say(L.sessionAsksFirst(cmd)) // кнопки уже отправил picker bridge
+            return
+          }
+        }
       }
       if (live.length === 0) {
         void say(revivable ? L.noLiveSession : L.nothingToInterrupt)
