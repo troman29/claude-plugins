@@ -2695,7 +2695,10 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
       }
       try {
         const dir = resolveProjectDir(arg, PROJECTS_DIR)
-        reg[key] = { dir, ...(binding?.allow ? { allow: binding.allow } : {}) }
+        // сохраняем пользовательские флаги биндинга: повторный /bind не должен молча
+        // снимать /pin (и доступы) — человек биндит папку, а не сбрасывает настройки
+        reg[key] = { dir, ...(binding?.allow ? { allow: binding.allow } : {}),
+                     ...(binding?.pinned ? { pinned: true } : {}) }
         saveBindings(reg)
         void bot.api
           .sendMessage(
