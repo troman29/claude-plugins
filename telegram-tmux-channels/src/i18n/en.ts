@@ -188,6 +188,8 @@ export const en = {
 
   // ── compact / clear / esc / enter / model / stop / restart ──
   noLiveSession: '⚠️ No live session. Try <code>/resume</code>.',
+  revivingForCommand: (cmd: string) => `▶️ <b>Bringing the session up</b> for <code>/${cmd}</code>…`,
+  nothingToInterrupt: '⚠️ Nothing to interrupt — no live session.',
   notInTmuxControl: '⚠️ Session is not in tmux — can\'t control it.',
   compactSent: '🗜 <code>/compact</code> sent.',
   historyCleared: '🧹 <b>History cleared.</b>',

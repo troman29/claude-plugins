@@ -178,6 +178,8 @@ export const ru: Strings = {
 
   // ── compact / clear / esc / enter / model / stop / restart ──
   noLiveSession: '⚠️ Нет живой сессии. Попробуй <code>/resume</code>.',
+  revivingForCommand: cmd => `▶️ <b>Поднимаю сессию</b> для <code>/${cmd}</code>…`,
+  nothingToInterrupt: '⚠️ Прерывать нечего — живой сессии нет.',
   notInTmuxControl: '⚠️ Сессия не в tmux — не могу ей управлять.',
   compactSent: '🗜 <code>/compact</code> отправлен.',
   historyCleared: '🧹 <b>История очищена.</b>',

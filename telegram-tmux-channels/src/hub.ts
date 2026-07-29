@@ -2742,7 +2742,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
     return
   }
 
-  const live = binding ? connsForBinding(key, binding.dir) : []
+  let live = binding ? connsForBinding(key, binding.dir) : []
   const session = live.length > 0 ? router.get(live[0]) : undefined
 
   // /stand_up | /stand_down — stand hooks from the binding folder's `.tmux-channels.json`. The hook prints
@@ -2873,8 +2873,20 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
 
   if (cmd === 'compact' || cmd === 'clear' || cmd === 'esc' || cmd === 'enter' || cmd === 'restart' || cmd === 'model' || cmd === 'stop' || cmd === 'screen' || cmd === 'last') {
     if (live.length === 0) {
-      void say(L.noLiveSession)
-      return
+      // Сессию мог остановить idle-unload — для пользователя она «просто есть», он не обязан
+      // знать про выгрузку. Команды, осмысленные на поднятой сессии, поднимают её сами (как
+      // это делает обычное сообщение). /esc и /stop не поднимаем: прерывать/останавливать
+      // нечего, подъём ради немедленной остановки — абсурд.
+      const revivable = cmd !== 'esc' && cmd !== 'stop'
+      if (revivable && binding.sessionId) {
+        void say(L.revivingForCommand(cmd))
+        await spawnSession(key, binding, 'resume', () => {})
+        live = await waitForBinding(key, 30_000)
+      }
+      if (live.length === 0) {
+        void say(revivable ? L.noLiveSession : L.nothingToInterrupt)
+        return
+      }
     }
     for (const conn of live) {
       const s = router.get(conn)
