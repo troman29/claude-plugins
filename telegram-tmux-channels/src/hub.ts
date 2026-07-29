@@ -163,6 +163,27 @@ function markActivity(keys: string[] | undefined): void {
   }
 }
 
+// The suspended state also lives in bindings.json: a reboot kills tmux, and boot-revive would
+// otherwise start every sleeping session at once — a memory spike for topics nobody asked for.
+function persistUnloaded(keys: string[], unloaded: boolean): void {
+  const reg = loadBindings()
+  let changed = false
+  for (const k of keys) {
+    const b = reg[k]
+    if (b && Boolean(b.unloaded) !== unloaded) {
+      if (unloaded) {
+        b.unloaded = true
+      } else {
+        delete b.unloaded
+      }
+      changed = true
+    }
+  }
+  if (changed) {
+    saveBindings(reg)
+  }
+}
+
 // kill a zombie poller (incl. the old plugin) — one getUpdates per token
 mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 })
 try {
@@ -1585,6 +1606,7 @@ async function maybeIdleUnload(s: SessionInfo & { pane: string }, working: boole
       lastActivity.delete(k)
       idleUnloaded.add(k)
     }
+    persistUnloaded(keys, true)
   } else {
     markActivity(keys) // stop failed (busy/picker open) → treat as active, retry after another idle window
   }
@@ -1714,6 +1736,7 @@ async function handleStubMessage(sock: Socket<undefined>, msg: StubToHub): Promi
     const session = verifyClaimedKeys(msg.session)
     router.subscribe(sock, session)
     markActivity(session.bindingKeys) // fresh session = active now; starts the idle clock
+    persistUnloaded(session.bindingKeys ?? [], false)
     learnCmdline(session)
     log(`subscribe: cwd=${session.cwd ?? '-'} pane=${session.pane ?? '-'}`)
     return
@@ -2086,6 +2109,10 @@ async function reviveBoundSessions(): Promise<void> {
   }
   revivedOnce = true
   for (const [key, binding] of Object.entries(loadBindings())) {
+    if (binding.unloaded) {
+      idleUnloaded.add(key) // it was asleep before the reboot — leave it so; an inbound wakes it
+      continue
+    }
     if (await hasTmuxSession(sessionName(key, binding.dir))) {
       continue
     }
