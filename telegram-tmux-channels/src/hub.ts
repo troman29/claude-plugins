@@ -7,7 +7,7 @@ import { autoRetry } from '@grammyjs/auto-retry'
 import { apiThrottler } from '@grammyjs/transformer-throttler'
 import type { ReactionTypeEmoji } from 'grammy/types'
 import {
-  readFileSync, writeFileSync, mkdirSync, rmSync, statSync, realpathSync, chmodSync,
+  readFileSync, writeFileSync, mkdirSync, rmSync, statSync, realpathSync, chmodSync, readdirSync,
 } from 'fs'
 import { join, sep, basename } from 'path'
 import { homedir } from 'os'
@@ -2441,6 +2441,11 @@ async function handleInbound(inbound: Inbound): Promise<void> {
         return
       }
     }
+    if (isAdmin(senderId)) {
+      log(`unbound: offering folders key=${key} from=${senderId}`)
+      offerBind(key, chat_id, threadId)
+      return
+    }
     log(`drop (unbound): key=${key} from=${senderId} text=${text.slice(0, 60)}`)
     return
   }
@@ -3116,6 +3121,42 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
 }
 
 // "🆕 new or ⏪ which past session" keyboard — shown after /bind and on /resume.
+// Непривязанный чат админа: предложить папки вместо молчания. Личка — основной
+// канал работы с Claude, и «пишешь, а он как будто мёртв» — худший из вариантов.
+const bindPromptAt = new Map<string, number>()
+const BIND_PROMPT_COOLDOWN_MS = 10 * 60 * 1000
+
+function projectFolders(limit = 12): string[] {
+  try {
+    return readdirSync(PROJECTS_DIR, { withFileTypes: true })
+      .filter((e: { isDirectory(): boolean; name: string }) => e.isDirectory() && !e.name.startsWith('.'))
+      .map((e: { name: string }) => e.name)
+      .sort()
+      .slice(0, limit)
+  } catch {
+    return []
+  }
+}
+
+function offerBind(key: string, chatId: string, threadId: number | undefined): void {
+  const now = Date.now()
+  if (now - (bindPromptAt.get(key) ?? 0) < BIND_PROMPT_COOLDOWN_MS) {
+    return // не долбим подсказкой на каждое сообщение
+  }
+  bindPromptAt.set(key, now)
+  const kb = new InlineKeyboard()
+  for (const name of projectFolders()) {
+    kb.text(`📁 ${name}`, `bindto:${key}:${name}`).row()
+  }
+  void bot.api
+    .sendMessage(chatId, t().noBindingPickFolder, {
+      ...(threadId != null ? { message_thread_id: threadId } : {}),
+      parse_mode: 'HTML',
+      ...(kb.inline_keyboard.length > 0 ? { reply_markup: kb } : {}),
+    })
+    .catch(() => {})
+}
+
 function startChoiceKeyboard(key: string, dir: string): InlineKeyboard {
   const kb = new InlineKeyboard()
   kb.text(t().btnNewSession, `ns:${key}`).row()
@@ -3360,6 +3401,23 @@ bot.on('callback_query:data', async ctx => {
     return
   }
   // nr:<key>:<idx|esc>:<title-hash> = drive the CLI's own /resume list by arrows
+  const bt = /^bindto:(.+):([^:]+)$/.exec(ctx.callbackQuery.data)
+  if (bt) {
+    const [, key, folder] = bt
+    const senderId = String(ctx.from.id)
+    if (!isAdmin(senderId)) {
+      await ctx.answerCallbackQuery({ text: t().toastNoAccess }).catch(() => {})
+      return
+    }
+    await ctx.answerCallbackQuery().catch(() => {})
+    const t2 = keyToTarget(key!)
+    await handleOps({
+      cmd: 'bind', arg: folder!, key: key!, chat_id: t2.chat_id,
+      ...(t2.thread_id != null ? { threadId: t2.thread_id } : {}), senderId,
+    })
+    return
+  }
+
   const nr = /^nr:(.+):(\d+|esc):([0-9a-f]{8})$/.exec(ctx.callbackQuery.data)
   if (nr) {
     const [, key, idxStr, hash] = nr

@@ -117,6 +117,7 @@ export const en = {
   // ── bindings / access ──
   noBinding: '⚠️ Nothing is bound here — <code>/bind</code> first.',
   noBindingBindFirst: '⚠️ Nothing is bound here — <code>/bind &lt;folder&gt;</code> first.',
+  noBindingPickFolder: '👋 Nothing is bound here yet. Pick a folder to work in — or send <code>/bind &lt;path&gt;</code>.',
   bindUsage: (projects: string) => `Usage: <code>/bind &lt;folder&gt;</code>\n\nA name in ${projects} or an absolute path.`,
   bound: (key: string, path: string) => `🔗 <b>Bound</b>\n\n<code>${key}</code> → ${path}\n\nHow do we start?`,
   bindFail: (err: string) => `⚠️ <b>Couldn't bind</b>: ${err}`,
