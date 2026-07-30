@@ -1166,6 +1166,11 @@ async function forwardFallbackReply(key: string): Promise<void> {
     return
   }
   disarmPending(key) // one shot per inbound, whatever the transcript holds
+  // Read THIS binding's conversation, not whatever file in the project dir was touched last:
+  // several topics routinely share one project dir, and "newest in dir" forwarded a neighbour
+  // topic's answer into this one. Resolved now, not at arm time — /clear or an in-TUI /resume
+  // may have moved the binding to another session id since the inbound arrived.
+  const sessionId = loadBindings()[key]?.sessionId
   // Wait for the turn's transcript writes to FINISH before reading — not just for some text
   // to appear. The Stop hook that triggers turnend fires mid-flush: when only an intermediate
   // preamble is on disk while the real final answer is still being written (seen live —
@@ -1174,7 +1179,7 @@ async function forwardFallbackReply(key: string): Promise<void> {
   let lastSize = -1
   let stable = 0
   for (let i = 0; i < 30; i++) {
-    const sz = newestJsonlSize(pending.dir)
+    const sz = newestJsonlSize(pending.dir, sessionId)
     if (sz === lastSize) {
       if (++stable >= 3) {
         break // size unchanged for ~600ms — the turn has fully flushed
@@ -1185,7 +1190,7 @@ async function forwardFallbackReply(key: string): Promise<void> {
     }
     await new Promise(r => setTimeout(r, 200)) // ~6s hard cap
   }
-  const text = lastAssistantText(pending.dir, pending.at)
+  const text = lastAssistantText(pending.dir, pending.at, sessionId)
   if (!text || lastFallback.get(key) === text) {
     return // no fresh textual answer this turn, or already forwarded
   }

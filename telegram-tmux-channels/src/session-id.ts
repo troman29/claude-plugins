@@ -58,6 +58,22 @@ function firstUserText(dir: string, id: string): string {
   return ''
 }
 
+// Which transcript belongs to a binding. `sessionId` (from bindings.json) wins: several topics
+// commonly bind the SAME project dir, so "newest file in dir" is another topic's conversation as
+// often as not — that leaked one topic's answer into another. Newest is only the fallback for a
+// binding that has no session id yet (never launched / not yet learned from a hook).
+function transcriptId(dir: string, sessionId?: string): { id: string; mtime: number } | undefined {
+  const mtimes = jsonlMtimes(dir)
+  if (sessionId) {
+    const mtime = mtimes.get(sessionId)
+    if (mtime !== undefined) {
+      return { id: sessionId, mtime }
+    }
+  }
+  const newest = [...mtimes.entries()].sort((a, b) => b[1] - a[1])[0]
+  return newest ? { id: newest[0], mtime: newest[1] } : undefined
+}
+
 export type RecentSession = { id: string; mtime: number; snippet: string }
 
 export function recentSessions(dir: string, limit = 5): RecentSession[] {
@@ -76,29 +92,29 @@ export function recentSessions(dir: string, limit = 5): RecentSession[] {
 // this until it stops growing — a filesystem-agnostic "the turn finished flushing" signal
 // (size is exact even where mtime resolution is coarse), so it reads the turn's real final
 // text instead of an intermediate preamble that happens to be on disk mid-flush.
-export function newestJsonlSize(dir: string): number {
-  const newest = [...jsonlMtimes(dir).entries()].sort((a, b) => b[1] - a[1])[0]
+export function newestJsonlSize(dir: string, sessionId?: string): number {
+  const newest = transcriptId(dir, sessionId)
   if (!newest) {
     return 0
   }
   try {
-    return statSync(join(claudeProjectDir(dir), `${newest[0]}.jsonl`)).size
+    return statSync(join(claudeProjectDir(dir), `${newest.id}.jsonl`)).size
   } catch {
     return 0
   }
 }
 
-export function lastAssistantText(dir: string, sinceMs: number): string {
-  const newest = [...jsonlMtimes(dir).entries()].sort((a, b) => b[1] - a[1])[0]
+export function lastAssistantText(dir: string, sinceMs: number, sessionId?: string): string {
+  const newest = transcriptId(dir, sessionId)
   // mtime is only a cheap "was this file touched around the turn" pre-filter — filesystems
   // truncate it (often to whole seconds), so allow 2s of slack. The per-message timestamp
   // below is the authoritative staleness guard.
-  if (!newest || newest[1] < sinceMs - 2000) {
+  if (!newest || newest.mtime < sinceMs - 2000) {
     return ''
   }
   let buf: string
   try {
-    const p = join(claudeProjectDir(dir), `${newest[0]}.jsonl`)
+    const p = join(claudeProjectDir(dir), `${newest.id}.jsonl`)
     const size = statSync(p).size
     const start = Math.max(0, size - 262144) // last 256KB holds the turn's final message
     const fd = openSync(p, 'r')
