@@ -25,8 +25,8 @@ What you get beyond plain messaging:
 - **The CLI's own prompts become buttons.** `AskUserQuestion` and `/model` show up as real
   inline keyboards; tapping one types the answer into the session.
 - **Voice both ways.** Send a voice note — it's transcribed. Ask for a spoken reply — you get one.
-- **Live status.** Running subagents, the todo list and skill calls each get one self-updating
-  message, so you can see work in progress without a wall of noise.
+- **Live status.** Subagents, tasks, the todo list, skill calls and backgrounded shells all share
+  ONE self-updating message per turn, so work in progress costs you a single notification.
 - **Full session control from the phone.** Restart, compact, interrupt, switch model, peek at
   the terminal — see [Commands](#commands).
 
@@ -263,9 +263,10 @@ Two details worth knowing, because they explain most of the behaviour:
 - **The picker bridge is a screen scraper.** The hub reads each tmux pane on a timer; when it
   recognizes a TUI prompt, it posts buttons, and a tap is replayed as real keystrokes. There's
   no API for those prompts — this is a diff of the terminal.
-- **Status messages are edited, not re-sent.** One message per turn accumulates subagents,
-  todos and skill calls, with finished items marked ✅ instead of vanishing, so the message
-  ends up being the history of that turn.
+- **Status messages are edited, not re-sent.** One message per turn accumulates subagents, tasks,
+  todos, skill calls and backgrounded shells, with finished items marked ✅ instead of vanishing,
+  so the message ends up being the history of that turn. A background shell has no completion
+  hook, so its line stays listed until the next turn opens a new message.
 
 ### Debugging
 

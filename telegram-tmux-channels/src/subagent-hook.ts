@@ -19,7 +19,7 @@ const bindingKeys = (process.env.TELEGRAM_BINDING_KEYS ?? '')
   .split(',')
   .map(s => s.trim())
   .filter(Boolean)
-const VALID_MODES = new Set(['describe', 'start', 'stop', 'turnend', 'task-create', 'task-update', 'skill', 'todo'])
+const VALID_MODES = new Set(['describe', 'start', 'stop', 'turnend', 'task-create', 'task-update', 'skill', 'todo', 'bg'])
 
 async function main(): Promise<void> {
   if (bindingKeys.length === 0 || !mode || !VALID_MODES.has(mode)) {
@@ -77,6 +77,18 @@ async function main(): Promise<void> {
       return
     }
     msg = { op: 'todo', bindingKeys, todos }
+  } else if (mode === 'bg') {
+    // The Bash hook fires for EVERY command; only backgrounded ones are worth a status line.
+    const toolInput = data.tool_input as Record<string, unknown> | undefined
+    if (toolInput?.run_in_background !== true) {
+      return
+    }
+    const command = String(toolInput?.command ?? '')
+    if (!command) {
+      return
+    }
+    const description = toolInput?.description ? String(toolInput.description) : undefined
+    msg = { op: 'bg', bindingKeys, command, ...(description ? { description } : {}) }
   } else if (mode === 'describe') {
     const promptId = String(data.prompt_id ?? '')
     const toolInput = data.tool_input as Record<string, unknown> | undefined

@@ -66,6 +66,9 @@ export const en = {
     "process's memory); if it recurs, the host needs <code>claude /login</code>.",
   sessionError: (err: string, hint: string) => `⛔️ <b>Session error</b>\n\n<code>${err}</code>${hint}`,
   tasksHeader: '📋 <b>Tasks</b>',
+  todosHeader: '📝 <b>To Do</b>',
+  bgHeader: '⚙️ <b>Background</b>',
+  bgLine: (what: string) => `▶️ ${what}`,
   skillLine: (skill: string, args: string) => `🧩 Skill: <b>${skill}</b>${args ? ` — <i>${args}</i>` : ''}`,
 
   // ── screen/last digest ──

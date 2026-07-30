@@ -28,6 +28,7 @@ import {
   capturePane, capturePaneAnsi, type OpsCommand,
 } from './tmux-ops'
 import { ansiToHtml } from './ansi-html'
+import { emptyStatus, hasLiveWork, renderStatus, statusIsEmpty, type StatusState } from './status-render'
 import { discoverGlobalSkills, discoverProjectSkills, mangleCmd, resolveSkillCommand, tgDescription, type Skill } from './skills'
 import { claudePidsInDir, cmdlineOf } from './proc'
 import { readLimits, formatLimits } from './limits'
@@ -833,8 +834,6 @@ async function detectPicker(pane: string, session: SessionInfo, text: string): P
 // a genuinely new message is only warranted once Stop has fired AND every tracked agent is
 // actually done. Otherwise a still-running background agent would be silently abandoned in
 // its old (now-replaced) map the moment the next turn starts a fresh one.
-type SubagentStatus = { name: string; done: boolean }
-const activeSubagents = new Map<string, Map<string, SubagentStatus>>() // key -> agentId -> status
 
 // One self-updating Telegram message per binding key, per turn: sent once, then edited in place
 // as state changes; a fresh batch (caller decides) starts a NEW message at the bottom. The
@@ -842,10 +841,8 @@ const activeSubagents = new Map<string, Map<string, SubagentStatus>>() // key ->
 // at once) don't each spawn their own bubble. Replaces four hand-rolled, subtly-divergent copies
 // of this logic — task and skill were missing the reservation and could double-send.
 //
-// Each tracker owns its own instance, so a Stop signal is per-tracker: whichever tracker fired
-// first in a turn no longer steals the "fresh turn" signal from the others (that was the
-// "subagent invisible under a skill" bug). Trackers compute `fresh` from sinceTurnEnd() combined
-// with their own "all done" rule, and pass it in — the message reset follows that decision.
+// The single status bubble owns the only instance; `fresh` comes from beginStatusBatch() below,
+// which combines sinceTurnEnd() with "nothing still running".
 class PerTurnEditablePost {
   private msg = new Map<string, number>() // key -> Telegram message id (-1 = first send in flight)
   private turnEnded = new Map<string, boolean>() // key -> a Stop happened since this post's last batch
@@ -886,10 +883,37 @@ class PerTurnEditablePost {
     await bot.api.editMessageText(chat_id, existing, render(), { parse_mode: 'HTML' }).catch(() => {})
   }
 }
-const subPost = new PerTurnEditablePost()
-const taskPost = new PerTurnEditablePost()
-const todoPost = new PerTurnEditablePost()
-const skillPost = new PerTurnEditablePost()
+// ONE bubble for everything a turn spawns — agents, tasks, todos, skills, background shells.
+// Four separate posts meant a busy turn sent four notifications; now the first event sends and
+// every later one edits. State per key lives in `statusState`; rendering is pure (status-render).
+const statusPost = new PerTurnEditablePost()
+const statusState = new Map<string, StatusState>()
+
+// Returns the state to mutate, and whether this event opens a NEW bubble. A new batch starts
+// only once the turn ended AND nothing is still running — a run_in_background agent outlives
+// the Stop hook, and closing the bubble on Stop alone would abandon it half-reported.
+function beginStatusBatch(key: string): { state: StatusState; fresh: boolean } {
+  const prev = statusState.get(key)
+  if (prev && !(statusPost.sinceTurnEnd(key) && !hasLiveWork(prev))) {
+    return { state: prev, fresh: false }
+  }
+  const state = emptyStatus()
+  statusState.set(key, state)
+  return { state, fresh: true } // first-ever event: nothing to reset, update() sends anyway
+}
+
+// "is this binding still working?" for the typing nudge and idle-unload guard.
+const keyIsBusy = (key: string): boolean => {
+  const state = statusState.get(key)
+  return !!state && hasLiveWork(state)
+}
+
+async function pushStatus(key: string, state: StatusState, fresh: boolean): Promise<void> {
+  if (statusIsEmpty(state)) {
+    return // e.g. an update for an item that predates this batch — nothing to show yet
+  }
+  await statusPost.update(key, fresh, () => renderStatus(state))
+}
 // PreToolUse(Agent) fires before SubagentStart and carries the human description;
 // SubagentStart itself only has agent_id/agent_type — correlate the two via promptId.
 const pendingDescriptions = new Map<string, string>()
@@ -1178,25 +1202,6 @@ async function forwardFallbackReply(key: string): Promise<void> {
   log(`reply-fallback: forwarded ${text.length} chars for key=${key} (agent never called reply)`)
 }
 
-function renderSubagentText(items: SubagentStatus[]): string {
-  // Collapse identical names into one line with a counter — a workflow spawns dozens of
-  // same-named subagents (e.g. "workflow-subagent"), otherwise the status becomes a wall.
-  const groups = new Map<string, { done: number; total: number }>()
-  for (const i of items) {
-    const g = groups.get(i.name) ?? { done: 0, total: 0 }
-    g.total++
-    if (i.done) g.done++
-    groups.set(i.name, g)
-  }
-  const all = [...groups].map(([name, g]) => {
-    const glyph = g.done === g.total ? '✅' : '🟡'
-    const suffix = g.total === 1 ? '' : g.done === g.total ? ` ×${g.total}` : ` ${g.done}/${g.total}`
-    return `${glyph} ${escHtml(name)}${suffix}`
-  })
-  const lines = all.length > 25 ? [...all.slice(0, 25), `… +${all.length - 25}`] : all
-  return [t().agentsHeader, '', ...lines].join('\n')
-}
-
 async function handleSubagentEvent(msg: Extract<StubToHub, { op: 'subagent' }>): Promise<void> {
   if (msg.action === 'describe') {
     log(`subagent: describe promptId=${msg.promptId} "${msg.description}"`)
@@ -1207,10 +1212,7 @@ async function handleSubagentEvent(msg: Extract<StubToHub, { op: 'subagent' }>):
   if (msg.action === 'turnend') {
     log(`subagent: turnend keys=${msg.bindingKeys.join(',')}`)
     for (const key of msg.bindingKeys) {
-      subPost.endTurn(key)
-      taskPost.endTurn(key)
-      todoPost.endTurn(key)
-      skillPost.endTurn(key)
+      statusPost.endTurn(key)
       await forwardFallbackReply(key) // agent didn't reply → forward its final text ourselves
     }
     return
@@ -1222,36 +1224,30 @@ async function handleSubagentEvent(msg: Extract<StubToHub, { op: 'subagent' }>):
     return
   }
   for (const key of msg.bindingKeys) {
-    let agents = activeSubagents.get(key)
-    let fresh = false
-    if (msg.action === 'start') {
-      const allDone = !agents || [...agents.values()].every(a => a.done)
-      fresh = allDone && subPost.sinceTurnEnd(key)
-      // !agents must force a fresh map even when fresh is false, or the `agents!.set` below
-      // throws on undefined (e.g. first-ever subagent for this key mid-turn).
-      if (fresh || !agents) {
-        agents = new Map()
-        activeSubagents.set(key, agents)
-      }
-      const description = pendingDescriptions.get(msg.promptId)
-      if (description) {
-        pendingDescriptions.delete(msg.promptId)
-      }
-      agents.set(msg.agentId, { name: description ?? msg.agentType, done: false })
-      log(`subagent: start key=${key} agentId=${msg.agentId} type=${msg.agentType} fresh=${fresh} name="${description ?? msg.agentType}"`)
-    } else {
-      const existing = agents?.get(msg.agentId)
+    if (msg.action === 'stop') {
+      // A stop never opens a batch: with nothing tracked (hub restarted mid-turn) there is
+      // no name to show, so touching the bubble would only blank it.
+      const state = statusState.get(key)
+      const existing = state?.agents.get(msg.agentId)
       if (existing) {
         existing.done = true
       }
       log(`subagent: stop key=${key} agentId=${msg.agentId} found=${!!existing}`)
+      if (state && existing) {
+        await pushStatus(key, state, false)
+      }
+      continue
     }
-    if (!agents) {
-      continue // stop event with nothing tracked (e.g. hub restarted mid-batch) — nothing to say
+    const { state, fresh } = beginStatusBatch(key)
+    const description = pendingDescriptions.get(msg.promptId)
+    if (description) {
+      pendingDescriptions.delete(msg.promptId)
     }
-    // live thunk (not a snapshot): the post-send re-render inside update() must see agents that
-    // racing start/stop events mutated during the await.
-    await subPost.update(key, fresh, () => renderSubagentText([...agents!.values()]))
+    state.agents.set(msg.agentId, { name: description ?? msg.agentType, done: false })
+    log(`subagent: start key=${key} agentId=${msg.agentId} type=${msg.agentType} fresh=${fresh} name="${description ?? msg.agentType}"`)
+    // live thunk (not a snapshot): the post-send re-render inside update() must see state that
+    // racing events mutated during the await.
+    await pushStatus(key, state, fresh)
   }
 }
 
@@ -1422,84 +1418,58 @@ async function handleErrors(pane: string, session: SessionInfo, text: string): P
     .catch(e => log(`error-notify failed: pane=${pane} ${e}`))
 }
 
-// Task-list tracking, fed by TaskCreate/TaskUpdate hooks — same self-editing message (taskPost)
-// and turn-boundary idea as subagents above, but no promptId dance: id/subject/status come
-// straight off one PostToolUse event each.
-type TaskStatus = { subject: string; status: string }
-const activeTasks = new Map<string, Map<string, TaskStatus>>() // key -> taskId -> status
-
-function renderTaskText(items: TaskStatus[]): string {
-  const glyph = (s: string) => (s === 'completed' ? '✅' : s === 'in_progress' ? '🟡' : '⏳')
-  const lines = items.map(i => `${glyph(i.status)} ${escHtml(i.subject)}`)
-  return [t().tasksHeader, '', ...lines].join('\n')
-}
-
+// Task-list tracking, fed by TaskCreate/TaskUpdate hooks — no promptId dance: id/subject/status
+// come straight off one PostToolUse event each. Feeds the shared status bubble.
 async function handleTaskEvent(msg: Extract<StubToHub, { op: 'task' }>): Promise<void> {
   for (const key of msg.bindingKeys) {
-    let tasks = activeTasks.get(key)
-    let fresh = false
-    if (msg.action === 'create') {
-      const allDone = !tasks || [...tasks.values()].every(t => t.status === 'completed')
-      fresh = allDone && taskPost.sinceTurnEnd(key)
-      // !tasks must force init even when fresh is false (first task for this key mid-turn).
-      if (fresh || !tasks) {
-        tasks = new Map()
-        activeTasks.set(key, tasks)
-      }
-      tasks.set(msg.taskId, { subject: msg.subject, status: 'pending' })
-      log(`task: create key=${key} taskId=${msg.taskId} fresh=${fresh} subject="${msg.subject}"`)
-    } else {
-      const existing = tasks?.get(msg.taskId)
+    if (msg.action === 'update') {
+      const state = statusState.get(key)
+      const existing = state?.tasks.get(msg.taskId)
       if (existing) {
         existing.status = msg.status
       }
       log(`task: update key=${key} taskId=${msg.taskId} status=${msg.status} found=${!!existing}`)
-    }
-    if (!tasks) {
+      if (state && existing) {
+        await pushStatus(key, state, false)
+      }
       continue
     }
-    await taskPost.update(key, fresh, () => renderTaskText([...tasks!.values()]))
+    const { state, fresh } = beginStatusBatch(key)
+    state.tasks.set(msg.taskId, { subject: msg.subject, status: 'pending' })
+    log(`task: create key=${key} taskId=${msg.taskId} fresh=${fresh} subject="${msg.subject}"`)
+    await pushStatus(key, state, fresh)
   }
 }
 
-// TodoWrite (the ⊡/✓ checklist tool) — carries the FULL list each call, so no per-item lifecycle:
-// just re-render one self-editing message per turn. Fresh message on a turn boundary (reuses
-// (todoPost), like tasks. The full list arrives each call, so no per-item domain state.
-type Todo = { content: string; status: string }
-
-function renderTodoText(todos: Todo[]): string {
-  const glyph = (s: string) => (s === 'completed' ? '✅' : s === 'in_progress' ? '🟡' : '⏳')
-  const lines = todos.map(t => `${glyph(t.status)} ${escHtml(t.content)}`)
-  return ['📝 <b>To Do</b>', '', ...lines].join('\n')
-}
-
+// TodoWrite (the ⊡/✓ checklist tool, distinct from TaskCreate/Update) — carries the FULL list
+// each call, so no per-item lifecycle: just replace what the bubble shows.
 async function handleTodoEvent(msg: Extract<StubToHub, { op: 'todo' }>): Promise<void> {
   for (const key of msg.bindingKeys) {
-    const todos = msg.todos // TodoWrite carries the full list each call — no per-item domain state
-    await todoPost.update(key, todoPost.sinceTurnEnd(key), () => renderTodoText(todos))
+    const { state, fresh } = beginStatusBatch(key)
+    state.todos = msg.todos
+    await pushStatus(key, state, fresh)
   }
 }
 
-// Skill invocations — same per-turn self-editing message as tasks, but append-only:
-// a Skill has no lifecycle, one PreToolUse event per call.
-type SkillCall = { skill: string; args?: string }
-const activeSkills = new Map<string, SkillCall[]>() // key -> calls this turn
-
-function renderSkillText(items: SkillCall[]): string {
-  return items.map(i => t().skillLine(escHtml(i.skill), i.args ? escHtml(i.args) : '')).join('\n')
-}
-
+// Skill invocations — append-only: a Skill has no lifecycle, one PreToolUse event per call.
 async function handleSkillEvent(msg: Extract<StubToHub, { op: 'skill' }>): Promise<void> {
   for (const key of msg.bindingKeys) {
-    let skills = activeSkills.get(key)
-    const fresh = !skills || skillPost.sinceTurnEnd(key) // append-only within a turn
-    if (fresh || !skills) {
-      skills = []
-      activeSkills.set(key, skills)
-    }
-    skills.push({ skill: msg.skill, ...(msg.args ? { args: msg.args } : {}) })
+    const { state, fresh } = beginStatusBatch(key)
+    state.skills.push({ skill: msg.skill, ...(msg.args ? { args: msg.args } : {}) })
     log(`skill: key=${key} skill=${msg.skill}${msg.args ? ` args="${msg.args}"` : ''}`)
-    await skillPost.update(key, fresh, () => renderSkillText(skills!))
+    await pushStatus(key, state, fresh)
+  }
+}
+
+// Backgrounded Bash (run_in_background) — launch-only, see the protocol note: nothing tells us
+// when the shell finishes, so a line stays listed until the batch resets.
+// ponytail: no completion signal exists in hooks; if it starts to matter, poll BashOutput ids.
+async function handleBgEvent(msg: Extract<StubToHub, { op: 'bg' }>): Promise<void> {
+  for (const key of msg.bindingKeys) {
+    const { state, fresh } = beginStatusBatch(key)
+    state.bg.push({ command: msg.command, ...(msg.description ? { description: msg.description } : {}) })
+    log(`bg: key=${key} cmd="${msg.command.slice(0, 60)}"`)
+    await pushStatus(key, state, fresh)
   }
 }
 
@@ -1525,7 +1495,7 @@ async function pollScreens(): Promise<void> {
     sessions.map(async s => {
       const text = await captureTimeout(s.pane)
       seen.add(s.pane)
-      const subagentBusy = s.bindingKeys?.some(k => [...(activeSubagents.get(k)?.values() ?? [])].some(a => !a.done)) ?? false
+      const subagentBusy = s.bindingKeys?.some(k => keyIsBusy(k)) ?? false
       const prev = lastPaneText.get(s.pane)
       // Fire typing on: a running subagent, a visible working footer (covers static/byte-identical
       // captures where elapsed hadn't ticked — a pure diff would miss those and the indicator lapses),
@@ -1544,7 +1514,7 @@ async function pollScreens(): Promise<void> {
   // not just user input). A truly quiet, unpinned session past the threshold is stopped; the
   // next inbound message revives it (handleInbound). Guarded so we never stop a working pane.
   for (const { s, text } of captured) {
-    const busy = s.bindingKeys?.some(k => [...(activeSubagents.get(k)?.values() ?? [])].some(a => !a.done)) ?? false
+    const busy = s.bindingKeys?.some(k => keyIsBusy(k)) ?? false
     const working = busy || paneIsWorking(text) || !!parseWorkflow(text)
     if (working) {
       markActivity(s.bindingKeys)
@@ -1767,6 +1737,9 @@ async function handleStubMessage(sock: Socket<undefined>, msg: StubToHub): Promi
   }
   if (msg.op === 'todo') {
     await handleTodoEvent(msg)
+  }
+  if (msg.op === 'bg') {
+    await handleBgEvent(msg)
   }
 }
 

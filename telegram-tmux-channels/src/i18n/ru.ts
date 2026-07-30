@@ -65,6 +65,9 @@ export const ru: Strings = {
     'в памяти процесса); если повторится — на хосте нужен <code>claude /login</code>.',
   sessionError: (err, hint) => `⛔️ <b>Ошибка в сессии</b>\n\n<code>${err}</code>${hint}`,
   tasksHeader: '📋 <b>Задачи</b>',
+  todosHeader: '📝 <b>Тудушки</b>',
+  bgHeader: '⚙️ <b>Фоном</b>',
+  bgLine: what => `▶️ ${what}`,
   skillLine: (skill, args) => `🧩 Скилл: <b>${skill}</b>${args ? ` — <i>${args}</i>` : ''}`,
 
   // ── screen / last ──

@@ -39,6 +39,10 @@ export type StubToHub =
   // TodoWrite (the ⊡/✓ checklist tool, distinct from TaskCreate/Update) — carries the FULL
   // list on every call, so no per-item lifecycle; the hub just re-renders one message
   | { op: 'todo'; bindingKeys: string[]; sessionId?: string; todos: { content: string; status: string }[] }
+  // Bash with run_in_background (PreToolUse ^Bash$, filtered hook-side). Launch only — no hook
+  // fires when a background shell finishes, so these lines never flip to done; they clear with
+  // the batch. Without this the TUI's "Background tasks" were invisible in Telegram entirely.
+  | { op: 'bg'; bindingKeys: string[]; sessionId?: string; command: string; description?: string }
 
 export type HubToStub =
   | { op: 'event'; kind: 'message'; content: string; meta: Record<string, string> }

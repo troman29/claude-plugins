@@ -19,7 +19,7 @@ function color256(n: number): string {
   return `rgb(${g},${g},${g})`
 }
 
-const escHtml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+export const escHtml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 
 type Sgr = { fg?: string; bg?: string; bold?: boolean; reverse?: boolean }
 

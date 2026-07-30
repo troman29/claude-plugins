@@ -13,6 +13,17 @@
         ]
       },
       {
+        "matcher": "^Bash$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun ${CLAUDE_PLUGIN_ROOT}/src/subagent-hook.ts bg",
+            "timeout": 3,
+            "async": true
+          }
+        ]
+      },
+      {
         "matcher": "^Skill$",
         "hooks": [
           {
