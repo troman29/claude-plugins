@@ -6,7 +6,7 @@ Stage 3 — запросы пермишенов и открытые пикеры
 `~/.claude/channels/telegram/hub-state.json` (atomic tmp→rename, debounce, flush на shutdown,
 hydrate на boot; age-out 1ч).
 
-**Предусловия.** Контейнер `clod-tmux`. ВАЖНО: дефолтная сессия — `--permission-mode bypassPermissions`,
+**Предусловия.** Контейнер `claude-tmux`. ВАЖНО: дефолтная сессия — `--permission-mode bypassPermissions`,
 поэтому **пермишены (Stage 3) не триггерятся** — для их теста нужен запуск сессии БЕЗ bypass
 (`TELEGRAM_LAUNCH_CMD` без `bypassPermissions` или ручной запуск в пейне). Пикеры триггерятся, если
 попросить агента вызвать `AskUserQuestion`.
@@ -16,7 +16,7 @@ hydrate на boot; age-out 1ч).
 `recoveredPickers` + грейс.
 
 **Как рестартить хаб в контейнере** (сохранив tmux-сессии — они переживают рестарт хаба):
-`pkill -f hub.ts; sleep 1; docker compose exec -d clod-tmux … bun run src/hub.ts`. Смотреть
+`pkill -f hub.ts; sleep 1; docker compose exec -d claude-tmux … bun run src/hub.ts`. Смотреть
 `hub-state.json` ДО и ПОСЛЕ, лог boot (`reply-fallback: rechecking N …`, `picker recovered`).
 
 ---

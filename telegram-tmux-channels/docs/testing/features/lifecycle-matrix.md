@@ -17,7 +17,7 @@ Telegram переживают `/bind` `/unbind` `/delete` `/resume` `/new` `/res
 (`jsonlMtimes`, `captureNewSessionId`, `recentSessions`), `registry.ts`, `dir-resolve.ts`,
 `trusted-groups.ts`, `known-chats.ts`.
 
-**Предусловия.** Контейнер `clod-tmux`, тест-бот `@clod_tmux_lab_bot`, группа `-1004355407865`
+**Предусловия.** Контейнер `claude-tmux`, тест-бот `@clod_tmux_lab_bot`, группа `-1004355407865`
 (форум), `trusted-groups.json` на неё, `TELEGRAM_DEBUG_LOG=1`. Для группы J — второй,
 не-админский аккаунт (в текущем харнессе нет).
 

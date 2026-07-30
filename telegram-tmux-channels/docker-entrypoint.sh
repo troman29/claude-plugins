@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Turnkey seeding for the clod-tmux test container: a fresh Claude Code home hits several
+# Turnkey seeding for the claude-tmux test container: a fresh Claude Code home hits several
 # first-run gates (theme, folder-trust) and doesn't know about the hub's stub MCP or the
 # plugin hooks — none of which exist in a bind-mounted-source dev setup. Seed them once so
 # hub-spawned sessions start clean and fire status hooks. Idempotent; runs on every start.
@@ -42,7 +42,7 @@ sp = os.path.join(home, ".claude", "settings.json")
 s = json.load(open(sp)) if os.path.exists(sp) else {}
 s["hooks"] = hooks
 json.dump(s, open(sp, "w"), indent=2)
-print("clod-tmux seeded: onboarding + stub MCP + hooks + trust")
+print("claude-tmux seeded: onboarding + stub MCP + hooks + trust")
 PY
 
 # Note: `--permission-mode bypassPermissions` still shows a one-time "accept" prompt per
