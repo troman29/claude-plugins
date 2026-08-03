@@ -2504,7 +2504,7 @@ async function handleInbound(inbound: Inbound): Promise<void> {
         return
       }
     }
-    if (isAdmin(senderId)) {
+    if (isAdmin(senderId) && bindOffersWelcome(chat_id)) {
       log(`unbound: offering folders key=${key} from=${senderId}`)
       offerBind(key, chat_id, threadId)
       return
@@ -3208,6 +3208,13 @@ function projectFolders(limit = 12): string[] {
     return []
   }
 }
+
+// Where an unbound message is plausibly an invitation to bind: a DM with the bot, or a group
+// deliberately pointed at a project. In someone else's work chat the bot is just a member —
+// answering there is an interruption, so it stays silent, as it did before offers existed.
+// Telegram gives users positive ids and chats negative ones, so the sign is the test.
+// `/bind` is dispatched earlier, so it still works anywhere.
+const bindOffersWelcome = (chatId: string): boolean => !chatId.startsWith('-') || chatId in loadTrustedGroups()
 
 function offerBind(key: string, chatId: string, threadId: number | undefined): void {
   const now = Date.now()
