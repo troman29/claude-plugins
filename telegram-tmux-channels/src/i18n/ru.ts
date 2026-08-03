@@ -112,6 +112,7 @@ export const ru: Strings = {
   // ── bindings / access ──
   noBinding: '⚠️ Тут нет привязки — сначала <code>/bind</code>.',
   noBindingBindFirst: '⚠️ Тут нет привязки — сначала <code>/bind &lt;папка&gt;</code>.',
+  clearStartsFresh: '🧹 Сессия выгружена — запускаю свежую вместо того, чтобы поднимать старую ради очистки.',
   noBindingPickFolder: '👋 Тут пока ничего не привязано. Выбери папку — или пришли <code>/bind &lt;путь&gt;</code>.',
   bindUsage: projects => `Использование: <code>/bind &lt;папка&gt;</code>\n\nИмя в ${projects} или абсолютный путь.`,
   bound: (key, path) => `🔗 <b>Привязано</b>\n\n<code>${key}</code> → ${path}\n\nКак стартуем?`,

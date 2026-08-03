@@ -2890,6 +2890,14 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
       // знать про выгрузку. Команды, осмысленные на поднятой сессии, поднимают её сами (как
       // это делает обычное сообщение). /esc и /stop не поднимаем: прерывать/останавливать
       // нечего, подъём ради немедленной остановки — абсурд.
+      // /clear на ВЫГРУЖЕННОЙ сессии: поднимать старую бессмысленно — историю всё
+      // равно выбрасываем. Стартуем свежую: результат тот же, но без промпта
+      // «сессия большая, возобновить из саммари?» и без трат на возобновление.
+      if (cmd === 'clear' && binding.sessionId) {
+        void say(L.clearStartsFresh)
+        await spawnSession(key, binding, 'new', html => void say(html))
+        return
+      }
       const revivable = cmd !== 'esc' && cmd !== 'stop'
       if (revivable && binding.sessionId) {
         void say(L.revivingForCommand(cmd))
