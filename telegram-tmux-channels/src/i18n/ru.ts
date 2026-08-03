@@ -33,8 +33,7 @@ export const ru: Strings = {
     '💀 <b>Сессия оборвалась неожиданно</b> (процесс/tmux пропал без <code>/restart</code>). ' +
     'Напиши что-нибудь — переподнимется автоматически, или используй <code>/resume</code>.',
   truncatedNote: '…(ответ обрезан)',
-  autoForwardLabelHtml: '↩️ <i>авто-досыл</i>',
-  autoForwardLabelPlain: '↩️ авто-досыл',
+  autoForwardLabel: '↩️ *авто-досыл*',
   raisingSession: '▶️ <b>Поднимаю сессию…</b>',
   sessionNotConnectedInTime: '⚠️ Сессия не подключилась вовремя — сообщение не доставлено, попробуй ещё раз.',
   sessionNotUpInTime: '⚠️ Сессия не поднялась вовремя — отложенные сообщения не доставлены, повтори.',
@@ -67,7 +66,7 @@ export const ru: Strings = {
   tasksHeader: '📋 <b>Задачи</b>',
   todosHeader: '📝 <b>Тудушки</b>',
   bgHeader: '⚙️ <b>Фоном</b>',
-  bgLine: what => `▶️ ${what}`,
+  bgLine: (what, done) => `${done ? '✅' : '▶️'} ${what}`,
   skillLine: (skill, args) => `🧩 Скилл: <b>${skill}</b>${args ? ` — <i>${args}</i>` : ''}`,
 
   // ── screen / last ──

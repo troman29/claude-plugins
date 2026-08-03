@@ -187,6 +187,8 @@ const mcp = new Server(
       '',
       'If the tag has an image_path attribute, Read that file — it is a photo the sender attached. If the tag has attachment_file_id, call download_attachment with that file_id, then Read the returned path.',
       '',
+      'Write reply text as ordinary Markdown — including tables, which the hub renders for you. Do NOT hand-write HTML tags: <b>like this</b> shows up literally.',
+      '',
       'reply accepts file paths (files: ["/abs/path.png"]) for attachments. Use react for emoji reactions, edit_message for interim progress updates. Edits don\'t trigger push notifications — when a long task completes, send a new reply so the user\'s device pings.',
       '',
       "Telegram's Bot API exposes no history or search — you only see messages as they arrive. If you need earlier context, ask the user to paste it or summarize.",
@@ -222,7 +224,14 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           chat_id: { type: 'string', description: 'Target chat. Optional with a single binding.' },
           thread_id: { type: 'string', description: 'Forum topic id (topic_id from the inbound tag). Optional when derivable.' },
-          text: { type: 'string' },
+          text: {
+            type: 'string',
+            description:
+              'Plain GitHub-flavoured Markdown: # headings, **bold**, `code`, ```fenced blocks```, - bullets, ' +
+              '1. numbered, > quotes, [links](url), ~~strike~~ — plus | pipe | tables |, ||spoilers||, footnotes ' +
+              'and <details> blocks, which the hub routes through Telegram\'s rich renderer automatically. ' +
+              'Write Markdown, NOT HTML: <b>tags</b> you type yourself render as literal text.',
+          },
           reply_to: { type: 'string', description: 'Message ID to thread under.' },
           files: {
             type: 'array',
@@ -238,8 +247,12 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           format: {
             type: 'string',
-            enum: ['text', 'markdownv2'],
-            description: "'markdownv2' enables Telegram formatting; caller must escape per MarkdownV2 rules. Default: 'text'.",
+            enum: ['text', 'rich', 'markdownv2'],
+            description:
+              'Leave this out. The hub already sends a Rich Message when the text needs one (a table, a ' +
+              "collapsible block, a formula) and a normal one otherwise. 'rich' forces the rich path — only " +
+              "worth it to raise the 4096-char limit to 32768. 'markdownv2' sends the text raw as legacy " +
+              'MarkdownV2, escaping is then the caller\'s problem.',
           },
         },
         required: ['text'],
@@ -275,7 +288,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           chat_id: { type: 'string' },
           message_id: { type: 'string' },
-          text: { type: 'string' },
+          text: { type: 'string', description: 'Markdown, same as reply.' },
           format: { type: 'string', enum: ['text', 'markdownv2'] },
         },
         required: ['chat_id', 'message_id', 'text'],

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { emptyStatus, hasLiveWork, renderStatus, statusIsEmpty } from '../src/status-render'
+import { emptyStatus, hasLiveWork, renderBg, renderStatus, statusIsEmpty, syncBg, type BgTask } from '../src/status-render'
 
 describe('status-render', () => {
   test('empty state renders nothing and reports empty', () => {
@@ -14,17 +14,37 @@ describe('status-render', () => {
     s.agents.set('a1', { name: 'Review diff', done: false })
     s.tasks.set('1', { subject: 'Ship it', status: 'in_progress' })
     s.todos = [{ content: 'write test', status: 'completed' }]
-    s.bg.push({ command: 'npm test', description: 'Run tests' })
     s.skills.push({ skill: 'ponytail' })
     const out = renderStatus(s)
     expect(statusIsEmpty(s)).toBe(false)
     expect(out).toContain('🟡 Review diff')
     expect(out).toContain('🟡 Ship it')
     expect(out).toContain('✅ write test')
-    expect(out).toContain('Run tests') // description preferred over the raw command
     expect(out).toContain('ponytail')
     expect(out.indexOf('Review diff')).toBeLessThan(out.indexOf('Ship it'))
-    expect(out.split('\n\n').length).toBe(9) // 5 sections, each header split from its body
+    expect(out.split('\n\n').length).toBe(7) // 4 sections, each header split from its body
+  })
+
+  test('a shell missing from the Stop hook list has finished', () => {
+    const bg: BgTask[] = [{ command: 'sleep 30', description: 'Wait' }, { command: 'npm run dev' }]
+    expect(renderBg(bg)).toContain('▶️ Wait') // description preferred over the raw command
+
+    // Stop still names both → nothing to say, so no Telegram edit
+    expect(syncBg(bg, [{ command: 'sleep 30' }, { command: 'npm run dev' }])).toBe(false)
+
+    // sleep finished; the dev server is still up and stays running
+    expect(syncBg(bg, [{ command: 'npm run dev' }])).toBe(true)
+    expect(renderBg(bg)).toContain('✅ Wait')
+    expect(renderBg(bg)).toContain('▶️ npm run dev')
+    expect(syncBg(bg, [{ command: 'npm run dev' }])).toBe(false) // idempotent
+
+    // a foreground command Claude Code backgrounded itself: Stop is the first we hear of it
+    expect(syncBg(bg, [{ command: 'npm run dev' }, { command: 'slow-build', description: 'Build' }])).toBe(true)
+    expect(renderBg(bg)).toContain('▶️ Build')
+
+    // a finished shell keeps its ✅ line — the run's message is its history, not a live list
+    expect(syncBg(bg, [])).toBe(true)
+    expect(bg.filter(b => b.done)).toHaveLength(3)
   })
 
   test('identical agent names collapse into one counted line', () => {

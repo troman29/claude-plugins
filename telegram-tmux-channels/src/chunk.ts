@@ -1,4 +1,6 @@
 export const MAX_CHUNK_LIMIT = 4096
+// Rich Messages (Bot API 10.1) take eight times as much, so most replies stop being split.
+export const MAX_RICH_LIMIT = 32768
 export const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
 
 export const PHOTO_EXTS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp'])

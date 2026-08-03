@@ -25,8 +25,12 @@ What you get beyond plain messaging:
 - **The CLI's own prompts become buttons.** `AskUserQuestion` and `/model` show up as real
   inline keyboards; tapping one types the answer into the session.
 - **Voice both ways.** Send a voice note — it's transcribed. Ask for a spoken reply — you get one.
-- **Live status.** Subagents, tasks, the todo list, skill calls and backgrounded shells all share
-  ONE self-updating message per turn, so work in progress costs you a single notification.
+- **Tables and the rest of Markdown actually render.** A reply containing something plain
+  Telegram formatting can't express — a table, a collapsible block, a footnote, a formula — goes
+  out as a Rich Message (Bot API 10.1) and arrives as itself.
+- **Live status.** Subagents, tasks, the todo list and skill calls all share ONE self-updating
+  message per turn, so work in progress costs you a single notification. Backgrounded shells get
+  their own, kept until the last of them finishes — they outlive the turn that started them.
 - **Full session control from the phone.** Restart, compact, interrupt, switch model, peek at
   the terminal — see [Commands](#commands).
 
@@ -263,10 +267,24 @@ Two details worth knowing, because they explain most of the behaviour:
 - **The picker bridge is a screen scraper.** The hub reads each tmux pane on a timer; when it
   recognizes a TUI prompt, it posts buttons, and a tap is replayed as real keystrokes. There's
   no API for those prompts — this is a diff of the terminal.
+- **Agents write Markdown; the hub picks how to send it.** Most replies are rendered to Telegram
+  HTML as they always were. A rich message is used only when `needsRich()` sees something that
+  conversion would lose, because a rich message carries no plain `text` field — a client too old
+  to know the type shows nothing at all, so it has to earn that risk. The agent doesn't choose:
+  the decision is a function of the text, and a second tool would only be a second thing to
+  forget. `format: 'rich'` forces it, mostly to get the 32768-character limit.
+  Two things the rich parser does that cost you words, both found against the live API and now
+  escaped up front: an unsupported HTML tag is dropped *silently* (`<Foo>` and no error to catch),
+  and `#5` becomes a heading though GFM wants a space after the hashes.
 - **Status messages are edited, not re-sent.** One message per turn accumulates subagents, tasks,
-  todos, skill calls and backgrounded shells, with finished items marked ✅ instead of vanishing,
-  so the message ends up being the history of that turn. A background shell has no completion
-  hook, so its line stays listed until the next turn opens a new message.
+  todos and skill calls, with finished items marked ✅ instead of vanishing, so the message ends
+  up being the history of that turn.
+- **Background shells are tracked on their own clock.** They outlive their turn, so they get a
+  separate message that lives until the last shell in the run finishes — putting them in the turn
+  bubble meant either losing the line at the next turn or re-posting every unfinished shell into
+  each new bubble. There is no "background shell finished" hook, but the `Stop` payload lists the
+  shells still running: one we listed that `Stop` no longer names has finished. Claude Code feeds
+  each completion back as a prompt, so another `Stop` follows within seconds and flips the line.
 
 ### Debugging
 

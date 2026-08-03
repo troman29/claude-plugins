@@ -32,8 +32,7 @@ export const en = {
     '💀 <b>Session dropped unexpectedly</b> (process/tmux vanished without <code>/restart</code>). ' +
     'Send anything — it revives automatically, or use <code>/resume</code>.',
   truncatedNote: '…(reply truncated)',
-  autoForwardLabelHtml: '↩️ <i>auto-forward</i>',
-  autoForwardLabelPlain: '↩️ auto-forward',
+  autoForwardLabel: '↩️ *auto-forward*', // markdown: the label rides through the same renderer as the body
   raisingSession: '▶️ <b>Bringing the session up…</b>',
   sessionNotConnectedInTime: '⚠️ Session did not connect in time — message not delivered, try again.',
   sessionNotUpInTime: '⚠️ Session did not come up in time — queued messages not delivered, resend.',
@@ -68,7 +67,7 @@ export const en = {
   tasksHeader: '📋 <b>Tasks</b>',
   todosHeader: '📝 <b>To Do</b>',
   bgHeader: '⚙️ <b>Background</b>',
-  bgLine: (what: string) => `▶️ ${what}`,
+  bgLine: (what: string, done: boolean) => `${done ? '✅' : '▶️'} ${what}`,
   skillLine: (skill: string, args: string) => `🧩 Skill: <b>${skill}</b>${args ? ` — <i>${args}</i>` : ''}`,
 
   // ── screen/last digest ──

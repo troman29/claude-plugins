@@ -28,8 +28,10 @@ export type StubToHub =
   | { op: 'subagent'; action: 'start'; bindingKeys: string[]; sessionId?: string; promptId: string; agentId: string; agentType: string }
   | { op: 'subagent'; action: 'stop'; bindingKeys: string[]; sessionId?: string; agentId: string }
   // Stop = the turn ended (Claude finished responding) — closes the current batch so the
-  // NEXT subagent start opens a fresh message instead of appending to a finished one
-  | { op: 'subagent'; action: 'turnend'; bindingKeys: string[]; sessionId?: string }
+  // NEXT subagent start opens a fresh message instead of appending to a finished one.
+  // `bg` = the Stop payload's background_tasks: the shells STILL running. Completed ones are
+  // dropped from it, so "listed before, absent now" is the only completion signal there is.
+  | { op: 'subagent'; action: 'turnend'; bindingKeys: string[]; sessionId?: string; bg?: { command: string; description?: string }[] }
   // TaskCreate/TaskUpdate (the todo-list tool) — unlike subagents, id/subject/status come
   // straight off one event each, no promptId correlation needed
   | { op: 'task'; action: 'create'; bindingKeys: string[]; sessionId?: string; taskId: string; subject: string }
@@ -39,9 +41,9 @@ export type StubToHub =
   // TodoWrite (the ⊡/✓ checklist tool, distinct from TaskCreate/Update) — carries the FULL
   // list on every call, so no per-item lifecycle; the hub just re-renders one message
   | { op: 'todo'; bindingKeys: string[]; sessionId?: string; todos: { content: string; status: string }[] }
-  // Bash with run_in_background (PreToolUse ^Bash$, filtered hook-side). Launch only — no hook
-  // fires when a background shell finishes, so these lines never flip to done; they clear with
-  // the batch. Without this the TUI's "Background tasks" were invisible in Telegram entirely.
+  // Bash with run_in_background (PreToolUse ^Bash$, filtered hook-side) — the LAUNCH half, so
+  // the line shows up mid-turn. Completion arrives later via turnend's `bg` above.
+  // Without this the TUI's "Background tasks" were invisible in Telegram entirely.
   | { op: 'bg'; bindingKeys: string[]; sessionId?: string; command: string; description?: string }
 
 export type HubToStub =

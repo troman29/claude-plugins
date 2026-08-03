@@ -8,7 +8,7 @@
 //   PreToolUse (tool_name Agent/Task): prompt_id, tool_input.description
 //   SubagentStart: prompt_id, agent_id, agent_type (no description — must correlate via prompt_id)
 //   SubagentStop: agent_id
-//   Stop: turn end — no fields we need, just the signal that the batch is closed
+//   Stop: turn end; background_tasks[] = {id, type, status, description, command} still running
 //   PostToolUse(TaskCreate): tool_input.subject, tool_response.task.id
 //   PostToolUse(TaskUpdate): tool_input.taskId, tool_response.statusChange.to
 import { SOCK_PATH } from './paths'
@@ -38,7 +38,13 @@ async function main(): Promise<void> {
 
   let msg: StubToHub
   if (mode === 'turnend') {
-    msg = { op: 'subagent', action: 'turnend', bindingKeys }
+    // background_tasks = the shells still alive at Stop; finished ones are simply gone from it.
+    // Agents get their own SubagentStop, so keep only shells here or they'd be counted twice.
+    const bg = (Array.isArray(data.background_tasks) ? (data.background_tasks as Record<string, unknown>[]) : [])
+      .filter(b => b.type === 'shell')
+      .map(b => ({ command: String(b.command ?? ''), ...(b.description ? { description: String(b.description) } : {}) }))
+      .filter(b => b.command)
+    msg = { op: 'subagent', action: 'turnend', bindingKeys, bg }
   } else if (mode === 'task-create') {
     const toolInput = data.tool_input as Record<string, unknown> | undefined
     const toolResponse = data.tool_response as Record<string, unknown> | undefined

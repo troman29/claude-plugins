@@ -1,6 +1,7 @@
-// Rendering for the single per-binding status bubble: agents, tasks, todos, skills and
-// background shells share ONE self-editing message. Separate messages per tracker meant a
-// busy turn pinged Telegram four times; one bubble pings once and then only edits.
+// Rendering for the per-binding status bubble: agents, tasks, todos and skills share ONE
+// self-editing message. Separate messages per tracker meant a busy turn pinged Telegram four
+// times; one bubble pings once and then only edits. Background shells are the exception —
+// they outlive the turn, so renderBg gives them their own message (see the note there).
 // Pure — no I/O, no hub state. Tested in tests/status-render.test.ts.
 import { escHtml } from './ansi-html'
 import { t } from './i18n'
@@ -9,14 +10,13 @@ export type SubagentStatus = { name: string; done: boolean }
 export type TaskStatus = { subject: string; status: string }
 export type Todo = { content: string; status: string }
 export type SkillCall = { skill: string; args?: string }
-export type BgTask = { command: string; description?: string }
+export type BgTask = { command: string; description?: string; done?: boolean }
 
 export type StatusState = {
   agents: Map<string, SubagentStatus> // agentId -> status
   tasks: Map<string, TaskStatus> // taskId -> status
   todos: Todo[] // TodoWrite carries the full list each call — no per-item lifecycle
   skills: SkillCall[] // append-only within a batch
-  bg: BgTask[] // append-only: no hook fires when a background shell finishes
 }
 
 export const emptyStatus = (): StatusState => ({
@@ -24,11 +24,36 @@ export const emptyStatus = (): StatusState => ({
   tasks: new Map(),
   todos: [],
   skills: [],
-  bg: [],
 })
 
 export const statusIsEmpty = (s: StatusState): boolean =>
-  s.agents.size === 0 && s.tasks.size === 0 && s.todos.length === 0 && s.skills.length === 0 && s.bg.length === 0
+  s.agents.size === 0 && s.tasks.size === 0 && s.todos.length === 0 && s.skills.length === 0
+
+// There is no "background shell finished" hook — but the Stop hook carries the shells STILL
+// running, so anything we listed that Stop no longer names has finished. Matching is by command
+// text: PreToolUse fires before the task id exists, so it is the only key both halves share.
+// ponytail: the same command launched twice flips both lines together.
+// Returns whether anything changed, so the caller can skip a pointless Telegram edit.
+export function syncBg(bg: BgTask[], live: BgTask[]): boolean {
+  const running = new Set(live.map(b => b.command))
+  const known = new Set(bg.map(b => b.command))
+  let changed = false
+  for (const b of bg) {
+    if (!b.done && !running.has(b.command)) {
+      b.done = true
+      changed = true
+    }
+  }
+  // A foreground command that outran its timeout is backgrounded by Claude Code itself — no
+  // PreToolUse said run_in_background, so Stop is the first we hear of it.
+  for (const b of live) {
+    if (!known.has(b.command)) {
+      bg.push(b)
+      changed = true
+    }
+  }
+  return changed
+}
 
 // A batch stays open while any subagent is still running — a run_in_background agent outlives
 // the Stop hook, so "turn ended" alone must not close the bubble it is reporting into.
@@ -68,11 +93,15 @@ export function renderStatus(s: StatusState): string {
   if (s.todos.length) {
     sections.push([t().todosHeader, '', ...cap(s.todos.map(i => `${glyph(i.status)} ${escHtml(i.content)}`))].join('\n'))
   }
-  if (s.bg.length) {
-    sections.push([t().bgHeader, '', ...cap(s.bg.map(i => t().bgLine(escHtml(i.description || i.command))))].join('\n'))
-  }
   if (s.skills.length) {
     sections.push(cap(s.skills.map(i => t().skillLine(escHtml(i.skill), i.args ? escHtml(i.args) : ''))).join('\n'))
   }
   return sections.join('\n\n')
 }
+
+// Background shells get their OWN message, not a section of the per-turn bubble: a shell
+// outlives the turn that launched it, often by many turns. Sharing the turn bubble meant
+// either losing the line when the next turn opened a fresh one, or re-posting every unfinished
+// shell into each new bubble — which is what it actually did, and it read as duplicates.
+export const renderBg = (bg: BgTask[]): string =>
+  [t().bgHeader, '', ...cap(bg.map(i => t().bgLine(escHtml(i.description || i.command), !!i.done)))].join('\n')

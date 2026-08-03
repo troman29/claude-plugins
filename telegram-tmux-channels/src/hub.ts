@@ -20,15 +20,15 @@ import {
 } from './registry'
 import { encode, makeLineDecoder, type StubToHub, type HubToStub, type SessionInfo } from './protocol'
 import { Router } from './router'
-import { chunk, MAX_CHUNK_LIMIT, MAX_ATTACHMENT_BYTES, planAttachments } from './chunk'
-import { mdToHtml } from './md-html'
+import { chunk, MAX_CHUNK_LIMIT, MAX_RICH_LIMIT, MAX_ATTACHMENT_BYTES, planAttachments } from './chunk'
+import { escapeForRich, mdToHtml, needsRich } from './md-html'
 import {
   parseOpsCommand, parseCompaction, parseContextPct, parseError, parseWorkflow, paneIsWorking, paneDigest, isHeadlessArgv, sendKeys, typeLine, typeSlashCommand, selectOption, restartSession, stopSession, alive,
   hasTmuxSession, ensureTmuxSession, killTmuxSession, buildLaunch, shellQuote, isIdleToUnload, tmuxSessionName,
   capturePane, capturePaneAnsi, type OpsCommand,
 } from './tmux-ops'
 import { ansiToHtml } from './ansi-html'
-import { emptyStatus, hasLiveWork, renderStatus, statusIsEmpty, type StatusState } from './status-render'
+import { emptyStatus, hasLiveWork, renderBg, renderStatus, statusIsEmpty, syncBg, type BgTask, type StatusState } from './status-render'
 import { discoverGlobalSkills, discoverProjectSkills, mangleCmd, resolveSkillCommand, tgDescription, type Skill } from './skills'
 import { claudePidsInDir, cmdlineOf } from './proc'
 import { readLimits, formatLimits } from './limits'
@@ -322,6 +322,43 @@ function assertBoundTarget(conn: Socket<undefined>, target: Target): void {
   }
 }
 
+// Two ways out. A Rich Message (Bot API 10.1) has Telegram parse real GitHub-flavoured Markdown —
+// tables, collapsible blocks, footnotes, formulas — but it carries no plain `text` field, so a
+// client too old to know the type renders nothing at all. So it is used only where it earns that
+// risk (needsRich); everything else keeps going out as the HTML the converter has always built.
+let richSupported = true // sticky: one "unknown method" is enough to stop trying
+
+async function sendMarkdown(
+  chat_id: string,
+  text: string,
+  base: Record<string, unknown>,
+  rich = needsRich(text),
+): Promise<number[]> {
+  if (rich && richSupported) {
+    try {
+      const sent = await bot.api.sendRichMessage(chat_id, { markdown: escapeForRich(text) }, base)
+      return [sent.message_id]
+    } catch (err) {
+      // 404 = the method itself is missing (old local Bot API server); anything else is this
+      // one message's content, so keep rich enabled for the next.
+      if (err instanceof GrammyError && err.error_code === 404) {
+        richSupported = false
+      }
+      log(`rich send failed (${err}) — falling back to HTML`)
+    }
+  }
+  // The rich limit is 8× the plain one, so a chunk that was sized for rich may need splitting.
+  const ids: number[] = []
+  for (const part of chunk(text, MAX_CHUNK_LIMIT, 'length')) {
+    const sent = await bot.api
+      .sendMessage(chat_id, mdToHtml(part), { ...base, parse_mode: 'HTML' })
+      .catch(() => bot.api.sendMessage(chat_id, part, base)) // never lose a message to formatting
+    ids.push(sent.message_id)
+  }
+  return ids
+}
+
+
 async function doReply(conn: Socket<undefined>, params: Record<string, unknown>): Promise<string> {
   const target = targetFor(
     ownKeys(conn),
@@ -353,7 +390,11 @@ async function doReply(conn: Socket<undefined>, params: Record<string, unknown>)
     }
   }
 
-  const chunks = chunk(text, MAX_CHUNK_LIMIT, 'length')
+  // Decided once for the whole reply, so a table doesn't land in a different message shape than
+  // the sentence introducing it. Captions are capped at 1024 whatever the method, so a reply
+  // carrying files stays on the plain path.
+  const rich = !parseMode && !files.length && richSupported && (params.format === 'rich' || needsRich(text))
+  const chunks = chunk(text, rich ? MAX_RICH_LIMIT : MAX_CHUNK_LIMIT, 'length')
   const plan = planAttachments(files, chunks)
   // thread on EVERY send — otherwise chunks/files without reply_to land in General
   const threadOpt = target.thread_id != null ? { message_thread_id: target.thread_id } : {}
@@ -364,18 +405,13 @@ async function doReply(conn: Socket<undefined>, params: Record<string, unknown>)
         ...threadOpt,
         ...(reply_to != null && i === 0 ? { reply_parameters: { message_id: reply_to } } : {}),
       }
-      let sent
       if (parseMode) {
         // explicit format=markdownv2 — caller escaped it themselves, send raw
-        sent = await bot.api.sendMessage(target.chat_id, chunks[i], { ...base, parse_mode: parseMode })
+        const sent = await bot.api.sendMessage(target.chat_id, chunks[i], { ...base, parse_mode: parseMode })
+        sentIds.push(sent.message_id)
       } else {
-        // default: agents write plain markdown → render it as Telegram HTML. Fall back to plain
-        // text if the converted HTML is somehow rejected, so a message is never lost.
-        sent = await bot.api
-          .sendMessage(target.chat_id, mdToHtml(chunks[i]), { ...base, parse_mode: 'HTML' })
-          .catch(() => bot.api.sendMessage(target.chat_id, chunks[i], base))
+        sentIds.push(...(await sendMarkdown(target.chat_id, chunks[i], base, rich)))
       }
-      sentIds.push(sent.message_id)
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
@@ -452,12 +488,18 @@ async function doEdit(conn: Socket<undefined>, params: Record<string, unknown>):
   const chat_id = params.chat_id as string
   assertBoundChat(conn, chat_id)
   const parseMode = params.format === 'markdownv2' ? ('MarkdownV2' as const) : undefined
-  const edited = await bot.api.editMessageText(
-    chat_id,
-    Number(params.message_id),
-    params.text as string,
-    ...(parseMode ? [{ parse_mode: parseMode }] : []),
-  )
+  const message_id = Number(params.message_id)
+  const text = params.text as string
+  // Telegram won't turn a plain message rich or a rich one plain, and the hub doesn't record
+  // which it sent — so try the shape the new text asks for, then the other one.
+  const asRich = () =>
+    bot.api.raw.editMessageText({ chat_id, message_id, rich_message: { markdown: escapeForRich(text) } })
+  const asHtml = () => bot.api.editMessageText(chat_id, message_id, mdToHtml(text), { parse_mode: 'HTML' })
+  const edited = parseMode
+    ? await bot.api.editMessageText(chat_id, message_id, text, { parse_mode: parseMode })
+    : params.format === 'rich' || needsRich(text)
+      ? await asRich().catch(asHtml)
+      : await asHtml().catch(asRich)
   const id = typeof edited === 'object' ? edited.message_id : params.message_id
   return `edited (id: ${id})`
 }
@@ -1200,10 +1242,10 @@ async function forwardFallbackReply(key: string): Promise<void> {
   const body = text.length > FALLBACK_MAX_CHARS ? `${text.slice(0, FALLBACK_MAX_CHARS)}\n\n${t().truncatedNote}` : text
   // marker so it's visibly distinct from a normal reply — a fallback means the agent
   // forgot to call reply, which is itself a signal worth seeing.
-  await bot.api
-    .sendMessage(target.chat_id, `${t().autoForwardLabelHtml}\n\n${mdToHtml(body)}`, { ...threadOpt, parse_mode: 'HTML' })
-    .catch(() => bot.api.sendMessage(target.chat_id, `${t().autoForwardLabelPlain}\n\n${body}`, threadOpt))
-    .catch(e => log(`reply-fallback send failed key=${key}: ${e}`))
+  // rich Markdown understands the label's HTML too, so one path renders both halves
+  await sendMarkdown(target.chat_id, `${t().autoForwardLabel}\n\n${body}`, threadOpt).catch(e =>
+    log(`reply-fallback send failed key=${key}: ${e}`),
+  )
   log(`reply-fallback: forwarded ${text.length} chars for key=${key} (agent never called reply)`)
 }
 
@@ -1215,8 +1257,9 @@ async function handleSubagentEvent(msg: Extract<StubToHub, { op: 'subagent' }>):
     return
   }
   if (msg.action === 'turnend') {
-    log(`subagent: turnend keys=${msg.bindingKeys.join(',')}`)
+    log(`subagent: turnend keys=${msg.bindingKeys.join(',')} bg=${msg.bg?.length ?? 0}`)
     for (const key of msg.bindingKeys) {
+      await reconcileBg(key, msg.bg ?? []) // before endTurn: pushStatus clears the turn-ended flag
       statusPost.endTurn(key)
       await forwardFallbackReply(key) // agent didn't reply → forward its final text ourselves
     }
@@ -1466,15 +1509,57 @@ async function handleSkillEvent(msg: Extract<StubToHub, { op: 'skill' }>): Promi
   }
 }
 
-// Backgrounded Bash (run_in_background) — launch-only, see the protocol note: nothing tells us
-// when the shell finishes, so a line stays listed until the batch resets.
-// ponytail: no completion signal exists in hooks; if it starts to matter, poll BashOutput ids.
+// Background shells own a message of their own, on the same send-once-then-edit machinery as
+// the turn bubble but with a different lifetime: a run keeps its message until every shell in
+// it has finished, however many turns that takes. The next shell after that starts a new one.
+const bgPost = new PerTurnEditablePost()
+const bgState = new Map<string, BgTask[]>() // key -> shells of the current run, done ones kept
+
+// Returns the list to mutate, and whether this opens a NEW message: only once the previous run
+// is fully finished. Otherwise a shell launched now joins the message already on screen.
+function beginBgRun(key: string): { bg: BgTask[]; fresh: boolean } {
+  const prev = bgState.get(key)
+  if (prev?.some(b => !b.done)) {
+    return { bg: prev, fresh: false }
+  }
+  const bg: BgTask[] = []
+  bgState.set(key, bg)
+  return { bg, fresh: true }
+}
+
+async function pushBg(key: string, bg: BgTask[], fresh: boolean): Promise<void> {
+  if (bg.length) {
+    await bgPost.update(key, fresh, () => renderBg(bg))
+  }
+}
+
+// Backgrounded Bash (run_in_background) — the launch half, so the line appears mid-turn.
 async function handleBgEvent(msg: Extract<StubToHub, { op: 'bg' }>): Promise<void> {
   for (const key of msg.bindingKeys) {
-    const { state, fresh } = beginStatusBatch(key)
-    state.bg.push({ command: msg.command, ...(msg.description ? { description: msg.description } : {}) })
+    const { bg, fresh } = beginBgRun(key)
+    bg.push({ command: msg.command, ...(msg.description ? { description: msg.description } : {}) })
     log(`bg: key=${key} cmd="${msg.command.slice(0, 60)}"`)
-    await pushStatus(key, state, fresh)
+    await pushBg(key, bg, fresh)
+  }
+}
+
+// The completion half (syncBg does the diffing). Claude Code delivers each finished shell as a
+// fresh prompt to the session, which ends in another Stop — that second turnend is what flips
+// the line, seconds after the shell actually exited.
+async function reconcileBg(key: string, live: BgTask[]): Promise<void> {
+  const bg = bgState.get(key)
+  if (!bg) {
+    // Nothing tracked (hub restarted mid-run): adopt what Stop reports, so the shells still
+    // running get a message instead of vanishing until they finish.
+    if (live.length) {
+      const { bg: fresh } = beginBgRun(key)
+      fresh.push(...live)
+      await pushBg(key, fresh, true)
+    }
+    return
+  }
+  if (syncBg(bg, live)) {
+    await pushBg(key, bg, false)
   }
 }
 
