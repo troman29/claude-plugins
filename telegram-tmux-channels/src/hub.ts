@@ -2149,11 +2149,25 @@ async function spawnSession(
   const name = sessionName(key, binding.dir)
   // форк тоже получает свой session id — его надо выучить, иначе биндинг ветки указывает
   // на оригинал и следующий подъём поднимет (и снова форкнёт) не ту сессию
-  const fresh = mode !== 'resume' || !binding.sessionId
+  // Разговор мог исчезнуть с диска — чистка Claude Code по возрасту (cleanupPeriodDays)
+  // удаляет .jsonl, а id остаётся в биндинге. `--resume <мёртвый id>` не запускается, а
+  // мгновенно выходит с "No conversation found", и хаб зацикливается: поднял → «сессия
+  // оборвалась» → на следующее сообщение поднял тем же id. Резюмим только живое.
+  const resumeId = binding.sessionId && jsonlMtimes(binding.dir).has(binding.sessionId)
+    ? binding.sessionId
+    : undefined
+  const lostConversation = mode === 'resume' && !!binding.sessionId && !resumeId
+  // Не подменяем на --continue: у общей папки он подхватит разговор соседнего топика.
+  const launchMode: LaunchMode = lostConversation ? 'new' : mode
+  const fresh = launchMode !== 'resume' || !resumeId
   const before = fresh ? jsonlMtimes(binding.dir) : new Map<string, number>()
   try {
     const created = await ensureTmuxSession(name, binding.dir)
-    const launch = buildLaunch(binding.cmdline, mode, binding.sessionId)
+    const launch = buildLaunch(binding.cmdline, launchMode, resumeId)
+    if (lostConversation) {
+      log(`spawn: conversation ${binding.sessionId} gone from disk — starting fresh for ${key}`)
+      say(t().conversationGone)
+    }
     say(
       created
         ? t().tmuxCreated(escHtml(name), codePath(binding.dir))
@@ -2164,11 +2178,11 @@ async function spawnSession(
     // mode 'new' covers two different things: an explicit /new over an EXISTING conversation
     // (genuinely "from scratch"), and the very first launch of a binding that never had one — calling
     // that "from scratch" reads as if something was discarded, when nothing existed yet.
-    const startedLabel = mode === 'resume'
+    const startedLabel = launchMode === 'resume'
       ? t().modeResume
-      : mode === 'fork'
+      : launchMode === 'fork'
         ? t().modeFork
-        : binding.sessionId
+        : binding.sessionId && !lostConversation
           ? t().modeRestart
           : t().modeNew
     say(`${startedLabel}\n\n<code>${escHtml(launch)}</code>`)
