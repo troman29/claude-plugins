@@ -2,14 +2,14 @@
 // lives outside claude, so /restart runs inline (graceful /exit → wait → relaunch).
 
 export type OpsCommand =
-  | 'compact' | 'clear' | 'esc' | 'enter' | 'restart' | 'resume' | 'new' | 'status'
+  | 'compact' | 'clear' | 'esc' | 'enter' | 'restart' | 'resume' | 'new' | 'fork' | 'status'
   | 'bind' | 'unbind' | 'allow' | 'model' | 'stop' | 'screen' | 'last' | 'delete' | 'skills' | 'reload'
   | 'stand_up' | 'stand_down' | 'pin' | 'unpin' | 'lang'
 
 export function parseOpsCommand(
   text: string,
 ): { cmd: OpsCommand; bot?: string; arg?: string } | undefined {
-  const m = /^\/(compact|clear|esc|enter|restart|resume|new|status|bind|unbind|allow|model|stop|screen|last|delete|skills|reload|stand_up|stand_down|pin|unpin|lang)(?:@(\w+))?(?:\s+(\S.*?))?\s*$/.exec(
+  const m = /^\/(compact|clear|esc|enter|restart|resume|new|fork|status|bind|unbind|allow|model|stop|screen|last|delete|skills|reload|stand_up|stand_down|pin|unpin|lang)(?:@(\w+))?(?:\s+(\S.*?))?\s*$/.exec(
     text.trim(),
   )
   if (!m) {
@@ -175,7 +175,10 @@ export function stripResumeFlags(argv: string[]): string[] {
   const out: string[] = []
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
-    if (a === '--continue' || a.startsWith('--resume=')) {
+    // --fork-session ставит ТОЛЬКО режим fork. Выученный из живого процесса argv ветки его
+    // содержит — оставь, и каждое следующее пробуждение ветки форкало бы её заново, плодя
+    // сессии и теряя ту, в которой шёл разговор.
+    if (a === '--continue' || a.startsWith('--resume=') || a === '--fork-session') {
       continue
     }
     if (a === '--resume') {
@@ -240,13 +243,20 @@ export function ensureChannelFlags(argv: string[]): string[] {
   return [...stripChannelFlags(argv), '--dangerously-load-development-channels', 'server:telegram']
 }
 
-export function buildLaunch(saved: string[] | undefined, mode: 'resume' | 'new', sessionId?: string): string {
+export function buildLaunch(saved: string[] | undefined, mode: LaunchMode, sessionId?: string): string {
   const base = ensureChannelFlags(stripResumeFlags(saved?.length ? saved : DEFAULT_CLAUDE_ARGV))
+  // fork = ветка: та же история до точки разветвления, но своя дальнейшая жизнь. --fork-session
+  // без --resume бессмыслен, поэтому без id это обычный старт.
+  if (mode === 'fork') {
+    return shellQuote(sessionId ? [...base, '--resume', sessionId, '--fork-session'] : base)
+  }
   if (mode !== 'resume') {
     return shellQuote(base)
   }
   return shellQuote(sessionId ? [...base, '--resume', sessionId] : [...base, '--continue'])
 }
+
+export type LaunchMode = 'resume' | 'new' | 'fork'
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 

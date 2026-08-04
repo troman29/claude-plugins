@@ -168,6 +168,9 @@ describe('tmux-ops', () => {
   test('parseOpsCommand: commands, @botname, args, garbage', () => {
     expect(parseOpsCommand('/compact')).toEqual({ cmd: 'compact' })
     expect(parseOpsCommand('/clear')).toEqual({ cmd: 'clear' })
+    // /fork is a hub command — it must NOT fall through to the CLI's built-in /fork
+    expect(parseOpsCommand('/fork доделать трейсы')).toEqual({ cmd: 'fork', arg: 'доделать трейсы' })
+    expect(parseOpsCommand('/fork')).toEqual({ cmd: 'fork' })
     expect(parseOpsCommand('/esc@some_bot ')).toEqual({ cmd: 'esc', bot: 'some_bot' })
     expect(parseOpsCommand('/enter')).toEqual({ cmd: 'enter' })
     expect(parseOpsCommand('/bind myapp')).toEqual({ cmd: 'bind', arg: 'myapp' })
@@ -381,6 +384,22 @@ describe('tmux-ops', () => {
     const withChannel = DEFAULT_CLAUDE_ARGV.join(' ') + ' --dangerously-load-development-channels server:telegram'
     expect(buildLaunch(undefined, 'new')).toBe(withChannel)
     expect(buildLaunch([...DEFAULT_CLAUDE_ARGV], 'new')).toBe(withChannel)
+  })
+  test('buildLaunch: a learned argv never carries --fork-session into a plain resume', () => {
+    // ветка выучивает свой argv с --fork-session; без вычистки она форкалась бы при каждом подъёме
+    const learned = ['claude', '--fork-session', '--resume', 'parent-id']
+    expect(buildLaunch(learned, 'resume', 'branch-id')).toBe(
+      'claude --dangerously-load-development-channels server:telegram --resume branch-id',
+    )
+  })
+  test('buildLaunch: fork → --resume <id> --fork-session; no id → plain start', () => {
+    expect(buildLaunch(['claude'], 'fork', 'abc-123')).toBe(
+      'claude --dangerously-load-development-channels server:telegram --resume abc-123 --fork-session',
+    )
+    // --fork-session without --resume is meaningless — CLI would reject it
+    expect(buildLaunch(['claude'], 'fork')).toBe(
+      'claude --dangerously-load-development-channels server:telegram',
+    )
   })
   test('buildLaunch: explicit sessionId → --resume <id>, not --continue', () => {
     expect(buildLaunch(['claude'], 'resume', 'abc-123')).toBe(

@@ -25,6 +25,7 @@ import { escapeForRich, mdToHtml, needsRich } from './md-html'
 import {
   parseOpsCommand, parseCompaction, parseContextPct, parseError, parseWorkflow, paneIsWorking, paneDigest, isHeadlessArgv, sendKeys, typeLine, typeSlashCommand, selectOption, restartSession, stopSession, alive,
   hasTmuxSession, ensureTmuxSession, killTmuxSession, buildLaunch, shellQuote, isIdleToUnload, tmuxSessionName,
+  type LaunchMode,
   RESUME_PROMPT_OFF, memoryCapPrefix,
   capturePane, capturePaneAnsi, type OpsCommand,
 } from './tmux-ops'
@@ -1028,7 +1029,7 @@ function paneBelongsToKey(pane: string, key: string): boolean {
 // Command names are language-independent; descriptions come from the current lang table,
 // so the menu re-registers (with translated descriptions) whenever /lang switches.
 const OPS_NAMES = new Set([
-  'status', 'resume', 'screen', 'last', 'new', 'skills', 'stand_up', 'stand_down',
+  'status', 'resume', 'screen', 'last', 'new', 'fork', 'skills', 'stand_up', 'stand_down',
   'pin', 'unpin', 'reload', 'compact', 'clear', 'esc', 'enter', 'model', 'stop',
   'restart', 'bind', 'unbind', 'delete', 'allow', 'lang',
 ])
@@ -1040,6 +1041,7 @@ function opsCommands(): { command: string; description: string }[] {
     { command: 'screen', description: L.cmd_screen },
     { command: 'last', description: L.cmd_last },
     { command: 'new', description: L.cmd_new },
+    { command: 'fork', description: L.cmd_fork },
     { command: 'skills', description: L.cmd_skills },
     { command: 'stand_up', description: L.cmd_stand_up },
     { command: 'stand_down', description: L.cmd_stand_down },
@@ -2141,11 +2143,13 @@ async function stopLiveSessions(key: string, binding: BindingEntry): Promise<boo
 async function spawnSession(
   key: string,
   binding: BindingEntry,
-  mode: 'resume' | 'new',
+  mode: LaunchMode,
   say: (html: string) => void,
 ): Promise<void> {
   const name = sessionName(key, binding.dir)
-  const fresh = mode === 'new' || !binding.sessionId
+  // форк тоже получает свой session id — его надо выучить, иначе биндинг ветки указывает
+  // на оригинал и следующий подъём поднимет (и снова форкнёт) не ту сессию
+  const fresh = mode !== 'resume' || !binding.sessionId
   const before = fresh ? jsonlMtimes(binding.dir) : new Map<string, number>()
   try {
     const created = await ensureTmuxSession(name, binding.dir)
@@ -2162,9 +2166,11 @@ async function spawnSession(
     // that "from scratch" reads as if something was discarded, when nothing existed yet.
     const startedLabel = mode === 'resume'
       ? t().modeResume
-      : binding.sessionId
-        ? t().modeRestart
-        : t().modeNew
+      : mode === 'fork'
+        ? t().modeFork
+        : binding.sessionId
+          ? t().modeRestart
+          : t().modeNew
     say(`${startedLabel}\n\n<code>${escHtml(launch)}</code>`)
     if (fresh) {
       void captureNewSessionId(binding.dir, before, 60_000).then(id => {
@@ -2400,6 +2406,13 @@ function modePromptText(cfg: TrustedGroupConfig, intro: string): string {
 // trusted group sets the topic up the same way. The real title isn't in a message update,
 // so callers pass a generic slug (topic-<id>) as topicName; the triggering message is
 // queued by the caller and delivered once the session is up.
+// Имя топика-ветки: имя исходного топика с суффиксом (Telegram режет на 128) — так ветка
+// стоит рядом с родителем в списке; переименовать её юзер может сам.
+function forkTopicName(chatId: string, threadId: number, dir: string): string {
+  const base = topicTitle(chatId, threadId) || basename(dir)
+  return `${base} (fork)`.slice(0, 128)
+}
+
 async function handleLateTopic(
   key: string,
   chatId: string,
@@ -2900,6 +2913,69 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
     void say(
       [head, ...(linkLines.length ? ['', ...linkLines] : []), ...(tail ? ['', `<pre>${escHtml(tail)}</pre>`] : [])].join('\n'),
     )
+    return
+  }
+
+  // /fork [директива] — ветка разговора в СВОЁМ топике: та же история до этой точки, дальше
+  // живёт отдельно (--fork-session). Оригинал не трогаем: он остаётся в своём топике как был.
+  // Встроенный /fork у CLI отдаёт ветку фоновому агенту, с которым из чата не поговорить —
+  // поэтому команду перехватываем здесь.
+  if (cmd === 'fork') {
+    if (!binding) {
+      void say(L.noBindingBindFirst)
+      return
+    }
+    if (!binding.sessionId) {
+      void say(L.forkNoConversation)
+      return
+    }
+    if (threadId == null) {
+      void say(L.forkNeedsTopic) // ветка = новый топик, в DM его не создать
+      return
+    }
+    const name = forkTopicName(chat_id, threadId, binding.dir)
+    void say(L.forkCreating(escHtml(name)))
+    let newThreadId: number
+    try {
+      const topic = await bot.api.createForumTopic(chat_id, name)
+      newThreadId = topic.message_thread_id
+    } catch (e) {
+      void say(L.forkTopicFailed(escHtml(String(e))))
+      return
+    }
+    const newKey = messageKey({ chatType: 'supergroup', chatId: chat_id, threadId: newThreadId })
+    recordTopic(chat_id, newThreadId, name, new Date().toISOString())
+    const fresh = loadBindings()
+    fresh[newKey] = {
+      dir: binding.dir,
+      sessionId: binding.sessionId, // точка разветвления; свой id ветка выучит при старте
+      ...(binding.cmdline ? { cmdline: binding.cmdline } : {}),
+      ...(binding.allow ? { allow: [...binding.allow] } : {}),
+    }
+    saveBindings(fresh)
+    const sayFork = (html: string) =>
+      void bot.api
+        .sendMessage(chat_id, html, { message_thread_id: newThreadId, parse_mode: 'HTML' })
+        .catch(() => {})
+    sayFork(L.forkedFrom(threadId, escHtml(binding.sessionId)))
+    await spawnSession(newKey, fresh[newKey]!, 'fork', sayFork)
+    const conns = await waitForBinding(newKey, 30_000)
+    if (conns.length === 0) {
+      sayFork(L.sessionNotConnectedInTime)
+      return
+    }
+    if (arg) {
+      // директива — первое сообщение ветке; ждём готовности пейна, иначе неготовый CLI её теряет
+      await waitPaneReady(router.get(conns[0]!)?.pane, 60_000)
+      const meta: Record<string, string> = {
+        chat_id, user: senderId, user_id: senderId,
+        ts: new Date().toISOString(), topic_id: String(newThreadId),
+      }
+      for (const conn of conns) {
+        send(conn, { op: 'event', kind: 'message', content: arg, meta })
+      }
+      armPending(newKey, { dir: binding.dir, at: Date.now() })
+    }
     return
   }
 

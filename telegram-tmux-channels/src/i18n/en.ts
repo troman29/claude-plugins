@@ -7,6 +7,7 @@ export const en = {
   cmd_screen: 'Show the session screen as-is',
   cmd_last: 'Latest screen text (live, no image)',
   cmd_new: 'Start a fresh session',
+  cmd_fork: 'Fork this conversation into its own topic',
   cmd_skills: "This project's skills (buttons)",
   cmd_stand_up: "Bring up this folder's stand (hook from .tmux-channels.json)",
   cmd_stand_down: "Tear down this folder's stand",
@@ -42,6 +43,7 @@ export const en = {
   modeResume: '🚀 <b>Resuming</b>',
   modeRestart: '🚀 <b>Restarting fresh</b>',
   modeNew: '🆕 <b>Starting a session</b>',
+  modeFork: '🌱 <b>Forking the conversation</b>',
   spawnFailed: (mode: string, err: string) => `⚠️ <b>${mode} failed</b>: ${err}`,
   sessionSpawnFail: (err: string) => `⚠️ <b>Couldn't bring the session up</b>: ${err}`,
 
@@ -195,6 +197,12 @@ export const en = {
   revivingForCommand: (cmd: string) => `▶️ <b>Bringing the session up</b> for <code>/${cmd}</code>…`,
   nothingToInterrupt: '⚠️ Nothing to interrupt — no live session.',
   sessionAsksFirst: (cmd: string) => `⚠️ The session came up with a question — answer it with the buttons above, then repeat <code>/${cmd}</code>.`,
+  forkNoConversation: '⚠️ Nothing to fork yet — this topic has no conversation.',
+  forkNeedsTopic: '⚠️ A fork needs its own topic — run it in a forum group, not a DM.',
+  forkCreating: (name: string) => `🌱 <b>Forking</b> into «${name}»…`,
+  forkTopicFailed: (err: string) => `⚠️ Couldn't create the topic: <code>${err}</code>\n\nThe bot needs the «Manage topics» right.`,
+  forkedFrom: (threadId: number, id: string) =>
+    `🌱 <b>Fork of the conversation</b>\n\nSame history up to this point, its own life from here. Parent topic: <code>${threadId}</code>, conversation <code>${id}</code>.`,
   sessionAsksFirstMessage: '⚠️ The session came up with a question — answer it with the buttons above, then send your message again.',
   notInTmuxControl: '⚠️ Session is not in tmux — can\'t control it.',
   compactSent: '🗜 <code>/compact</code> sent.',
