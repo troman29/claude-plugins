@@ -205,6 +205,17 @@ export const DEFAULT_CLAUDE_ARGV = (
 // Гасим порогом по возрасту (эквивалент кнопки «Don't ask me again», но только для наших сессий).
 export const RESUME_PROMPT_OFF = 'CLAUDE_CODE_RESUME_THRESHOLD_MINUTES=999999999'
 
+// Сессия (или её же bash-команда с жирным выводом) может раздуться на гигабайты и утащить
+// в OOM весь хост — вместе с чужими сессиями. TELEGRAM_MEMORY_MAX="6G" запирает сессию с её
+// потомками в свой cgroup: упирается в потолок и умирает только виновник. Выключено по
+// умолчанию — systemd-run есть только под systemd (на macOS его нет).
+export const memoryCapPrefix = (): string => {
+  const cap = process.env.TELEGRAM_MEMORY_MAX?.trim()
+  return cap
+    ? `systemd-run --user --scope --quiet -p MemoryMax=${shellQuote([cap])} -p MemorySwapMax=0 `
+    : ''
+}
+
 const CHANNEL_FLAGS = new Set(['--channels', '--dangerously-load-development-channels'])
 
 export function stripChannelFlags(argv: string[]): string[] {
@@ -449,7 +460,7 @@ export async function restartSession(
   // key shares the same directory) and the subagent/task/skill status hooks go silent
   // entirely (subagent-hook.ts no-ops with no bindingKeys).
   const envPrefix = bindingKeys.length ? `TELEGRAM_BINDING_KEYS=${shellQuote([bindingKeys.join(',')])} ` : ''
-  const cmd = `${RESUME_PROMPT_OFF} ` + envPrefix + relaunchCommand(cmdline)
+  const cmd = `${RESUME_PROMPT_OFF} ` + envPrefix + memoryCapPrefix() + relaunchCommand(cmdline)
   log(`restart: relaunch ${cmd}`)
   await typeLine(pane, cmd)
   // startup prompts are acked by the hub's screen loop (retries until the prompt is actually gone)

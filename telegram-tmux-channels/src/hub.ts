@@ -25,7 +25,7 @@ import { escapeForRich, mdToHtml, needsRich } from './md-html'
 import {
   parseOpsCommand, parseCompaction, parseContextPct, parseError, parseWorkflow, paneIsWorking, paneDigest, isHeadlessArgv, sendKeys, typeLine, typeSlashCommand, selectOption, restartSession, stopSession, alive,
   hasTmuxSession, ensureTmuxSession, killTmuxSession, buildLaunch, shellQuote, isIdleToUnload, tmuxSessionName,
-  RESUME_PROMPT_OFF,
+  RESUME_PROMPT_OFF, memoryCapPrefix,
   capturePane, capturePaneAnsi, type OpsCommand,
 } from './tmux-ops'
 import { ansiToHtml } from './ansi-html'
@@ -2154,7 +2154,7 @@ async function spawnSession(
         : t().tmuxExists(escHtml(name)),
     )
     const envPrefix = `${RESUME_PROMPT_OFF} TELEGRAM_BINDING_KEYS=${shellQuote([key])}`
-    await typeLine(`=${name}:`, `cd ${shellQuote([binding.dir])} && ${envPrefix} ${launch}`)
+    await typeLine(`=${name}:`, `cd ${shellQuote([binding.dir])} && ${envPrefix} ${memoryCapPrefix()}${launch}`)
     // mode 'new' covers two different things: an explicit /new over an EXISTING conversation
     // (genuinely "from scratch"), and the very first launch of a binding that never had one — calling
     // that "from scratch" reads as if something was discarded, when nothing existed yet.
