@@ -185,6 +185,7 @@ export const ru: Strings = {
   revivingForCommand: cmd => `▶️ <b>Поднимаю сессию</b> для <code>/${cmd}</code>…`,
   nothingToInterrupt: '⚠️ Прерывать нечего — живой сессии нет.',
   sessionAsksFirst: cmd => `⚠️ Сессия поднялась с вопросом — ответь кнопками выше и повтори <code>/${cmd}</code>.`,
+  sessionAsksFirstMessage: '⚠️ Сессия поднялась с вопросом — ответь кнопками выше и пришли сообщение ещё раз.',
   notInTmuxControl: '⚠️ Сессия не в tmux — не могу ей управлять.',
   compactSent: '🗜 <code>/compact</code> отправлен.',
   historyCleared: '🧹 <b>История очищена.</b>',

@@ -195,6 +195,7 @@ export const en = {
   revivingForCommand: (cmd: string) => `▶️ <b>Bringing the session up</b> for <code>/${cmd}</code>…`,
   nothingToInterrupt: '⚠️ Nothing to interrupt — no live session.',
   sessionAsksFirst: (cmd: string) => `⚠️ The session came up with a question — answer it with the buttons above, then repeat <code>/${cmd}</code>.`,
+  sessionAsksFirstMessage: '⚠️ The session came up with a question — answer it with the buttons above, then send your message again.',
   notInTmuxControl: '⚠️ Session is not in tmux — can\'t control it.',
   compactSent: '🗜 <code>/compact</code> sent.',
   historyCleared: '🧹 <b>History cleared.</b>',

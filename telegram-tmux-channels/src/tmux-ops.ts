@@ -199,6 +199,12 @@ export const DEFAULT_CLAUDE_ARGV = (
   .split(/\s+/)
   .filter(Boolean)
 
+// Возобновление старой и крупной сессии (>70 мин, >100k токенов) открывает модальный вопрос
+// «resume from summary?». В хабе нажать на него в момент подъёма некому, а сообщение, которым
+// сессию как раз разбудили, съедается этим промптом — юзеру приходится писать его заново.
+// Гасим порогом по возрасту (эквивалент кнопки «Don't ask me again», но только для наших сессий).
+export const RESUME_PROMPT_OFF = 'CLAUDE_CODE_RESUME_THRESHOLD_MINUTES=999999999'
+
 const CHANNEL_FLAGS = new Set(['--channels', '--dangerously-load-development-channels'])
 
 export function stripChannelFlags(argv: string[]): string[] {
@@ -443,7 +449,7 @@ export async function restartSession(
   // key shares the same directory) and the subagent/task/skill status hooks go silent
   // entirely (subagent-hook.ts no-ops with no bindingKeys).
   const envPrefix = bindingKeys.length ? `TELEGRAM_BINDING_KEYS=${shellQuote([bindingKeys.join(',')])} ` : ''
-  const cmd = envPrefix + relaunchCommand(cmdline)
+  const cmd = `${RESUME_PROMPT_OFF} ` + envPrefix + relaunchCommand(cmdline)
   log(`restart: relaunch ${cmd}`)
   await typeLine(pane, cmd)
   // startup prompts are acked by the hub's screen loop (retries until the prompt is actually gone)

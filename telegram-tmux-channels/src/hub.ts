@@ -25,6 +25,7 @@ import { escapeForRich, mdToHtml, needsRich } from './md-html'
 import {
   parseOpsCommand, parseCompaction, parseContextPct, parseError, parseWorkflow, paneIsWorking, paneDigest, isHeadlessArgv, sendKeys, typeLine, typeSlashCommand, selectOption, restartSession, stopSession, alive,
   hasTmuxSession, ensureTmuxSession, killTmuxSession, buildLaunch, shellQuote, isIdleToUnload, tmuxSessionName,
+  RESUME_PROMPT_OFF,
   capturePane, capturePaneAnsi, type OpsCommand,
 } from './tmux-ops'
 import { ansiToHtml } from './ansi-html'
@@ -2098,6 +2099,25 @@ async function startLiveScreen(chatId: string, threadId: number | undefined, pan
   await startLiveScreen(chatId, threadId, pane, 'text')
 }
 
+// Стаб подключился ≠ пейн готов принять ввод: свежий старт может встретить модальный промпт
+// (доверие к папке и т.п.). Всё, что отправишь в этот момент, съест промпт — текст пропадёт,
+// а Enter выберет вариант по умолчанию. Ждём, пока промпт уйдёт: его снимает авто-ack хаба
+// или сам юзер кнопкой (picker bridge уже прислал их в чат).
+async function waitPaneFree(pane: string | undefined, ms: number): Promise<boolean> {
+  if (!pane) {
+    return true
+  }
+  for (let waited = 0; ; waited += 1000) {
+    if (!parsePicker(await capturePane(pane).catch(() => ''))) {
+      return true
+    }
+    if (waited >= ms) {
+      return false
+    }
+    await new Promise(r => setTimeout(r, 1000))
+  }
+}
+
 // Kill the binding's live sessions before switching to another conversation (--resume forks otherwise).
 async function stopLiveSessions(key: string, binding: BindingEntry): Promise<boolean> {
   const live = connsForBinding(key, binding.dir)
@@ -2133,7 +2153,7 @@ async function spawnSession(
         ? t().tmuxCreated(escHtml(name), codePath(binding.dir))
         : t().tmuxExists(escHtml(name)),
     )
-    const envPrefix = `TELEGRAM_BINDING_KEYS=${shellQuote([key])}`
+    const envPrefix = `${RESUME_PROMPT_OFF} TELEGRAM_BINDING_KEYS=${shellQuote([key])}`
     await typeLine(`=${name}:`, `cd ${shellQuote([binding.dir])} && ${envPrefix} ${launch}`)
     // mode 'new' covers two different things: an explicit /new over an EXISTING conversation
     // (genuinely "from scratch"), and the very first launch of a binding that never had one — calling
@@ -2534,6 +2554,11 @@ async function handleInbound(inbound: Inbound): Promise<void> {
     conns = await waitForBinding(key, 30_000)
     if (conns.length === 0) {
       say(t().sessionNotConnectedInTime)
+      return
+    }
+    // Промпт на старте съел бы это сообщение — придерживаем его, пока пейн не освободится.
+    if (!(await waitPaneFree(router.get(conns[0]!)?.pane, 60_000))) {
+      say(t().sessionAsksFirstMessage)
       return
     }
   }
@@ -2988,21 +3013,10 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
         void say(L.revivingForCommand(cmd))
         await spawnSession(key, binding, 'resume', () => {})
         live = await waitForBinding(key, 30_000)
-        // Стаб подключился ≠ пейн готов принять команду: свежий --resume может встретить
-        // промпт (напр. «сессия большая, сжать при возобновлении?»). Наберём туда — текст
-        // съест промпт, а Enter выберет его вариант по умолчанию, и вместо /clear поедет
-        // компакция. Ждём, пока промпт уйдёт (его снимает авто-ack или пользователь кнопкой).
         const pane = live.length > 0 ? router.get(live[0])?.pane : undefined
-        if (pane) {
-          let prompt = parsePicker(await capturePane(pane).catch(() => ''))
-          for (let i = 0; i < 12 && prompt; i++) {
-            await new Promise(r => setTimeout(r, 1000))
-            prompt = parsePicker(await capturePane(pane).catch(() => ''))
-          }
-          if (prompt) {
-            void say(L.sessionAsksFirst(cmd)) // кнопки уже отправил picker bridge
-            return
-          }
+        if (!(await waitPaneFree(pane, 12_000))) {
+          void say(L.sessionAsksFirst(cmd)) // кнопки уже отправил picker bridge
+          return
         }
       }
       if (live.length === 0) {
