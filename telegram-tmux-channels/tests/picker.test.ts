@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'fs'
 import { join } from 'path'
-import { parsePicker, checkedIndexes, parseResumeList } from '../src/picker'
+import { parsePicker, checkedIndexes, parseResumeList, paneReady } from '../src/picker'
 
 const fx = (name: string) => readFileSync(join(import.meta.dir, 'fixtures', name), 'utf8')
 
@@ -49,6 +49,11 @@ describe('parsePicker', () => {
   })
   test('dialog with no options (Rewind) → not a picker, agent output above is not harvested', () => {
     expect(parsePicker(fx('dialog-without-options.txt'))).toBeUndefined()
+  })
+  test('paneReady: startup prompt is not ready, a drawn input prompt is', () => {
+    expect(paneReady(fx('startup-prompt.txt'))).toBe(false) // модалка на старте
+    expect(paneReady(fx('ask-single.txt'))).toBe(false) // ❯ есть, но это вариант в модалке
+    expect(paneReady('● Готово.\n\n❯ \n\n  ⏵⏵ bypass permissions on\n')).toBe(true)
   })
   test('hash is stable and distinguishes pickers', () => {
     expect(parsePicker(fx('ask-single.txt'))!.hash).toBe(parsePicker(fx('ask-single.txt'))!.hash)

@@ -59,6 +59,13 @@ function isChrome(t: string): boolean {
   return false
 }
 
+// Пейн реально готов принять ввод: отрисована строка-приглашение и не висит модалка.
+// «Промпт ушёл» — недостаточный признак: поле ввода появляется на ~секунду позже, и
+// сообщение, отправленное в эту щель, CLI теряет молча.
+export function paneReady(text: string): boolean {
+  return !text.includes(FOOTER) && /^\s*❯/m.test(text)
+}
+
 export function fnv1a(s: string): string {
   let h = 0x811c9dc5
   for (let i = 0; i < s.length; i++) {

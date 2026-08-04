@@ -34,7 +34,7 @@ import { discoverGlobalSkills, discoverProjectSkills, mangleCmd, resolveSkillCom
 import { claudePidsInDir, cmdlineOf } from './proc'
 import { readLimits, formatLimits } from './limits'
 import { rmQuiet } from './util'
-import { parsePicker, checkedIndexes, parseResumeList, fnv1a, FOOTER, type Picker, type ResumeRow } from './picker'
+import { parsePicker, checkedIndexes, parseResumeList, fnv1a, FOOTER, paneReady, type Picker, type ResumeRow } from './picker'
 import { buildKeyboard, parseCallback } from './picker-drive'
 import {
   loadTrustedGroups, isExcludedTopic, slugFromTopicName, modeLabel,
@@ -2099,22 +2099,24 @@ async function startLiveScreen(chatId: string, threadId: number | undefined, pan
   await startLiveScreen(chatId, threadId, pane, 'text')
 }
 
-// Стаб подключился ≠ пейн готов принять ввод: свежий старт может встретить модальный промпт
-// (доверие к папке и т.п.). Всё, что отправишь в этот момент, съест промпт — текст пропадёт,
-// а Enter выберет вариант по умолчанию. Ждём, пока промпт уйдёт: его снимает авто-ack хаба
-// или сам юзер кнопкой (picker bridge уже прислал их в чат).
-async function waitPaneFree(pane: string | undefined, ms: number): Promise<boolean> {
+// Стаб подключился ≠ пейн готов принять ввод: на старте висит модалка (доверие к папке,
+// dev-каналы), а после её ack поле ввода дорисовывается ещё ~секунду. Сообщение, посланное
+// в эту щель, съедает модалка или молча теряет неготовый CLI — так пропадало ровно первое
+// сообщение при пробуждении. Ждём отрисованного приглашения и даём CLI дозапуститься.
+const PANE_SETTLE_MS = 1500
+async function waitPaneReady(pane: string | undefined, ms: number): Promise<boolean> {
   if (!pane) {
     return true
   }
-  for (let waited = 0; ; waited += 1000) {
-    if (!parsePicker(await capturePane(pane).catch(() => ''))) {
+  for (let waited = 0; ; waited += 500) {
+    if (paneReady(await capturePane(pane).catch(() => ''))) {
+      await new Promise(r => setTimeout(r, PANE_SETTLE_MS))
       return true
     }
     if (waited >= ms) {
       return false
     }
-    await new Promise(r => setTimeout(r, 1000))
+    await new Promise(r => setTimeout(r, 500))
   }
 }
 
@@ -2557,7 +2559,7 @@ async function handleInbound(inbound: Inbound): Promise<void> {
       return
     }
     // Промпт на старте съел бы это сообщение — придерживаем его, пока пейн не освободится.
-    if (!(await waitPaneFree(router.get(conns[0]!)?.pane, 60_000))) {
+    if (!(await waitPaneReady(router.get(conns[0]!)?.pane, 60_000))) {
       say(t().sessionAsksFirstMessage)
       return
     }
@@ -3014,7 +3016,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
         await spawnSession(key, binding, 'resume', () => {})
         live = await waitForBinding(key, 30_000)
         const pane = live.length > 0 ? router.get(live[0])?.pane : undefined
-        if (!(await waitPaneFree(pane, 12_000))) {
+        if (!(await waitPaneReady(pane, 12_000))) {
           void say(L.sessionAsksFirst(cmd)) // кнопки уже отправил picker bridge
           return
         }
