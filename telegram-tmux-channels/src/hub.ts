@@ -34,7 +34,7 @@ import { discoverGlobalSkills, discoverProjectSkills, mangleCmd, resolveSkillCom
 import { claudePidsInDir, cmdlineOf } from './proc'
 import { readLimits, formatLimits } from './limits'
 import { rmQuiet } from './util'
-import { parsePicker, checkedIndexes, parseResumeList, fnv1a, type Picker, type ResumeRow } from './picker'
+import { parsePicker, checkedIndexes, parseResumeList, fnv1a, FOOTER, type Picker, type ResumeRow } from './picker'
 import { buildKeyboard, parseCallback } from './picker-drive'
 import {
   loadTrustedGroups, isExcludedTopic, slugFromTopicName, modeLabel,
@@ -3044,9 +3044,19 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
           // Escape a few times to drain a short queue, then Ctrl-U to clear the input line.
           for (let i = 0; i < 3; i++) {
             await sendKeys(s.pane, 'Escape')
-            await new Promise(r => setTimeout(r, 250))
+            await new Promise(r => setTimeout(r, 500))
           }
           await sendKeys(s.pane, 'C-u')
+          // Escape подряд открывает Rewind — наш же дренаж оставлял на экране диалог, который
+          // потом съедает ввод и подсовывает picker'у нумерованные списки из вывода агента.
+          // Закрываем то, что сами открыли (интервал не спасает: клавиши доезжают пачкой).
+          for (let i = 0; i < 2; i++) {
+            if (!(await capturePane(s.pane).catch(() => '')).includes(FOOTER)) {
+              break
+            }
+            await sendKeys(s.pane, 'Escape')
+            await new Promise(r => setTimeout(r, 400))
+          }
           void say(L.escSent)
         } else if (cmd === 'enter') {
           // Submit whatever is already in the pane's input line (e.g. a /compact that got

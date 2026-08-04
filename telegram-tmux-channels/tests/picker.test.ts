@@ -47,6 +47,9 @@ describe('parsePicker', () => {
     expect(p.title).toBe("What's the next step?")
     expect(p.title).not.toContain('back up')
   })
+  test('dialog with no options (Rewind) → not a picker, agent output above is not harvested', () => {
+    expect(parsePicker(fx('dialog-without-options.txt'))).toBeUndefined()
+  })
   test('hash is stable and distinguishes pickers', () => {
     expect(parsePicker(fx('ask-single.txt'))!.hash).toBe(parsePicker(fx('ask-single.txt'))!.hash)
     expect(parsePicker(fx('ask-single.txt'))!.hash).not.toBe(parsePicker(fx('ask-multi.txt'))!.hash)

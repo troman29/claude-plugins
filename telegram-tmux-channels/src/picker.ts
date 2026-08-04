@@ -4,7 +4,7 @@
 const OPTION_RE = /^\s*❯?\s*(\d+)\.\s+(.*)$/
 const CHECKBOX_RE = /^\[[ ✔xX]\]\s*/
 const CUSTOM_RE = /type something|other|custom|own/i
-const FOOTER = 'Esc to cancel'
+export const FOOTER = 'Esc to cancel' // общий признак «в пейне открыт модальный диалог»
 
 export type PickerOption = { index: number; label: string }
 export type Picker = {
@@ -113,7 +113,10 @@ export function parsePicker(text: string): Picker | undefined {
       continue
     }
     if (options.length === 0) {
-      continue
+      // Текст между футером и первой опцией = это не список выбора, а диалог без вариантов
+      // (напр. Rewind: «Nothing to rewind to yet.»). Идти выше нельзя: там вывод агента, и
+      // первый же его нумерованный список уедет в чат кнопками, которые ещё и жмут TUI.
+      return undefined
     }
     titleStarted = true
     titleParts.unshift(t)
