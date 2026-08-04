@@ -16,7 +16,7 @@ import type { Socket } from 'bun'
 import { STATE_DIR, ENV_FILE, INBOX_DIR, PID_FILE, SOCK_PATH } from './paths'
 import { messageKey, keyToTarget, targetFor, type Target } from './bindings'
 import {
-  loadBindings, saveBindings, keysForDir, resolveProjectDir, type BindingEntry,
+  loadBindings, saveBindings, keysForDir, resolveProjectDir, sessionIdTaken, claimSessionId, type BindingEntry,
 } from './registry'
 import { encode, makeLineDecoder, type StubToHub, type HubToStub, type SessionInfo } from './protocol'
 import { Router } from './router'
@@ -25,7 +25,7 @@ import { escapeForRich, mdToHtml, needsRich } from './md-html'
 import {
   parseOpsCommand, parseCompaction, parseContextPct, parseError, parseWorkflow, paneIsWorking, paneDigest, isHeadlessArgv, sendKeys, typeLine, typeSlashCommand, selectOption, restartSession, stopSession, alive,
   hasTmuxSession, ensureTmuxSession, killTmuxSession, buildLaunch, shellQuote, isIdleToUnload, tmuxSessionName,
-  RESUME_PROMPT_OFF, memoryCapPrefix,
+  RESUME_PROMPT_OFF, memoryCapPrefix, forkTopicTitle,
   capturePane, capturePaneAnsi, type OpsCommand,
 } from './tmux-ops'
 import { ansiToHtml } from './ansi-html'
@@ -1030,7 +1030,7 @@ function paneBelongsToKey(pane: string, key: string): boolean {
 const OPS_NAMES = new Set([
   'status', 'resume', 'screen', 'last', 'new', 'skills', 'stand_up', 'stand_down',
   'pin', 'unpin', 'reload', 'compact', 'clear', 'esc', 'enter', 'model', 'stop',
-  'restart', 'bind', 'unbind', 'delete', 'allow', 'lang',
+  'restart', 'bind', 'unbind', 'delete', 'allow', 'lang', 'fork',
 ])
 function opsCommands(): { command: string; description: string }[] {
   const L = t()
@@ -1044,6 +1044,7 @@ function opsCommands(): { command: string; description: string }[] {
     { command: 'stand_up', description: L.cmd_stand_up },
     { command: 'stand_down', description: L.cmd_stand_down },
     { command: 'pin', description: L.cmd_pin },
+    { command: 'fork', description: L.cmd_fork },
     { command: 'unpin', description: L.cmd_unpin },
     { command: 'reload', description: L.cmd_reload },
     { command: 'compact', description: L.cmd_compact },
@@ -1776,18 +1777,18 @@ function verifyClaimedKeys(session: SessionInfo): SessionInfo {
 // (captureNewSessionId). `/clear` and an in-TUI `/resume` switch the conversation with no spawn at
 // all, so the binding silently kept a stale id (or none) and the next restart resumed the wrong
 // conversation. Hook events carry the live id every turn — persist it whenever it drifts.
+// Хук говорит от имени САМОЙ сессии — это авторитетнее угадывания по свежести jsonl, которое
+// при параллельных стартах в одной папке (два /fork подряд) приписывает один id двум биндингам.
+// Поэтому здесь id не просто пишется, а ОТБИРАЕТСЯ у чужих ключей: свой они получат тем же путём.
 function syncSessionId(bindingKeys: string[], sessionId: string): void {
   const reg = loadBindings()
-  let changed = false
   for (const key of bindingKeys) {
     const b = reg[key]
     if (b && b.sessionId !== sessionId) {
       log(`sessionId synced for ${key}: ${b.sessionId ?? '<none>'} → ${sessionId}`)
-      b.sessionId = sessionId
-      changed = true
     }
   }
-  if (changed) {
+  if (claimSessionId(reg, bindingKeys, sessionId)) {
     saveBindings(reg)
   }
 }
@@ -2137,19 +2138,55 @@ async function stopLiveSessions(key: string, binding: BindingEntry): Promise<boo
   return true
 }
 
-// tmux+launch for a binding — shared by /resume,/new and auto-topic creation
+// Директива уходит ветке первым сообщением — тем же путём, что обычный инбаунд (готовность
+// пейна обязательна, иначе неготовый CLI молча теряет событие).
+async function deliverToFork(
+  key: string,
+  chatId: string,
+  threadId: number,
+  text: string,
+  senderId: string,
+  say: (html: string) => void,
+): Promise<void> {
+  const conns = await waitForBinding(key, 60_000)
+  if (conns.length === 0) {
+    say(t().sessionNotConnectedInTime)
+    return
+  }
+  if (!(await waitPaneReady(router.get(conns[0]!)?.pane, 60_000))) {
+    say(t().sessionAsksFirstMessage)
+    return
+  }
+  const meta: Record<string, string> = {
+    chat_id: chatId,
+    user: senderId,
+    user_id: senderId,
+    ts: new Date().toISOString(),
+    topic_id: String(threadId),
+  }
+  typing(chatId, threadId)
+  armPending(key, { dir: loadBindings()[key]?.dir ?? '', at: Date.now() })
+  for (const conn of conns) {
+    send(conn, { op: 'event', kind: 'message', content: text, meta })
+  }
+}
+
+// tmux+launch for a binding — shared by /resume,/new,/fork and auto-topic creation.
+// forkFrom = разговор-донор: ветка стартует с его историей, но своим id (--fork-session),
+// поэтому у самого биндинга sessionId ещё нет — его допишет captureNewSessionId.
 async function spawnSession(
   key: string,
   binding: BindingEntry,
-  mode: 'resume' | 'new',
+  mode: 'resume' | 'new' | 'fork',
   say: (html: string) => void,
+  forkFrom?: string,
 ): Promise<void> {
   const name = sessionName(key, binding.dir)
-  const fresh = mode === 'new' || !binding.sessionId
+  const fresh = mode !== 'resume' || !binding.sessionId
   const before = fresh ? jsonlMtimes(binding.dir) : new Map<string, number>()
   try {
     const created = await ensureTmuxSession(name, binding.dir)
-    const launch = buildLaunch(binding.cmdline, mode, binding.sessionId)
+    const launch = buildLaunch(binding.cmdline, mode, mode === 'fork' ? forkFrom : binding.sessionId)
     say(
       created
         ? t().tmuxCreated(escHtml(name), codePath(binding.dir))
@@ -2160,11 +2197,13 @@ async function spawnSession(
     // mode 'new' covers two different things: an explicit /new over an EXISTING conversation
     // (genuinely "from scratch"), and the very first launch of a binding that never had one — calling
     // that "from scratch" reads as if something was discarded, when nothing existed yet.
-    const startedLabel = mode === 'resume'
-      ? t().modeResume
-      : binding.sessionId
-        ? t().modeRestart
-        : t().modeNew
+    const startedLabel = mode === 'fork'
+      ? t().modeFork
+      : mode === 'resume'
+        ? t().modeResume
+        : binding.sessionId
+          ? t().modeRestart
+          : t().modeNew
     say(`${startedLabel}\n\n<code>${escHtml(launch)}</code>`)
     if (fresh) {
       void captureNewSessionId(binding.dir, before, 60_000).then(id => {
@@ -2172,10 +2211,12 @@ async function spawnSession(
           return
         }
         const reg = loadBindings()
-        if (reg[key]) {
+        if (reg[key] && !sessionIdTaken(reg, key, id)) {
           reg[key].sessionId = id
           saveBindings(reg)
           log(`learned sessionId for ${key}: ${id}`)
+        } else if (reg[key]) {
+          log(`sessionId ${id} belongs to another binding — leaving ${key} for the session to report`)
         }
       })
     }
@@ -2760,6 +2801,57 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
     return
   }
 
+  // /fork [директива] — ветка разговора в НОВОМ топике: та же история до этой точки, дальше
+  // живёт сама. Оригинал не трогаем: --fork-session даёт ветке свой id (см. spawnSession).
+  // Встроенный /fork у CLI уводит копию в фоновый агент, с которым из чата не поговорить —
+  // здесь у ветки есть свой топик со всеми /screen,/stop и прочим.
+  if (cmd === 'fork') {
+    if (!isAdmin(senderId)) {
+      return
+    }
+    if (!binding) {
+      void say(L.noBinding)
+      return
+    }
+    if (threadId == null) {
+      void say(L.forkNeedsForum)
+      return
+    }
+    if (!binding.sessionId) {
+      void say(L.forkNothingToFork)
+      return
+    }
+    const title = forkTopicTitle(topicTitle(chat_id, threadId) ?? `topic-${threadId}`)
+    let topic: { message_thread_id: number }
+    try {
+      topic = await bot.api.createForumTopic(chat_id, title)
+    } catch (e) {
+      void say(L.forkTopicFailed(escHtml(String(e))))
+      return
+    }
+    const newKey = messageKey({ chatType: 'supergroup', chatId: chat_id, threadId: topic.message_thread_id })
+    recordTopic(chat_id, topic.message_thread_id, title, new Date().toISOString())
+    const fresh = loadBindings()
+    // sessionId ветки ещё не существует — пишем биндинг без него, чтобы случайный /restart
+    // до подхвата id не увёл ветку в чужой (донорский) разговор.
+    fresh[newKey] = {
+      dir: binding.dir,
+      ...(binding.cmdline ? { cmdline: binding.cmdline } : {}),
+      ...(binding.allow ? { allow: binding.allow } : {}),
+    }
+    saveBindings(fresh)
+    void say(L.forkCreated(topic.message_thread_id, escHtml(title)))
+    const sayFork = (html: string) =>
+      bot.api
+        .sendMessage(chat_id, html, { message_thread_id: topic.message_thread_id, parse_mode: 'HTML' })
+        .catch(() => {})
+    await spawnSession(newKey, fresh[newKey]!, 'fork', html => void sayFork(html), binding.sessionId)
+    if (arg) {
+      void deliverToFork(newKey, chat_id, topic.message_thread_id, arg, senderId, sayFork)
+    }
+    return
+  }
+
   if (cmd === 'pin' || cmd === 'unpin') {
     if (!isAdmin(senderId)) {
       return
@@ -3116,7 +3208,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
           void say(L.restarting)
           expectedDisconnect.add(key)
           const restartKeys = s.bindingKeys?.length ? s.bindingKeys : [key]
-          void restartSession(s.pane, s.pid, s.cmdline, restartKeys, log)
+          void restartSession(s.pane, s.pid, s.cmdline, restartKeys, log, binding?.sessionId)
             .then(() => say(L.restartSent))
             .catch(e => say(L.restartFail(escHtml(String(e)))))
             .finally(() => setTimeout(() => expectedDisconnect.delete(key), 90_000))

@@ -33,6 +33,39 @@ export function saveBindings(reg: Record<string, BindingEntry>): void {
   renameSync(BINDINGS_FILE + '.tmp', BINDINGS_FILE)
 }
 
+// Свежий разговор угадывается по новому jsonl в папке — при параллельных стартах в ОДНОЙ
+// папке (два /fork подряд) оба видят один файл и забирают чужой id. Чужой не берём: пусть
+// биндинг постоит без id, его пришлёт сама сессия (sessionId sync из хука).
+export function sessionIdTaken(
+  reg: Record<string, BindingEntry>, key: string, sessionId: string,
+): boolean {
+  return Object.entries(reg).some(([k, v]) => k !== key && v.sessionId === sessionId)
+}
+
+// Присвоить id ключам, которые ЗАЯВИЛА сама сессия, и снять его с остальных: два биндинга
+// на один разговор — это перезапуск в чужую историю. Чистая — тестируется юнитом.
+export function claimSessionId(
+  reg: Record<string, BindingEntry>, bindingKeys: string[], sessionId: string,
+): boolean {
+  let changed = false
+  for (const key of bindingKeys) {
+    const b = reg[key]
+    if (b && b.sessionId !== sessionId) {
+      b.sessionId = sessionId
+      changed = true
+    }
+  }
+  if (!changed) {
+    return false
+  }
+  for (const [k, v] of Object.entries(reg)) {
+    if (!bindingKeys.includes(k) && v.sessionId === sessionId) {
+      delete v.sessionId
+    }
+  }
+  return true
+}
+
 export function keysForDir(reg: Record<string, BindingEntry>, dir: string): string[] {
   return Object.keys(reg).filter(k => reg[k].dir === dir)
 }

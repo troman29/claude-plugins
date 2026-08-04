@@ -4,12 +4,12 @@
 export type OpsCommand =
   | 'compact' | 'clear' | 'esc' | 'enter' | 'restart' | 'resume' | 'new' | 'status'
   | 'bind' | 'unbind' | 'allow' | 'model' | 'stop' | 'screen' | 'last' | 'delete' | 'skills' | 'reload'
-  | 'stand_up' | 'stand_down' | 'pin' | 'unpin' | 'lang'
+  | 'stand_up' | 'stand_down' | 'pin' | 'unpin' | 'lang' | 'fork'
 
 export function parseOpsCommand(
   text: string,
 ): { cmd: OpsCommand; bot?: string; arg?: string } | undefined {
-  const m = /^\/(compact|clear|esc|enter|restart|resume|new|status|bind|unbind|allow|model|stop|screen|last|delete|skills|reload|stand_up|stand_down|pin|unpin|lang)(?:@(\w+))?(?:\s+(\S.*?))?\s*$/.exec(
+  const m = /^\/(compact|clear|esc|enter|restart|resume|new|status|bind|unbind|allow|model|stop|screen|last|delete|skills|reload|stand_up|stand_down|pin|unpin|lang|fork)(?:@(\w+))?(?:\s+(\S.*?))?\s*$/.exec(
     text.trim(),
   )
   if (!m) {
@@ -134,7 +134,16 @@ export function shellQuote(args: string[]): string {
 
 // Bare --resume is an interactive picker with no one to click it on relaunch →
 // convert it to --continue; --resume <id> is deterministic and kept as-is.
-export function relaunchCommand(cmdline: string[]): string {
+export function relaunchCommand(cmdline: string[], ownSessionId?: string): string {
+  // Аргументы ФОРКНУТОЙ сессии («--resume <донор> --fork-session») перезапускать как есть
+  // нельзя: это снова форк донора, а наработки самой ветки потеряны. Ветка к этому моменту
+  // уже самостоятельный разговор — резюмим её собственный id (а без него хотя бы --continue).
+  if (cmdline.includes('--fork-session')) {
+    const stripped = stripResumeFlags(cmdline).filter(a => a !== '--fork-session')
+    const out = ensureChannelFlags(stripped)
+    out.push(...(ownSessionId ? ['--resume', ownSessionId] : ['--continue']))
+    return shellQuote(out)
+  }
   const args: string[] = []
   let resumable = false
   for (let i = 0; i < cmdline.length; i++) {
@@ -216,6 +225,14 @@ export const memoryCapPrefix = (): string => {
     : ''
 }
 
+// Имя топика-ветки: исходное + суффикс, с запасом под лимит Telegram (128 символов).
+// Осмысленное имя дороже точности — переименовать топик пользователь может сам.
+const FORK_SUFFIX = ' ⑂'
+export function forkTopicTitle(base: string): string {
+  const room = 128 - FORK_SUFFIX.length
+  return (base.length > room ? base.slice(0, room - 1) + '…' : base) + FORK_SUFFIX
+}
+
 const CHANNEL_FLAGS = new Set(['--channels', '--dangerously-load-development-channels'])
 
 export function stripChannelFlags(argv: string[]): string[] {
@@ -240,8 +257,17 @@ export function ensureChannelFlags(argv: string[]): string[] {
   return [...stripChannelFlags(argv), '--dangerously-load-development-channels', 'server:telegram']
 }
 
-export function buildLaunch(saved: string[] | undefined, mode: 'resume' | 'new', sessionId?: string): string {
+export function buildLaunch(
+  saved: string[] | undefined,
+  mode: 'resume' | 'new' | 'fork',
+  sessionId?: string,
+): string {
   const base = ensureChannelFlags(stripResumeFlags(saved?.length ? saved : DEFAULT_CLAUDE_ARGV))
+  // Форк: та же история, но своим id — иначе ветка и оригинал станут одной сессией и затрут
+  // друг друга. --fork-session как раз про это (без --resume он бессмыслен).
+  if (mode === 'fork') {
+    return shellQuote(sessionId ? [...base, '--resume', sessionId, '--fork-session'] : base)
+  }
   if (mode !== 'resume') {
     return shellQuote(base)
   }
@@ -450,6 +476,7 @@ export async function restartSession(
   cmdline: string[],
   bindingKeys: string[],
   log: (s: string) => void,
+  ownSessionId?: string,
 ): Promise<void> {
   await stopSession(pane, pid, log)
   await sleep(3000)
@@ -460,7 +487,7 @@ export async function restartSession(
   // key shares the same directory) and the subagent/task/skill status hooks go silent
   // entirely (subagent-hook.ts no-ops with no bindingKeys).
   const envPrefix = bindingKeys.length ? `TELEGRAM_BINDING_KEYS=${shellQuote([bindingKeys.join(',')])} ` : ''
-  const cmd = `${RESUME_PROMPT_OFF} ` + envPrefix + memoryCapPrefix() + relaunchCommand(cmdline)
+  const cmd = `${RESUME_PROMPT_OFF} ` + envPrefix + memoryCapPrefix() + relaunchCommand(cmdline, ownSessionId)
   log(`restart: relaunch ${cmd}`)
   await typeLine(pane, cmd)
   // startup prompts are acked by the hub's screen loop (retries until the prompt is actually gone)

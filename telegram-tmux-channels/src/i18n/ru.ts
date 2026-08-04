@@ -12,6 +12,7 @@ export const ru: Strings = {
   cmd_stand_up: 'Поднять стенд этой папки (хук из .tmux-channels.json)',
   cmd_stand_down: 'Погасить стенд этой папки',
   cmd_pin: 'Не выгружать эту сессию по простою',
+  cmd_fork: 'Ответвить разговор в новый топик',
   cmd_unpin: 'Разрешить выгрузку по простою',
   cmd_reload: 'Пересканировать скиллы плагинов → команды',
   cmd_compact: 'Отправить /compact в сессию',
@@ -43,6 +44,7 @@ export const ru: Strings = {
   modeResume: '🚀 <b>Возобновляю</b>',
   modeRestart: '🚀 <b>Запускаю заново</b>',
   modeNew: '🆕 <b>Запускаю сессию</b>',
+  modeFork: '⑂ <b>Форкаю разговор</b>',
   spawnFailed: (mode, err) => `⚠️ <b>${mode} не удалось</b>: ${err}`,
   sessionSpawnFail: err => `⚠️ <b>Не удалось поднять сессию</b>: ${err}`,
 
@@ -110,6 +112,11 @@ export const ru: Strings = {
 
   // ── bindings / access ──
   noBinding: '⚠️ Тут нет привязки — сначала <code>/bind</code>.',
+  forkNeedsForum: '⚠️ <code>/fork</code> работает в топике форума — ветке нужен свой топик.',
+  forkNothingToFork: '⚠️ Форкать пока нечего — сначала напиши что-нибудь здесь.',
+  forkTopicFailed: err => `⚠️ Не смог создать топик: <code>${err}</code>. Боту нужно право «Управление топиками».`,
+  forkCreated: (tid, title) =>
+    `⑂ <b>Форкнул</b>\n\nВетка живёт в своём топике «${title}» (id <code>${tid}</code>) с полным контекстом до этого места. Этот разговор не тронут.`,
   noBindingBindFirst: '⚠️ Тут нет привязки — сначала <code>/bind &lt;папка&gt;</code>.',
   clearStartsFresh: '🧹 Сессия выгружена — запускаю свежую вместо того, чтобы поднимать старую ради очистки.',
   noBindingPickFolder: '👋 Тут пока ничего не привязано. Выбери папку — или пришли <code>/bind &lt;путь&gt;</code>.',

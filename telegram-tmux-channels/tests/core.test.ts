@@ -3,14 +3,14 @@ import { mkdtempSync, mkdirSync } from 'fs'
 import { tmpdir, homedir } from 'os'
 import { join } from 'path'
 import { messageKey, keyToTarget, targetFor } from '../src/bindings'
-import { keysForDir, resolveProjectDir, type BindingEntry } from '../src/registry'
+import { keysForDir, resolveProjectDir, sessionIdTaken, claimSessionId, type BindingEntry } from '../src/registry'
 import { makeLineDecoder, encode } from '../src/protocol'
 import { Router } from '../src/router'
 import { chunk, planAttachments, CAPTION_LIMIT } from '../src/chunk'
 import { fmtUntil, formatLimits } from '../src/limits'
 import {
   parseOpsCommand, shellQuote, relaunchCommand,
-  stripResumeFlags, buildLaunch, DEFAULT_CLAUDE_ARGV,
+  stripResumeFlags, buildLaunch, DEFAULT_CLAUDE_ARGV, forkTopicTitle, relaunchCommand as relaunchCmd,
   parseCompaction,
   parseContextPct,
   parseError,
@@ -176,6 +176,10 @@ describe('tmux-ops', () => {
     })
     expect(parseOpsCommand('/allow 123 456')).toEqual({ cmd: 'allow', arg: '123 456' })
     expect(parseOpsCommand('/status')).toEqual({ cmd: 'status' })
+    expect(parseOpsCommand('/fork')).toEqual({ cmd: 'fork' })
+    expect(parseOpsCommand('/fork@bot доделать трейсы')).toEqual({
+      cmd: 'fork', bot: 'bot', arg: 'доделать трейсы',
+    })
     expect(parseOpsCommand('/model')).toEqual({ cmd: 'model' })
     expect(parseOpsCommand('/stop')).toEqual({ cmd: 'stop' })
     expect(parseOpsCommand('/screen')).toEqual({ cmd: 'screen' })
@@ -544,5 +548,86 @@ describe('md-html', () => {
   test('mdToHtml: bold inside link, bullet star not italic', () => {
     expect(mdToHtml('[**t**](u)')).toBe('<a href="u"><b>t</b></a>')
     expect(mdToHtml('* item')).toBe('• item')
+  })
+})
+
+describe('fork', () => {
+  test('buildLaunch fork: resume the donor conversation but branch off it', () => {
+    const cmd = buildLaunch(undefined, 'fork', 'donor-id')
+    expect(cmd).toContain('--resume donor-id')
+    expect(cmd).toContain('--fork-session')
+    // без донора форкать нечего — не притворяемся, что форкнули
+    expect(buildLaunch(undefined, 'fork')).not.toContain('--fork-session')
+  })
+  test('buildLaunch fork keeps channel flags and drops a stale --continue', () => {
+    const cmd = buildLaunch(['claude', '--continue', '--model', 'opus'], 'fork', 'donor-id')
+    expect(cmd).not.toContain('--continue')
+    expect(cmd).toContain('--model opus')
+    expect(cmd).toContain('--dangerously-load-development-channels server:telegram')
+  })
+  test('forkTopicTitle: suffix, and long titles stay within Telegram\'s 128', () => {
+    expect(forkTopicTitle('Доработки трейсов')).toBe('Доработки трейсов ⑂')
+    const long = forkTopicTitle('x'.repeat(200))
+    expect(long.length).toBeLessThanOrEqual(128)
+    expect(long.endsWith('⑂')).toBe(true)
+  })
+})
+
+describe('fork: restart of a branch', () => {
+  const forked = [
+    'claude', '--permission-mode', 'bypassPermissions',
+    '--dangerously-load-development-channels', 'server:telegram',
+    '--resume', 'donor-id', '--fork-session',
+  ]
+  test('restart resumes the BRANCH, never re-forks the donor', () => {
+    const cmd = relaunchCmd(forked, 'branch-id')
+    expect(cmd).not.toContain('--fork-session')
+    expect(cmd).not.toContain('donor-id')
+    expect(cmd).toContain('--resume branch-id')
+  })
+  test('branch id unknown → --continue, still no re-fork', () => {
+    const cmd = relaunchCmd(forked)
+    expect(cmd).not.toContain('--fork-session')
+    expect(cmd).not.toContain('donor-id')
+    expect(cmd).toContain('--continue')
+  })
+})
+
+describe('fork: session id attribution', () => {
+  const reg = {
+    'chat/1': { dir: '/p', sessionId: 'aaa' },
+    'chat/2': { dir: '/p' },
+  } as Record<string, BindingEntry>
+  test('another binding already owns the id → do not claim it', () => {
+    expect(sessionIdTaken(reg, 'chat/2', 'aaa')).toBe(true)
+  })
+  test('own id and unseen ids are claimable', () => {
+    expect(sessionIdTaken(reg, 'chat/1', 'aaa')).toBe(false)
+    expect(sessionIdTaken(reg, 'chat/2', 'bbb')).toBe(false)
+  })
+})
+
+describe('fork: claimSessionId (session speaks for itself)', () => {
+  test('claiming an id takes it away from a binding that guessed it', () => {
+    const reg = {
+      'chat/305': { dir: '/p', sessionId: 'sid' },
+      'chat/325': { dir: '/p' },
+    } as Record<string, BindingEntry>
+    expect(claimSessionId(reg, ['chat/325'], 'sid')).toBe(true)
+    expect(reg['chat/325'].sessionId).toBe('sid')
+    expect(reg['chat/305'].sessionId).toBeUndefined() // иначе рестарт 305 сядет в чужую историю
+  })
+  test('no-op when the binding already holds that id', () => {
+    const reg = { 'chat/1': { dir: '/p', sessionId: 'sid' } } as Record<string, BindingEntry>
+    expect(claimSessionId(reg, ['chat/1'], 'sid')).toBe(false)
+  })
+  test('several keys may share one session (same dir, two chats)', () => {
+    const reg = {
+      'chat/1': { dir: '/p' }, 'chat/2': { dir: '/p' }, 'chat/3': { dir: '/p', sessionId: 'sid' },
+    } as Record<string, BindingEntry>
+    claimSessionId(reg, ['chat/1', 'chat/2'], 'sid')
+    expect(reg['chat/1'].sessionId).toBe('sid')
+    expect(reg['chat/2'].sessionId).toBe('sid')
+    expect(reg['chat/3'].sessionId).toBeUndefined()
   })
 })

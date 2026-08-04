@@ -11,6 +11,7 @@ export const en = {
   cmd_stand_up: "Bring up this folder's stand (hook from .tmux-channels.json)",
   cmd_stand_down: "Tear down this folder's stand",
   cmd_pin: "Don't idle-unload this session",
+  cmd_fork: 'Branch this conversation into a new topic',
   cmd_unpin: 'Allow idle-unload again',
   cmd_reload: 'Rescan plugin skills → commands',
   cmd_compact: 'Send /compact to the session',
@@ -42,6 +43,7 @@ export const en = {
   modeResume: '🚀 <b>Resuming</b>',
   modeRestart: '🚀 <b>Restarting fresh</b>',
   modeNew: '🆕 <b>Starting a session</b>',
+  modeFork: '⑂ <b>Forking the conversation</b>',
   spawnFailed: (mode: string, err: string) => `⚠️ <b>${mode} failed</b>: ${err}`,
   sessionSpawnFail: (err: string) => `⚠️ <b>Couldn't bring the session up</b>: ${err}`,
 
@@ -118,6 +120,11 @@ export const en = {
 
   // ── bindings / access ──
   noBinding: '⚠️ Nothing is bound here — <code>/bind</code> first.',
+  forkNeedsForum: '⚠️ <code>/fork</code> works in a forum topic — the branch needs a topic of its own.',
+  forkNothingToFork: '⚠️ No conversation to fork yet — say something here first.',
+  forkTopicFailed: (err: string) => `⚠️ Couldn't create the topic: <code>${err}</code>. The bot needs the «Manage topics» right.`,
+  forkCreated: (tid: number, title: string) =>
+    `⑂ <b>Forked</b>\n\nThe branch lives in its own topic «${title}» (id <code>${tid}</code>) with the full context up to this point. This conversation is untouched.`,
   noBindingBindFirst: '⚠️ Nothing is bound here — <code>/bind &lt;folder&gt;</code> first.',
   clearStartsFresh: '🧹 The session is unloaded — starting a fresh one instead of resuming just to clear it.',
   noBindingPickFolder: '👋 Nothing is bound here yet. Pick a folder to work in — or send <code>/bind &lt;path&gt;</code>.',
