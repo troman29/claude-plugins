@@ -3,7 +3,7 @@
 // times; one bubble pings once and then only edits. Background shells are the exception —
 // they outlive the turn, so renderBg gives them their own message (see the note there).
 // Pure — no I/O, no hub state. Tested in tests/status-render.test.ts.
-import { escHtml } from './ansi-html'
+import { escHtml } from './ansi'
 import { t } from './i18n'
 
 export type SubagentStatus = { name: string; done: boolean }

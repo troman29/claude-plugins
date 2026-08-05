@@ -1,4 +1,4 @@
-// ANSI (tmux capture-pane -e) → HTML for the /screen PNG render via headless chrome.
+// ANSI (tmux capture-pane -e) → стилизованные сегменты, из них рисуется /screen (ansi-png.ts).
 // Only SGR codes (color/bold/inverse); other escape sequences are stripped.
 
 const BASE16 = [
@@ -22,28 +22,28 @@ function color256(n: number): string {
 export const escHtml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 
 type Sgr = { fg?: string; bg?: string; bold?: boolean; reverse?: boolean }
+// сегмент = кусок текста одного стиля; reverse уже разрешён в fg/bg
+export type Seg = { text: string; fg?: string; bg?: string; bold?: boolean }
 
-// one span per run of identical style
-function span(text: string, st: Sgr): string {
-  if (!text) {
-    return ''
-  }
+export const FG_DEFAULT = '#d4d4d4'
+export const BG_DEFAULT = '#1e1e1e'
+
+function seg(text: string, st: Sgr): Seg {
   let { fg, bg } = st
   if (st.reverse) {
-    ;[fg, bg] = [bg ?? '#d4d4d4', fg ?? '#1e1e1e']
+    ;[fg, bg] = [bg ?? BG_DEFAULT, fg ?? FG_DEFAULT] // без своих цветов инверсия = тёмным по светлому
   }
-  const css = [fg && `color:${fg}`, bg && `background:${bg}`, st.bold && 'font-weight:bold'].filter(Boolean).join(';')
-  return css ? `<span style="${css}">${escHtml(text)}</span>` : escHtml(text)
+  return { text, ...(fg ? { fg } : {}), ...(bg ? { bg } : {}), ...(st.bold ? { bold: true as const } : {}) }
 }
 
-export function ansiToHtml(ansi: string): string {
+function parseSgr(ansi: string): Seg[] {
   // non-SGR escape sequences (OSC, cursor, etc.) — out
   const clean = ansi.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[a-lnzA-Z]|\x1b[^[\]]/g, '')
   let st: Sgr = {}
-  let out = ''
+  const out: Seg[] = []
   let last = 0
   for (const m of clean.matchAll(/\x1b\[([0-9;]*)m/g)) {
-    out += span(clean.slice(last, m.index), st)
+    out.push(seg(clean.slice(last, m.index), st))
     last = m.index! + m[0].length
     const codes = (m[1] || '0').split(';').map(Number)
     for (let i = 0; i < codes.length; i++) {
@@ -81,11 +81,24 @@ export function ansiToHtml(ansi: string): string {
       }
     }
   }
-  out += span(clean.slice(last), st)
-  return (
-    '<!doctype html><meta charset="utf-8"><body style="margin:0;background:#1e1e1e">' +
-    '<pre style="margin:0;padding:12px;font:14px/19px \'DejaVu Sans Mono\',monospace;color:#d4d4d4">' +
-    out +
-    '</pre>'
-  )
+  out.push(seg(clean.slice(last), st))
+  return out.filter(s => s.text)
 }
+
+// то же самое, но разложенное по строкам экрана — как рисует ansi-png
+export function ansiSegments(ansi: string): Seg[][] {
+  const lines: Seg[][] = [[]]
+  for (const s of parseSgr(ansi)) {
+    const parts = s.text.split('\n')
+    parts.forEach((text, i) => {
+      if (i) {
+        lines.push([])
+      }
+      if (text) {
+        lines[lines.length - 1]!.push({ ...s, text })
+      }
+    })
+  }
+  return lines
+}
+

@@ -29,7 +29,7 @@ import {
   RESUME_PROMPT_OFF, memoryCapPrefix,
   capturePane, capturePaneAnsi, type OpsCommand,
 } from './tmux-ops'
-import { ansiToHtml } from './ansi-html'
+import { ansiToPng } from './ansi-png'
 import { emptyStatus, hasLiveWork, renderBg, renderStatus, statusIsEmpty, syncBg, type BgTask, type StatusState } from './status-render'
 import { discoverGlobalSkills, discoverProjectSkills, mangleCmd, resolveSkillCommand, tgDescription, type Skill } from './skills'
 import { claudePidsInDir, cmdlineOf } from './proc'
@@ -1932,54 +1932,25 @@ function forkRiskPids(binding: BindingEntry): number[] {
   })
 }
 
-// /screen → PNG: capture-pane -e → our own ANSI→HTML → headless chrome --screenshot.
-const CHROME_BIN = Bun.which('google-chrome') ?? Bun.which('chromium') ?? Bun.which('chromium-browser')
-
+// /screen → PNG: capture-pane -e → отрисовка сегментов на холсте (ansi-png).
 async function renderScreenPng(pane: string): Promise<Uint8Array | undefined> {
-  if (!CHROME_BIN) {
-    return undefined
-  }
   const ansi = (await capturePaneAnsi(pane)).replace(/\s+$/, '')
-  if (!ansi) {
-    return undefined
-  }
-  const lines = ansi.split('\n')
-  const cols = Math.max(...lines.map(l => l.replace(/\x1b\[[^m]*m/g, '').length), 80)
-  const width = Math.min(24 + Math.ceil(cols * 8.5), 2400)
-  const height = 24 + 19 * (lines.length + 1)
-  const base = join(STATE_DIR, `screen-${pane.replace(/\W/g, '')}-${++screenSeq}`)
-  writeFileSync(`${base}.html`, ansiToHtml(ansi))
-  try {
-    const proc = Bun.spawn(
-      [CHROME_BIN, '--headless=new', '--disable-gpu', '--hide-scrollbars',
-        `--window-size=${width},${height}`, `--screenshot=${base}.png`, `file://${base}.html`],
-      { stdout: 'ignore', stderr: 'ignore' },
-    )
-    const done = await Promise.race([proc.exited, new Promise<undefined>(r => setTimeout(() => r(undefined), 15_000))])
-    if (done === undefined) {
-      proc.kill()
-      return undefined
-    }
-    return readFileSync(`${base}.png`)
-  } finally {
-    rmQuiet(`${base}.html`)
-    rmQuiet(`${base}.png`)
-  }
+  return ansi ? ansiToPng(ansi) : undefined
 }
 
 // /screen live view: one self-updating photo message + a Close button that fully deletes it —
-// /screen is a debug aid that otherwise litters the history. renderScreenPng spawns headless
-// chrome (~1-2s), so refresh only when the pane text actually changed (cheap capturePane
+// /screen is a debug aid that otherwise litters the history. A render + photo re-upload is
+// ~300 KB of traffic, so refresh only when the pane text actually changed (cheap capturePane
 // compare); auto-stop refreshing after SCREEN_LIVE_MS so an abandoned view doesn't render forever
 // (the message + Close button stay so it can still be dismissed).
-// kind: 'png' = /screen (headless-chrome photo), 'text' = /last (paneDigest as a <pre> message).
+// kind: 'png' = /screen (rendered photo), 'text' = /last (paneDigest as a <pre> message).
 // Both share the same live-view lifecycle (one self-updating message, Close button, auto-stop).
 type LiveScreen = { chatId: string; threadId?: number; msgId: number; pane: string; lastText: string; kind: 'png' | 'text'; timer?: ReturnType<typeof setInterval> }
 const liveScreens = new Map<string, LiveScreen>() // token -> view
 let screenSeq = 0
 const SCREEN_REFRESH_MS = 5000 // calm cadence — a busier tick just spams "edited" on the message
 const SCREEN_LIVE_MS = 3 * 60_000
-const LAST_LIVE_MS = 30 * 60_000 // /last — это editMessageText, chrome не крутится: живёт долго
+const LAST_LIVE_MS = 30 * 60_000 // /last — это editMessageText, ни рендера, ни заливки: живёт долго
 
 const closeKb = (token: string) => new InlineKeyboard().text(t().btnClose, `scrclose:${token}`)
 // live timestamp in the caption — so it's visibly "alive" even when the pane content is static
@@ -1999,8 +1970,7 @@ function closeLiveScreen(token: string): LiveScreen | undefined {
 }
 
 // One live view per pane: a new /screen or /last closes+deletes any prior view of the same pane.
-// Several views on one pane meant N refresh loops racing (and same-pane chrome renders colliding
-// on the temp filename) — glitchy. Called before starting a new view.
+// Several views on one pane meant N refresh loops racing — glitchy. Called before starting a new view.
 async function closeLiveScreensForPane(pane: string): Promise<void> {
   for (const [token, v] of [...liveScreens]) {
     if (v.pane !== pane) continue
@@ -2035,7 +2005,7 @@ async function refreshLiveScreen(token: string): Promise<void> {
   }
   const text = await capturePane(v.pane).catch(() => '')
   if (v.kind === 'text') {
-    // editMessageText is cheap (no chrome) — always re-edit; the live timestamp makes an
+    // editMessageText is cheap (no render, no upload) — always re-edit; the live timestamp makes an
     // unchanged pane still a distinct edit (Telegram rejects an identical body).
     v.lastText = text
     await bot.api
@@ -2044,7 +2014,7 @@ async function refreshLiveScreen(token: string): Promise<void> {
     return
   }
   if (text === v.lastText) {
-    // pane unchanged — just tick the caption (cheap, no chrome), so it's visibly live
+    // pane unchanged — just tick the caption (cheap, no re-upload), so it's visibly live
     await bot.api
       .editMessageCaption(v.chatId, v.msgId, { caption: screenCap(v.pane), parse_mode: 'HTML', reply_markup: closeKb(token) })
       .catch(() => {})
@@ -2098,7 +2068,7 @@ async function startLiveScreen(chatId: string, threadId: number | undefined, pan
       return
     }
   }
-  // no chrome / photo failed → fall back to the live text view (same as /last)
+  // render / photo failed → fall back to the live text view (same as /last)
   await startLiveScreen(chatId, threadId, pane, 'text')
 }
 
@@ -3178,7 +3148,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
           }
         } else if (cmd === 'last') {
           // Same live view as /screen but text-only (paneDigest) — readable recent output +
-          // live bottom, no headless-chrome render. Self-updating with a Close button.
+          // live bottom, no image render at all. Self-updating with a Close button.
           await startLiveScreen(chat_id, threadId, s.pane, 'text')
           if (msgId != null) {
             void bot.api.deleteMessage(chat_id, msgId).catch(() => {})

@@ -124,8 +124,8 @@ Sent in a bound topic or DM. These are handled by the bot and never reach the ag
 | `/lang en\|ru` | Interface language, for the whole bot |
 | `/reload` | Re-scan plugin skills and refresh the bot's command list |
 
-Live views stop refreshing eventually — `/screen` after 3 minutes (each refresh is a headless-chrome
-render), `/last` after 30; the message stays.
+Live views stop refreshing eventually — `/screen` after 3 minutes (each refresh re-uploads a photo),
+`/last` after 30; the message stays.
 
 ## Who can use it
 

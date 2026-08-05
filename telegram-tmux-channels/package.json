@@ -12,6 +12,7 @@
     "@grammyjs/auto-retry": "^2.0.2",
     "@grammyjs/transformer-throttler": "^1.2.1",
     "@modelcontextprotocol/sdk": "^1.0.0",
+    "@napi-rs/canvas": "^1.0.3",
     "grammy": "^1.21.0",
     "zod": "^3.23.0"
   },
