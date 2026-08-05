@@ -2254,6 +2254,16 @@ async function teardownBinding(key: string, binding: BindingEntry): Promise<stri
     await killTmuxSession(name)
     note += L.tmuxClosed(escHtml(name))
   }
+  // Папку сносим, только если её больше никто не держит: /fork наследует dir родителя, и
+  // `git worktree remove --force` по своему топику стёр бы живому соседу незакоммиченные правки.
+  const alsoBound = keysForDir(reg, binding.dir)
+  if (alsoBound.length) {
+    const tids = alsoBound.map(k => {
+      const t2 = keyToTarget(k).thread_id
+      return t2 != null ? `<code>#${t2}</code>` : `<code>${escHtml(k)}</code>`
+    })
+    return note + L.dirStillInUse(tids.join(', '))
+  }
   const groupCfg = loadTrustedGroups()[keyToTarget(key).chat_id]
   // same source as on creation: the project's `.tmux-channels.json` wins over the group hook
   const hook = groupCfg?.dir ? worktreeHook(groupCfg.dir, groupCfg.hook) : groupCfg?.hook

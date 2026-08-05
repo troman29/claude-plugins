@@ -145,6 +145,7 @@ export const en = {
   cleanupHookFail: (err: string) => `\n⚠️ Cleanup hook failed: ${err}`,
   worktreeRemoved: '\n🗑 Worktree removed (<code>git worktree remove</code>).',
   worktreeRemoveFail: (err: string) => `\n⚠️ Worktree removal failed: ${err}`,
+  dirStillInUse: (tids: string) => `\n📌 Folder kept — still bound in ${tids}.`,
   topicDeletedCleanup: (note: string) => `🗑 <b>Topic deleted</b> — cleaned up after it.\n\n${note}`,
   deleteOnlyInTopic: '❌ <code>/delete</code> — only in a forum topic (can\'t delete General/a plain group this way).',
   noBindingInTopic: (tid: number, title: string) =>

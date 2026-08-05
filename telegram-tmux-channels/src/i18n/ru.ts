@@ -137,6 +137,7 @@ export const ru: Strings = {
   cleanupHookFail: err => `\n⚠️ Хук очистки не удался: ${err}`,
   worktreeRemoved: '\n🗑 Worktree удалён (<code>git worktree remove</code>).',
   worktreeRemoveFail: err => `\n⚠️ Удаление worktree не удалось: ${err}`,
+  dirStillInUse: tids => `\n📌 Папку оставил — её ещё держит ${tids}.`,
   topicDeletedCleanup: note => `🗑 <b>Топик удалён</b> — прибрал за ним.\n\n${note}`,
   deleteOnlyInTopic: '❌ <code>/delete</code> — только в топике форума (General/обычную группу так не удалить).',
   noBindingInTopic: (tid, title) => `🔓 <i>Бинда в топике <code>#${tid}</code>${title ? ` «${title}»` : ''} не было.</i>`,

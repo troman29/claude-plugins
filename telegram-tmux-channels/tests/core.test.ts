@@ -65,6 +65,15 @@ describe('registry', () => {
     expect(keysForDir(reg, '/a').sort()).toEqual(['-1/2', 'dm:9'])
     expect(keysForDir(reg, '/c')).toEqual([])
   })
+  // инвариант teardownBinding: свой ключ удалён ДО проверки, иначе биндинг находит сам себя
+  // и папка не чистится никогда; форк же делит dir с родителем — его сносить нельзя.
+  test('teardown guard: fork shares the parent dir, so it stays', () => {
+    const reg: Record<string, BindingEntry> = { '-1/2': { dir: '/wt' }, '-1/7': { dir: '/wt' } }
+    delete reg['-1/7'] // сносим форк
+    expect(keysForDir(reg, '/wt')).toEqual(['-1/2']) // папку держит родитель → не трогаем
+    delete reg['-1/2'] // теперь и родителя
+    expect(keysForDir(reg, '/wt')).toEqual([]) // никто не держит → чистим
+  })
   test('resolveProjectDir: name → projectsRoot, absolute path, non-dir', () => {
     const root = mkdtempSync(join(tmpdir(), 'tg-'))
     mkdirSync(join(root, 'myapp'))
