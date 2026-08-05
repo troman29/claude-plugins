@@ -3,3 +3,6 @@ node_modules/
 # Local test-harness secrets (bot token, chat/topic ids) — never in the public repo
 *.env
 !*.env.example
+
+# рабочие ворктри Claude Code — локальные, не для публичного репо
+.claude/worktrees/
