@@ -1979,6 +1979,7 @@ const liveScreens = new Map<string, LiveScreen>() // token -> view
 let screenSeq = 0
 const SCREEN_REFRESH_MS = 5000 // calm cadence — a busier tick just spams "edited" on the message
 const SCREEN_LIVE_MS = 3 * 60_000
+const LAST_LIVE_MS = 30 * 60_000 // /last — это editMessageText, chrome не крутится: живёт долго
 
 const closeKb = (token: string) => new InlineKeyboard().text(t().btnClose, `scrclose:${token}`)
 // live timestamp in the caption — so it's visibly "alive" even when the pane content is static
@@ -2079,7 +2080,7 @@ async function startLiveScreen(chatId: string, threadId: number | undefined, pan
     if (sent) {
       const timer = setInterval(() => void refreshLiveScreen(token), SCREEN_REFRESH_MS)
       liveScreens.set(token, { chatId, ...(threadId != null ? { threadId } : {}), msgId: sent.message_id, pane, lastText: raw, kind: 'text', timer })
-      setTimeout(() => stopRefreshing(token), SCREEN_LIVE_MS)
+      setTimeout(() => stopRefreshing(token), LAST_LIVE_MS)
     }
     return
   }
