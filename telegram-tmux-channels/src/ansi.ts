@@ -1,4 +1,4 @@
-// ANSI (tmux capture-pane -e) → стилизованные сегменты, из них рисуется /screen (ansi-png.ts).
+// ANSI (tmux capture-pane -e) → стилизованные сегменты, из них рисуется /screen (ansi-image.ts).
 // Only SGR codes (color/bold/inverse); other escape sequences are stripped.
 
 const BASE16 = [
@@ -85,7 +85,7 @@ function parseSgr(ansi: string): Seg[] {
   return out.filter(s => s.text)
 }
 
-// то же самое, но разложенное по строкам экрана — как рисует ansi-png
+// то же самое, но разложенное по строкам экрана — как рисует ansi-image
 export function ansiSegments(ansi: string): Seg[][] {
   const lines: Seg[][] = [[]]
   for (const s of parseSgr(ansi)) {

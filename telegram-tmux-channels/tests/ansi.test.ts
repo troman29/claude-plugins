@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { ansiSegments } from '../src/ansi'
-import { ansiToPng } from '../src/ansi-png'
+import { ansiToImage } from '../src/ansi-image'
 
 describe('ansi', () => {
   test('ansiSegments: цвет, инверсия, разбивка по строкам', () => {
@@ -12,9 +12,9 @@ describe('ansi', () => {
   test('ansiSegments: не-SGR последовательности выкинуты', () => {
     expect(ansiSegments('\x1b[2Ja\x1b]0;title\x07b')).toEqual([[{ text: 'ab' }]])
   })
-  test('ansiToPng: рисует PNG без браузера', () => {
-    const png = ansiToPng('\x1b[32mзелёный\x1b[0m ⎿ ✅ │└─\nвторая строка')
-    expect([...png.subarray(0, 8)]).toEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
-    expect(png.length).toBeGreaterThan(500)
+  test('ansiToImage: рисует JPEG без браузера', async () => {
+    const jpg = await ansiToImage('\x1b[32mзелёный\x1b[0m ⎿ ✅ │└─\nвторая строка')
+    expect([...jpg.subarray(0, 3)]).toEqual([0xff, 0xd8, 0xff]) // SOI + маркер
+    expect(jpg.length).toBeGreaterThan(500)
   })
 })

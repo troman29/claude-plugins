@@ -1,5 +1,7 @@
-// /screen: ANSI пейна → PNG прямой отрисовкой (skia), без headless-браузера — кадр ~30 мс вместо ~1.5 с.
+// /screen: ANSI пейна → картинка прямой отрисовкой (skia), без headless-браузера.
 // Стек шрифтов, а не один: моношрифт не покрывает рамки/галки/эмодзи, которые рисует Claude Code.
+// JPEG, а не PNG: кодек втрое быстрее на кадр (~70 мс против ~200), а Telegram всё равно
+// пережимает фото в JPEG сам — лишняя точность выбрасывается на его стороне.
 
 import { createCanvas } from '@napi-rs/canvas'
 import { ansiSegments, FG_DEFAULT, BG_DEFAULT, type Seg } from './ansi'
@@ -12,7 +14,7 @@ const FAMILIES =
   '"DejaVu Sans Mono", "Noto Sans Mono CJK SC", "Noto Color Emoji", "Noto Sans Symbols2", "Symbola", monospace'
 const font = (bold?: boolean) => `${bold ? 'bold ' : ''}${SIZE}px ${FAMILIES}`
 
-export function ansiToPng(ansi: string): Buffer {
+export function ansiToImage(ansi: string): Promise<Buffer> {
   const lines = ansiSegments(ansi.replace(/\s+$/, ''))
   // мерка на одноразовом холсте: ширина зависит от реальных advance'ов (эмодзи шире клетки)
   const probe = createCanvas(1, 1).getContext('2d')
@@ -44,5 +46,5 @@ export function ansiToPng(ansi: string): Buffer {
       x += w
     })
   })
-  return canvas.toBuffer('image/png')
+  return canvas.encode('jpeg', 92) // async: кодек уходит в пул потоков, поллинг бота не встаёт
 }

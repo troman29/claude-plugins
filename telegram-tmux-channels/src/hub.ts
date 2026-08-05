@@ -29,7 +29,7 @@ import {
   RESUME_PROMPT_OFF, memoryCapPrefix,
   capturePane, capturePaneAnsi, type OpsCommand,
 } from './tmux-ops'
-import { ansiToPng } from './ansi-png'
+import { ansiToImage } from './ansi-image'
 import { emptyStatus, hasLiveWork, renderBg, renderStatus, statusIsEmpty, syncBg, type BgTask, type StatusState } from './status-render'
 import { discoverGlobalSkills, discoverProjectSkills, mangleCmd, resolveSkillCommand, tgDescription, type Skill } from './skills'
 import { claudePidsInDir, cmdlineOf } from './proc'
@@ -1932,10 +1932,10 @@ function forkRiskPids(binding: BindingEntry): number[] {
   })
 }
 
-// /screen → PNG: capture-pane -e → отрисовка сегментов на холсте (ansi-png).
-async function renderScreenPng(pane: string): Promise<Uint8Array | undefined> {
+// /screen → фото: capture-pane -e → отрисовка сегментов на холсте (ansi-image).
+async function renderScreenImage(pane: string): Promise<Uint8Array | undefined> {
   const ansi = (await capturePaneAnsi(pane)).replace(/\s+$/, '')
-  return ansi ? ansiToPng(ansi) : undefined
+  return ansi ? await ansiToImage(ansi) : undefined
 }
 
 // /screen live view: one self-updating photo message + a Close button that fully deletes it —
@@ -2021,7 +2021,7 @@ async function refreshLiveScreen(token: string): Promise<void> {
     return
   }
   v.lastText = text
-  const png = await renderScreenPng(v.pane).catch(() => undefined)
+  const png = await renderScreenImage(v.pane).catch(() => undefined)
   if (!png) {
     return
   }
@@ -2030,7 +2030,7 @@ async function refreshLiveScreen(token: string): Promise<void> {
     .editMessageMedia(
       v.chatId,
       v.msgId,
-      { type: 'photo', media: new InputFile(png, 'screen.png'), caption: screenCap(v.pane), parse_mode: 'HTML' },
+      { type: 'photo', media: new InputFile(png, 'screen.jpg'), caption: screenCap(v.pane), parse_mode: 'HTML' },
       { reply_markup: closeKb(token) },
     )
     .catch(() => {})
@@ -2055,10 +2055,10 @@ async function startLiveScreen(chatId: string, threadId: number | undefined, pan
     return
   }
 
-  const png = await renderScreenPng(pane).catch(() => undefined)
+  const png = await renderScreenImage(pane).catch(() => undefined)
   if (png) {
     const sent = await bot.api
-      .sendPhoto(chatId, new InputFile(png, 'screen.png'), { ...threadOpt, caption: screenCap(pane), parse_mode: 'HTML', reply_markup: kb })
+      .sendPhoto(chatId, new InputFile(png, 'screen.jpg'), { ...threadOpt, caption: screenCap(pane), parse_mode: 'HTML', reply_markup: kb })
       .catch(() => undefined)
     if (sent) {
       const lastText = await capturePane(pane).catch(() => '')
