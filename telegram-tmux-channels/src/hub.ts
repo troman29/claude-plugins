@@ -3380,6 +3380,11 @@ bot.on('message:forum_topic_created', ctx => {
     return
   }
   const key = messageKey({ chatType: ctx.chat.type, chatId: chat_id, threadId })
+  // Топик мог создать сам хаб уже с папкой (/fork) — спрашивать нечего. Гонки нет: /fork
+  // пишет binding без единого await после createForumTopic, апдейт обрабатывается позже.
+  if (loadBindings()[key]) {
+    return
+  }
   const say = (html: string) =>
     void bot.api
       .sendMessage(chat_id, html, { message_thread_id: threadId, parse_mode: 'HTML' })
