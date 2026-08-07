@@ -2297,6 +2297,10 @@ const pendingModeChoice = new Map<string, PendingModeChoice>()
 // up). Held here and delivered by flushQueued once the session connects, so the first task
 // isn't lost. Keyed by binding key.
 const queuedMessages = new Map<string, Inbound[]>()
+// Режим уже выбран, биндинга ещё нет (worktree создаётся десятки секунд). Без этого флага
+// сообщение из этого окна уходит в late-binding, поднимает ВТОРОЙ пикер и запирает очередь:
+// flushQueued вернёт всё обратно в неё, потому что pendingModeChoice снова взведён.
+const settingUp = new Set<string>()
 function enqueueForTopic(key: string, inbound: Inbound): void {
   const q = queuedMessages.get(key) ?? []
   q.push(inbound)
@@ -2359,6 +2363,7 @@ async function runAutoTopic(
 ): Promise<void> {
   const branchNote = mode === 'folder' ? '' : t().branchNote(escHtml(branch))
   say(t().preparingSession(escHtml(mode), branchNote))
+  settingUp.add(key)
   try {
     const resolvedDir = await resolveModeDir(mode, dir, cfg.hook, branch)
     const reg = loadBindings()
@@ -2372,6 +2377,7 @@ async function runAutoTopic(
   } catch (e) {
     say(t().sessionSpawnFail(escHtml(String(e))))
   } finally {
+    settingUp.delete(key) // снять ДО flush — иначе очередь уйдёт сама в себя
     // always drain the hold queue — deliver on success, or tell the user + clear it on failure
     await flushQueued(key)
   }
@@ -2515,7 +2521,7 @@ async function handleInbound(inbound: Inbound): Promise<void> {
 
   // mode picker sent, waiting for a button tap — hold this message and deliver it once the
   // session is up (flushQueued), so the first task typed before tapping isn't lost.
-  if (pendingModeChoice.has(key)) {
+  if (pendingModeChoice.has(key) || settingUp.has(key)) {
     enqueueForTopic(key, inbound)
     return
   }
