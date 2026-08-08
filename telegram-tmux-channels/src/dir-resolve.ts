@@ -70,13 +70,18 @@ export async function runHookDelete(hook: HookConfig, branch: string, groupDir: 
   }
 }
 
-// Remove a plain `git worktree add` worktree (the no-hook case). Only acts if `dir` really
-// is a linked worktree (its git-dir lives under <main>/.git/worktrees/…) — never the main
-// checkout or a plain folder binding. Runs from the main repo so git won't refuse "current
-// worktree". --force drops uncommitted changes (the topic/worktree is being deleted anyway).
-export async function removePlainWorktree(dir: string): Promise<boolean> {
+// True only for a linked worktree (its git-dir lives under <main>/.git/worktrees/…) — false for the
+// main checkout and for a plain folder binding. Gates every destructive teardown: a folder binding
+// points at the main repo, and running a worktree-removal hook there would tear down the real work.
+export async function isLinkedWorktree(dir: string): Promise<boolean> {
   const gd = await run(['git', '-C', dir, 'rev-parse', '--path-format=absolute', '--git-dir'])
-  if (!gd.ok || !gd.out.includes('/worktrees/')) {
+  return gd.ok && gd.out.includes('/worktrees/')
+}
+
+// Remove a plain `git worktree add` worktree (the no-hook case). Runs from the main repo so git won't
+// refuse "current worktree". --force drops uncommitted changes (the topic/worktree is being deleted anyway).
+export async function removePlainWorktree(dir: string): Promise<boolean> {
+  if (!(await isLinkedWorktree(dir))) {
     return false // not a linked worktree — nothing to remove
   }
   const common = await run(['git', '-C', dir, 'rev-parse', '--path-format=absolute', '--git-common-dir'])
@@ -90,23 +95,28 @@ export async function removePlainWorktree(dir: string): Promise<boolean> {
 
 // Take the worktree hook from the project's `.tmux-channels.json` if present: config next to the
 // repo wins over the group's (one group — many folders, each with its own commands).
+// THE ONLY place that decides which hook applies — never read `group.hook` directly, or create and
+// delete disagree: a group without `hook` but a project WITH one created via the project hook and
+// then tore down with a plain `git worktree remove`, silently skipping the hook's cleanup.
 export function worktreeHook(baseDir: string, groupHook: HookConfig | undefined): HookConfig | undefined {
   return loadProjectConfig(baseDir)?.worktree ?? groupHook
 }
 
+// Returns the resolved dir AND the hook that produced it, so the caller records teardown state from
+// the same decision instead of re-deriving it.
 export async function resolveModeDir(
   mode: TrustedGroupMode,
   baseDir: string,
   hook: HookConfig | undefined,
   branch: string,
-): Promise<string> {
+): Promise<{ dir: string; hook: HookConfig | undefined }> {
   if (mode === 'folder') {
-    return baseDir
+    return { dir: baseDir, hook: undefined }
   }
   // worktree mode: a configured hook replaces plain `git worktree add` (e.g. a wrapper
   // that also provisions a per-branch DB) — no hook, no customization needed, just git.
   const h = worktreeHook(baseDir, hook)
-  return h ? resolveHookDir(h, branch, baseDir) : resolveWorktreeDir(baseDir, branch)
+  return { dir: h ? await resolveHookDir(h, branch, baseDir) : await resolveWorktreeDir(baseDir, branch), hook: h }
 }
 
 // Stand command from the binding folder's `.tmux-channels.json`. Returns the run result or undefined

@@ -42,7 +42,7 @@ import {
   type TrustedGroupConfig, type TrustedGroupMode,
 } from './trusted-groups'
 import { t, getLang, setLang, type Lang } from './i18n'
-import { resolveModeDir, gitBranch, runHookDelete, removePlainWorktree, runStandCommand, worktreeHook } from './dir-resolve'
+import { resolveModeDir, gitBranch, runHookDelete, removePlainWorktree, runStandCommand, worktreeHook, isLinkedWorktree } from './dir-resolve'
 import { PROJECT_CONFIG_FILE, parseStandLinks, standLogTail } from './project-config'
 import { jsonlMtimes, captureNewSessionId, recentSessions, lastAssistantText, newestJsonlSize } from './session-id'
 import { HubStateRepository, type PersistedPicker } from './state-repo'
@@ -2238,10 +2238,18 @@ async function teardownBinding(key: string, binding: BindingEntry): Promise<stri
   const groupCfg = loadTrustedGroups()[keyToTarget(key).chat_id]
   // same source as on creation: the project's `.tmux-channels.json` wins over the group hook
   const hook = groupCfg?.dir ? worktreeHook(groupCfg.dir, groupCfg.hook) : groupCfg?.hook
-  if (binding.hookBranch && hook?.delete && groupCfg?.dir) {
+  // Bindings written before hookBranch was recorded correctly have none — fall back to the worktree's
+  // own branch so their teardown still runs the hook (which is what folds claude-mem memory, drops the
+  // per-branch DB, frees the slot). Plain `git worktree remove` would silently skip all of it.
+  // Gated on isLinkedWorktree: a folder binding points at the MAIN repo, and running the removal hook
+  // there would tear down the real checkout.
+  const hookBranch =
+    binding.hookBranch ??
+    (hook?.delete && (await isLinkedWorktree(binding.dir)) ? await gitBranch(binding.dir) : undefined)
+  if (hookBranch && hook?.delete && groupCfg?.dir) {
     try {
-      await runHookDelete(hook, binding.hookBranch, groupCfg.dir)
-      note += L.cleanupHookOk(escHtml(binding.hookBranch))
+      await runHookDelete(hook, hookBranch, groupCfg.dir)
+      note += L.cleanupHookOk(escHtml(hookBranch))
     } catch (e) {
       note += L.cleanupHookFail(escHtml(String(e)))
     }
@@ -2365,12 +2373,14 @@ async function runAutoTopic(
   say(t().preparingSession(escHtml(mode), branchNote))
   settingUp.add(key)
   try {
-    const resolvedDir = await resolveModeDir(mode, dir, cfg.hook, branch)
+    // hook comes back resolved (project config wins over the group's) — flag the binding from THAT,
+    // not from `cfg.hook`, so teardown runs the same hook creation used.
+    const { dir: resolvedDir, hook: usedHook } = await resolveModeDir(mode, dir, cfg.hook, branch)
     const reg = loadBindings()
     reg[key] = {
       dir: resolvedDir,
       ...(cfg.cmdline ? { cmdline: cfg.cmdline } : {}),
-      ...(mode === 'worktree' && cfg.hook ? { hookBranch: branch } : {}),
+      ...(usedHook ? { hookBranch: branch } : {}),
     }
     saveBindings(reg)
     await spawnSession(key, reg[key], 'new', say)
