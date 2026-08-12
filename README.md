@@ -1,9 +1,9 @@
-# windbit/claude-plugins
+# troman29/claude-plugins
 
 A Claude Code plugin marketplace.
 
 ```
-/plugin marketplace add windbit/claude-plugins
+/plugin marketplace add troman29/claude-plugins
 /plugin install <name>@claude-plugins
 ```
 
