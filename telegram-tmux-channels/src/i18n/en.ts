@@ -37,6 +37,9 @@ export const en = {
   raisingSession: '▶️ <b>Bringing the session up…</b>',
   sessionNotConnectedInTime: '⚠️ Session did not connect in time — message not delivered, try again.',
   sessionNotUpInTime: '⚠️ Session did not come up in time — queued messages not delivered, resend.',
+  deliveryLost:
+    '⚠️ <b>The session never received that message</b> — sent it twice, nothing reached the conversation. ' +
+    'Try <code>/restart</code>, then send it again.',
   notInTmuxSlash: '⚠️ Session is not in tmux — can\'t type the slash command.',
   tmuxCreated: (name: string, path: string) => `🪟 tmux <code>${name}</code> created in ${path}.`,
   tmuxExists: (name: string) => `🪟 tmux <code>${name}</code> already exists — typing the launch into its active pane.`,
@@ -152,6 +155,8 @@ export const en = {
     `🔓 <i>No binding in topic <code>#${tid}</code>${title ? ` «${title}»` : ''}.</i>`,
   topicDeletedShort: (tid: number) => `🗑 Topic <code>#${tid}</code> deleted.`,
   topicDeleteFail: (err: string) => `⚠️ Topic not deleted (does the bot have can_delete_messages?): ${err}`,
+  deleteKeptOnCleanupFail:
+    '🛑 <b>Topic kept, binding restored</b> — the cleanup above failed, and deleting the topic now would leave the worktree and its stand behind with nobody watching. Fix the cause and run <code>/delete</code> again.',
 
   // ── stand up/down ──
   standUpProgress: '⏳ Bringing the stand up…',
@@ -205,7 +210,6 @@ export const en = {
   forkTopicFailed: (err: string) => `⚠️ Couldn't create the topic: <code>${err}</code>\n\nThe bot needs the «Manage topics» right.`,
   forkedFrom: (threadId: number, id: string) =>
     `🌱 <b>Fork of the conversation</b>\n\nSame history up to this point, its own life from here. Parent topic: <code>${threadId}</code>, conversation <code>${id}</code>.`,
-  sessionAsksFirstMessage: '⚠️ The session came up with a question — answer it with the buttons above, then send your message again.',
   notInTmuxControl: '⚠️ Session is not in tmux — can\'t control it.',
   compactSent: '🗜 <code>/compact</code> sent.',
   historyCleared: '🧹 <b>History cleared.</b>',

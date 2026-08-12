@@ -44,7 +44,7 @@ import {
 import { t, getLang, setLang, type Lang } from './i18n'
 import { resolveModeDir, gitBranch, runHookDelete, removePlainWorktree, runStandCommand, worktreeHook, isLinkedWorktree } from './dir-resolve'
 import { PROJECT_CONFIG_FILE, parseStandLinks, standLogTail } from './project-config'
-import { jsonlMtimes, captureNewSessionId, recentSessions, lastAssistantText, newestJsonlSize } from './session-id'
+import { jsonlMtimes, captureNewSessionId, recentSessions, lastAssistantText, newestJsonlSize, transcriptSawIncoming } from './session-id'
 import { HubStateRepository, type PersistedPicker } from './state-repo'
 import { recordChat, recordTopic, topicTitle, chatLabel } from './known-chats'
 
@@ -2205,8 +2205,9 @@ async function reviveBoundSessions(): Promise<void> {
 
 // Tear down a binding fully: remove it, kill its tmux, clean its worktree (hook if this
 // binding was hook-created, else a plain `git worktree remove` when the dir is a linked
-// worktree). Shared by /unbind and topic-deletion cleanup. Returns an HTML summary.
-async function teardownBinding(key: string, binding: BindingEntry): Promise<string> {
+// worktree). Shared by /unbind and topic-deletion cleanup. Returns an HTML summary plus
+// failed=true, если папку/стенд убрать не вышло — /delete по нему решает, сносить ли топик.
+async function teardownBinding(key: string, binding: BindingEntry): Promise<{ note: string; failed: boolean }> {
   const reg = loadBindings()
   delete reg[key]
   saveBindings(reg)
@@ -2233,25 +2234,29 @@ async function teardownBinding(key: string, binding: BindingEntry): Promise<stri
       const t2 = keyToTarget(k).thread_id
       return t2 != null ? `<code>#${t2}</code>` : `<code>${escHtml(k)}</code>`
     })
-    return note + L.dirStillInUse(tids.join(', '))
+    return { note: note + L.dirStillInUse(tids.join(', ')), failed: false }
   }
   const groupCfg = loadTrustedGroups()[keyToTarget(key).chat_id]
   // same source as on creation: the project's `.tmux-channels.json` wins over the group hook
   const hook = groupCfg?.dir ? worktreeHook(groupCfg.dir, groupCfg.hook) : groupCfg?.hook
-  // Bindings written before hookBranch was recorded correctly have none — fall back to the worktree's
-  // own branch so their teardown still runs the hook (which is what folds claude-mem memory, drops the
+  // Bindings written before hookBranch was recorded correctly have none — fall back to the FOLDER
+  // name so their teardown still runs the hook (which is what folds claude-mem memory, drops the
   // per-branch DB, frees the slot). Plain `git worktree remove` would silently skip all of it.
+  // Именно папка, а не текущая ветка: при флоу «одна итерация — один PR» воркри к моменту сноса
+  // стоит на последней ветке цепочки, хук такой ветки не знает и отказывается сносить.
   // Gated on isLinkedWorktree: a folder binding points at the MAIN repo, and running the removal hook
   // there would tear down the real checkout.
   const hookBranch =
     binding.hookBranch ??
-    (hook?.delete && (await isLinkedWorktree(binding.dir)) ? await gitBranch(binding.dir) : undefined)
+    (hook?.delete && (await isLinkedWorktree(binding.dir)) ? basename(binding.dir) : undefined)
+  let failed = false
   if (hookBranch && hook?.delete && groupCfg?.dir) {
     try {
       await runHookDelete(hook, hookBranch, groupCfg.dir)
       note += L.cleanupHookOk(escHtml(hookBranch))
     } catch (e) {
       note += L.cleanupHookFail(escHtml(String(e)))
+      failed = true
     }
   } else {
     try {
@@ -2260,9 +2265,10 @@ async function teardownBinding(key: string, binding: BindingEntry): Promise<stri
       }
     } catch (e) {
       note += L.worktreeRemoveFail(escHtml(String(e)))
+      failed = true
     }
   }
-  return note
+  return { note, failed }
 }
 
 // Telegram has NO "forum topic deleted" update (unlike created/closed/reopened) — bots
@@ -2285,7 +2291,7 @@ async function onTopicGone(key: string): Promise<void> {
       return
     }
     log(`topic gone: ${key} — auto-unbind + cleanup`)
-    const note = await teardownBinding(key, binding)
+    const { note } = await teardownBinding(key, binding)
     void bot.api
       .sendMessage(keyToTarget(key).chat_id, t().topicDeletedCleanup(note), { parse_mode: 'HTML' })
       .catch(() => {})
@@ -2582,11 +2588,7 @@ async function handleInbound(inbound: Inbound): Promise<void> {
       say(t().sessionNotConnectedInTime)
       return
     }
-    // Промпт на старте съел бы это сообщение — придерживаем его, пока пейн не освободится.
-    if (!(await waitPaneReady(router.get(conns[0]!)?.pane, 60_000))) {
-      say(t().sessionAsksFirstMessage)
-      return
-    }
+    // Ждать пейн и перерезолвить conn не нужно — это делает deliverMessage перед самой отправкой.
   }
 
   log(`deliver: ${key} → ${binding.dir} (${conns.length} session${conns.length > 1 ? 's' : ''})`)
@@ -2639,9 +2641,63 @@ async function handleInbound(inbound: Inbound): Promise<void> {
   }
   snapshotScreens(key, text, conns)
   armPending(key, { dir: binding.dir, at: Date.now() }) // armed until the agent replies or turnend forwards
+  await deliverMessage(key, binding.dir, { op: 'event', kind: 'message', content: text, meta }, text)
+}
+
+// ── единственная точка отправки сообщения в сессию ──────────────────────────
+// Через неё идут все ветки: живая сессия, пробуждение, очередь нового топика. Раньше каждая
+// решала «адресат готов?» по-своему, и две из трёх решали неверно — сообщения пропадали молча.
+// Здесь три вещи в одном месте:
+//  1. пейн ждём ДО отправки: стаб подписывается раньше, чем Claude Code готов принимать (на
+//     старте он ещё рисует баннер и крутит SessionStart-хуки), и событие в этот момент тонет;
+//  2. conn резолвим прямо перед записью: на старте стаб подключается дважды, первый сокет
+//     умирает сразу после подписки, а `send()` в закрытый сокет молчит;
+//  3. сторож проверяет, что сообщение реально легло в транскрипт — тихая потеря больше не тихая.
+const DELIVERY_ACK_TRIES = 12 // ~12 с на появление записи в транскрипте
+async function deliverMessage(key: string, dir: string, payload: HubToStub, needle: string): Promise<number> {
+  await waitPaneReady(router.get(connsForBinding(key, dir)[0]!)?.pane, 60_000)
+  const at = Date.now()
+  const conns = connsForBinding(key, dir)
   for (const conn of conns) {
-    send(conn, { op: 'event', kind: 'message', content: text, meta })
+    send(conn, payload)
   }
+  if (conns.length) {
+    void watchDelivery(key, dir, payload, needle.trim().slice(0, 60), at)
+  }
+  return conns.length
+}
+
+async function landed(dir: string, at: number, needle: string): Promise<boolean> {
+  for (let i = 0; i < DELIVERY_ACK_TRIES; i++) {
+    await new Promise(r => setTimeout(r, 1000))
+    if (transcriptSawIncoming(dir, at, needle)) {
+      return true
+    }
+  }
+  return false
+}
+
+// Не долетело — переотправляем ОДИН раз (потеря обычно на старте сессии и не повторяется),
+// и если снова тишина — говорим вслух: молчаливая потеря заметна только по «мне не ответили».
+async function watchDelivery(key: string, dir: string, payload: HubToStub, needle: string, at: number): Promise<void> {
+  if (await landed(dir, at, needle)) {
+    return
+  }
+  log(`delivery: ${key} — сообщения нет в транскрипте, переотправляю`)
+  const retryAt = Date.now()
+  for (const conn of connsForBinding(key, dir)) {
+    send(conn, payload)
+  }
+  if (await landed(dir, retryAt, needle)) {
+    return
+  }
+  log(`delivery: ${key} — сообщение так и не дошло до сессии`)
+  const target = keyToTarget(key)
+  void bot.api
+    .sendMessage(target.chat_id, t().deliveryLost, {
+      ...(target.thread_id != null ? { message_thread_id: target.thread_id } : {}), parse_mode: 'HTML',
+    })
+    .catch(() => {})
 }
 
 // ── debug log: pane snapshots + raw Telegram traffic, one correlated JSONL ──
@@ -2821,9 +2877,18 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
         void say(L.deleteOnlyInTopic)
         return
       }
-      const note = binding
+      const { note, failed } = binding
         ? await teardownBinding(key, binding)
-        : L.noBindingInTopic(threadId, topicTitle(chat_id, threadId) ? escHtml(topicTitle(chat_id, threadId)!) : '')
+        : { note: L.noBindingInTopic(threadId, topicTitle(chat_id, threadId) ? escHtml(topicTitle(chat_id, threadId)!) : ''), failed: false }
+      // Уборка провалилась — топик НЕ удаляем и биндинг возвращаем: иначе воркри со стендом
+      // остаются жить, а жалоба уезжает в General, где её никто не читает (так и набились слоты).
+      if (failed && binding) {
+        const back = loadBindings()
+        back[key] = binding
+        saveBindings(back)
+        void say(`${note}\n${L.deleteKeptOnCleanupFail}`)
+        return
+      }
       let delNote: string
       try {
         await bot.api.deleteForumTopic(chat_id, threadId)
@@ -2863,7 +2928,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
         void say(L.nothingBoundHere)
         return
       }
-      void say(await teardownBinding(key, binding))
+      void say((await teardownBinding(key, binding)).note)
       return
     }
     // allow

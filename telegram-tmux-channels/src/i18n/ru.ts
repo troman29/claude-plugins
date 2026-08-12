@@ -38,6 +38,9 @@ export const ru: Strings = {
   raisingSession: '▶️ <b>Поднимаю сессию…</b>',
   sessionNotConnectedInTime: '⚠️ Сессия не подключилась вовремя — сообщение не доставлено, попробуй ещё раз.',
   sessionNotUpInTime: '⚠️ Сессия не поднялась вовремя — отложенные сообщения не доставлены, повтори.',
+  deliveryLost:
+    '⚠️ <b>Сессия не получила это сообщение</b> — отправил дважды, до разговора не дошло ни разу. ' +
+    'Попробуй <code>/restart</code> и пришли ещё раз.',
   notInTmuxSlash: '⚠️ Сессия не в tmux — слэш-команду не набрать.',
   tmuxCreated: (name, path) => `🪟 tmux <code>${name}</code> создан в ${path}.`,
   tmuxExists: name => `🪟 tmux <code>${name}</code> уже есть — набираю запуск в его активный pane.`,
@@ -143,6 +146,8 @@ export const ru: Strings = {
   noBindingInTopic: (tid, title) => `🔓 <i>Бинда в топике <code>#${tid}</code>${title ? ` «${title}»` : ''} не было.</i>`,
   topicDeletedShort: tid => `🗑 Топик <code>#${tid}</code> удалён.`,
   topicDeleteFail: err => `⚠️ Топик не удалён (у бота есть право can_delete_messages?): ${err}`,
+  deleteKeptOnCleanupFail:
+    '🛑 <b>Топик оставил, биндинг вернул</b> — уборка выше не удалась, а удали я топик сейчас, воркри со стендом остались бы жить, и следить за ними стало бы некому. Разберись с причиной и повтори <code>/delete</code>.',
 
   // ── stand ──
   standUpProgress: '⏳ Поднимаю стенд…',
@@ -195,7 +200,6 @@ export const ru: Strings = {
   forkTopicFailed: err => `⚠️ Не смог создать топик: <code>${err}</code>\n\nБоту нужно право «Управление темами».`,
   forkedFrom: (threadId, id) =>
     `🌱 <b>Ветка разговора</b>\n\nТа же история до этой точки, дальше — своя жизнь. Родительский топик: <code>${threadId}</code>, разговор <code>${id}</code>.`,
-  sessionAsksFirstMessage: '⚠️ Сессия поднялась с вопросом — ответь кнопками выше и пришли сообщение ещё раз.',
   notInTmuxControl: '⚠️ Сессия не в tmux — не могу ей управлять.',
   compactSent: '🗜 <code>/compact</code> отправлен.',
   historyCleared: '🧹 <b>История очищена.</b>',
