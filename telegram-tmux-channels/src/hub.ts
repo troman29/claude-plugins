@@ -46,6 +46,7 @@ import { resolveModeDir, gitBranch, runHookDelete, removePlainWorktree, runStand
 import { PROJECT_CONFIG_FILE, parseStandLinks, standLogTail } from './project-config'
 import { jsonlMtimes, captureNewSessionId, recentSessions, lastAssistantText, newestJsonlSize, transcriptSawIncoming } from './session-id'
 import { watchDelivery as watchDeliveryCore, type DeliveryDeps } from './delivery'
+import { topic as inTopic } from './chat'
 import { HubStateRepository, type PersistedPicker } from './state-repo'
 import { recordChat, recordTopic, topicTitle, chatLabel } from './known-chats'
 
@@ -84,7 +85,7 @@ function typing(chatId: string, threadId?: number): void {
   }
   lastTyping.set(k, now)
   void bot.api
-    .sendChatAction(chatId, 'typing', threadId != null ? { message_thread_id: threadId } : {})
+    .sendChatAction(chatId, 'typing', inTopic(threadId))
     .catch(err => {
       // frequent send → a good place to notice the topic was deleted out from under us
       if (threadId != null && isThreadGoneError(err)) {
@@ -396,7 +397,7 @@ async function doReply(conn: Socket<undefined>, params: Record<string, unknown>)
   const chunks = chunk(text, rich ? MAX_RICH_LIMIT : MAX_CHUNK_LIMIT, 'length')
   const plan = planAttachments(files, chunks)
   // thread on EVERY send — otherwise chunks/files without reply_to land in General
-  const threadOpt = target.thread_id != null ? { message_thread_id: target.thread_id } : {}
+  const threadOpt = inTopic(target.thread_id)
   const sentIds: number[] = []
   try {
     for (let i = 0; i < (plan.caption ? 0 : chunks.length); i++) {
@@ -623,7 +624,7 @@ async function notifyUnexpectedDeath(s: SessionInfo): Promise<void> {
     .sendMessage(
       target.chat_id,
       t().sessionDied,
-      { ...(target.thread_id != null ? { message_thread_id: target.thread_id } : {}), parse_mode: 'HTML' },
+      { ...inTopic(target.thread_id), parse_mode: 'HTML' },
     )
     .catch(() => {})
 }
@@ -846,7 +847,7 @@ async function detectPicker(pane: string, session: SessionInfo, text: string): P
   })
   const sent = await bot.api
     .sendMessage(target.chatId, `❓ <b>${escHtml(picker.title || 'Question')}</b>`, {
-      ...(target.threadId != null ? { message_thread_id: target.threadId } : {}),
+      ...inTopic(target.threadId),
       parse_mode: 'HTML',
       reply_markup: kbFrom(picker, picker.hash, checkedIndexes(text)),
     })
@@ -901,7 +902,7 @@ class PerTurnEditablePost {
     }
     this.turnEnded.set(key, false)
     const { chat_id, thread_id } = keyToTarget(key)
-    const threadOpt = thread_id != null ? { message_thread_id: thread_id } : {}
+    const threadOpt = inTopic(thread_id)
     const existing = this.msg.get(key)
     if (existing === undefined) {
       this.msg.set(key, -1) // reserve synchronously before the await
@@ -1240,7 +1241,7 @@ async function forwardFallbackReply(key: string): Promise<void> {
   }
   recordFallback(key, text)
   const target = keyToTarget(key)
-  const threadOpt = target.thread_id != null ? { message_thread_id: target.thread_id } : {}
+  const threadOpt = inTopic(target.thread_id)
   const body = text.length > FALLBACK_MAX_CHARS ? `${text.slice(0, FALLBACK_MAX_CHARS)}\n\n${t().truncatedNote}` : text
   // marker so it's visibly distinct from a normal reply — a fallback means the agent
   // forgot to call reply, which is itself a signal worth seeing.
@@ -1327,7 +1328,7 @@ async function handleCompaction(pane: string, session: SessionInfo, text: string
       compactMessages.set(pane, { chatId: target.chatId, ...(target.threadId != null ? { threadId: target.threadId } : {}), msgId: -1, lastPct: prog.pct, misses: 0 })
       const sent = await bot.api
         .sendMessage(target.chatId, renderCompactBar(prog.pct, prog.elapsed), {
-          ...(target.threadId != null ? { message_thread_id: target.threadId } : {}),
+          ...inTopic(target.threadId),
           parse_mode: 'HTML',
         })
         .catch(() => undefined)
@@ -1382,7 +1383,7 @@ async function handleWorkflow(pane: string, session: SessionInfo, text: string):
       workflowMessages.set(pane, { ...base, msgId: -1, last: key, name: wf.name, total: wf.total, misses: 0 }) // reserve
       const sent = await bot.api
         .sendMessage(target.chatId, renderWorkflow(wf.name, wf.done, wf.total), {
-          ...(target.threadId != null ? { message_thread_id: target.threadId } : {}),
+          ...inTopic(target.threadId),
           parse_mode: 'HTML',
         })
         .catch(() => undefined)
@@ -1462,7 +1463,7 @@ async function handleErrors(pane: string, session: SessionInfo, text: string): P
     : ''
   await bot.api
     .sendMessage(target.chatId, t().sessionError(escHtml(err), authHint), {
-      ...(target.threadId != null ? { message_thread_id: target.threadId } : {}),
+      ...inTopic(target.threadId),
       parse_mode: 'HTML',
     })
     .catch(e => log(`error-notify failed: pane=${pane} ${e}`))
@@ -1744,7 +1745,7 @@ async function handlePickCallback(
     await ctx.answerCallbackQuery({ text: t().toastSendText }).catch(() => {})
     void bot.api
       .sendMessage(ap.chatId, t().sendAnswerMsg, {
-        ...(ap.threadId != null ? { message_thread_id: ap.threadId } : {}),
+        ...inTopic(ap.threadId),
         parse_mode: 'HTML',
       })
       .catch(() => {})
@@ -2046,7 +2047,7 @@ async function startLiveScreen(chatId: string, threadId: number | undefined, pan
   await closeAllLiveScreens() // ровно один живой экран на бота — новый гасит прежний
   const token = String(++screenSeq)
   const kb = closeKb(token)
-  const threadOpt = threadId != null ? { message_thread_id: threadId } : {}
+  const threadOpt = inTopic(threadId)
 
   if (kind === 'text') {
     const raw = await capturePane(pane).catch(() => '')
@@ -2202,7 +2203,7 @@ async function reviveBoundSessions(): Promise<void> {
     const t = keyToTarget(key)
     const say = (html: string) =>
       void bot.api
-        .sendMessage(t.chat_id, html, { ...(t.thread_id != null ? { message_thread_id: t.thread_id } : {}), parse_mode: 'HTML' })
+        .sendMessage(t.chat_id, html, { ...inTopic(t.thread_id), parse_mode: 'HTML' })
         .catch(() => {})
     await spawnSession(key, binding, binding.sessionId ? 'resume' : 'new', say)
     await new Promise(r => setTimeout(r, 3000))
@@ -2344,7 +2345,7 @@ async function flushQueued(key: string): Promise<void> {
       const tid = c.message?.message_thread_id
       void bot.api
         .sendMessage(String(c.chat.id), t().sessionNotUpInTime, {
-          ...(tid != null ? { message_thread_id: tid } : {}),
+          ...inTopic(tid),
           parse_mode: 'HTML',
         })
         .catch(() => {})
@@ -2483,7 +2484,7 @@ async function handleInbound(inbound: Inbound): Promise<void> {
   }
   const say = (html: string) =>
     void bot.api
-      .sendMessage(chat_id, html, { ...(threadId != null ? { message_thread_id: threadId } : {}), parse_mode: 'HTML' })
+      .sendMessage(chat_id, html, { ...inTopic(threadId), parse_mode: 'HTML' })
       .catch(() => {})
 
   // explicit commands always win — never swallowed by an auto-topic prompt waiting for text
@@ -2584,7 +2585,7 @@ async function handleInbound(inbound: Inbound): Promise<void> {
     if (wasIdle) {
       void bot.api
         .sendMessage(chat_id, t().raisingSession, {
-          ...(threadId != null ? { message_thread_id: threadId } : {}), parse_mode: 'HTML', disable_notification: true,
+          ...inTopic(threadId), parse_mode: 'HTML', disable_notification: true,
         })
         .catch(() => {})
     }
@@ -2684,7 +2685,7 @@ function deliveryDeps(key: string, dir: string, payload: HubToStub): DeliveryDep
       const target = keyToTarget(key)
       await bot.api
         .sendMessage(target.chat_id, t().deliveryLost, {
-          ...(target.thread_id != null ? { message_thread_id: target.thread_id } : {}), parse_mode: 'HTML',
+          ...inTopic(target.thread_id), parse_mode: 'HTML',
         })
         .catch(() => {})
     },
@@ -2779,7 +2780,7 @@ type OpsRequest = {
 
 async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: OpsRequest): Promise<void> {
   const L = t()
-  const threadOpt = threadId != null ? { message_thread_id: threadId } : {}
+  const threadOpt = inTopic(threadId)
   const say = (html: string) =>
     bot.api.sendMessage(chat_id, html, { ...threadOpt, parse_mode: 'HTML' }).catch(() => {})
   const reg = loadBindings()
@@ -3404,7 +3405,7 @@ function offerBind(key: string, chatId: string, threadId: number | undefined): v
   }
   void bot.api
     .sendMessage(chatId, t().noBindingPickFolder, {
-      ...(threadId != null ? { message_thread_id: threadId } : {}),
+      ...inTopic(threadId),
       parse_mode: 'HTML',
       ...(kb.inline_keyboard.length > 0 ? { reply_markup: kb } : {}),
     })
@@ -3774,7 +3775,7 @@ bot.on('callback_query:data', async ctx => {
     const target = keyToTarget(key)
     await spawnSession(key, binding, sessionId ? 'resume' : 'new', html =>
       void bot.api.sendMessage(target.chat_id, html, {
-        ...(target.thread_id != null ? { message_thread_id: target.thread_id } : {}),
+        ...inTopic(target.thread_id),
         parse_mode: 'HTML',
       }).catch(() => {}),
     )
