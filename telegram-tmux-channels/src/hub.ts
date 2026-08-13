@@ -1949,9 +1949,6 @@ type LiveScreen = { chatId: string; threadId?: number; msgId: number; pane: stri
 const liveScreens = new Map<string, LiveScreen>() // token -> view
 let screenSeq = 0
 const SCREEN_REFRESH_MS = 5000 // calm cadence — a busier tick just spams "edited" on the message
-// Живой /last крутится до получаса, а лимит группы (~20 сообщений/мин) он делит с ответами
-// агентов: на пятисекундном такте активно работающий пейн выедал его почти целиком.
-const LAST_REFRESH_MS = 15_000
 const SCREEN_LIVE_MS = 3 * 60_000
 const LAST_LIVE_MS = 30 * 60_000 // /last — это editMessageText, ни рендера, ни заливки: живёт долго
 
@@ -1974,9 +1971,11 @@ function closeLiveScreen(token: string): LiveScreen | undefined {
 
 // One live view per pane: a new /screen or /last closes+deletes any prior view of the same pane.
 // Several views on one pane meant N refresh loops racing — glitchy. Called before starting a new view.
-async function closeLiveScreensForPane(pane: string): Promise<void> {
+// Живой экран ровно один на всего бота: у throttler'а на группу секунда между вызовами и
+// резерв 20/мин, общий с ответами агентов, — второй дайджест на пятисекундном такте забивал
+// его вдвоём с первым, и ответы вставали в очередь на минуты. Новый /last гасит прежние.
+async function closeAllLiveScreens(): Promise<void> {
   for (const [token, v] of [...liveScreens]) {
-    if (v.pane !== pane) continue
     closeLiveScreen(token)
     await bot.api.deleteMessage(v.chatId, v.msgId).catch(() => {})
   }
@@ -2045,7 +2044,7 @@ async function refreshLiveScreen(token: string): Promise<void> {
 }
 
 async function startLiveScreen(chatId: string, threadId: number | undefined, pane: string, kind: 'png' | 'text' = 'png'): Promise<void> {
-  await closeLiveScreensForPane(pane) // one live view per pane — new one replaces any prior
+  await closeAllLiveScreens() // ровно один живой экран на бота — новый гасит прежний
   const token = String(++screenSeq)
   const kb = closeKb(token)
   const threadOpt = threadId != null ? { message_thread_id: threadId } : {}
@@ -2056,7 +2055,7 @@ async function startLiveScreen(chatId: string, threadId: number | undefined, pan
       .sendMessage(chatId, digestMsg(pane, paneDigest(raw)), { ...threadOpt, parse_mode: 'HTML', reply_markup: kb })
       .catch(() => undefined)
     if (sent) {
-      const timer = setInterval(() => void refreshLiveScreen(token), LAST_REFRESH_MS)
+      const timer = setInterval(() => void refreshLiveScreen(token), SCREEN_REFRESH_MS)
       liveScreens.set(token, { chatId, ...(threadId != null ? { threadId } : {}), msgId: sent.message_id, pane, lastText: raw, kind: 'text', timer })
       setTimeout(() => stopRefreshing(token), LAST_LIVE_MS)
     }
