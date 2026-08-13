@@ -45,6 +45,7 @@ import { t, getLang, setLang, type Lang } from './i18n'
 import { resolveModeDir, gitBranch, runHookDelete, removePlainWorktree, runStandCommand, worktreeHook, isLinkedWorktree } from './dir-resolve'
 import { PROJECT_CONFIG_FILE, parseStandLinks, standLogTail } from './project-config'
 import { jsonlMtimes, captureNewSessionId, recentSessions, lastAssistantText, newestJsonlSize, transcriptSawIncoming } from './session-id'
+import { watchDelivery as watchDeliveryCore, type DeliveryDeps } from './delivery'
 import { HubStateRepository, type PersistedPicker } from './state-repo'
 import { recordChat, recordTopic, topicTitle, chatLabel } from './known-chats'
 
@@ -2657,10 +2658,8 @@ async function handleInbound(inbound: Inbound): Promise<void> {
 //     старте он ещё рисует баннер и крутит SessionStart-хуки), и событие в этот момент тонет;
 //  2. conn резолвим прямо перед записью: на старте стаб подключается дважды, первый сокет
 //     умирает сразу после подписки, а `send()` в закрытый сокет молчит;
-//  3. сторож проверяет, что сообщение реально легло в транскрипт — тихая потеря больше не тихая.
-// ~40 с: свежая сессия ещё дорисовывает баннер и крутит SessionStart-хуки, до транскрипта
-// доходит не сразу. На 12 с сторож регулярно бил тревогу по живым сообщениям.
-const DELIVERY_ACK_TRIES = 40
+//  3. сторож проверяет, что сообщение реально легло в транскрипт (src/delivery.ts) — тихая
+//     потеря больше не тихая.
 async function deliverMessage(key: string, dir: string, payload: HubToStub, needle: string): Promise<number> {
   await waitPaneReady(router.get(connsForBinding(key, dir)[0]!)?.pane, 60_000)
   const at = Date.now()
@@ -2674,39 +2673,29 @@ async function deliverMessage(key: string, dir: string, payload: HubToStub, need
   return conns.length
 }
 
-async function landed(dir: string, at: number, needle: string): Promise<boolean> {
-  for (let i = 0; i < DELIVERY_ACK_TRIES; i++) {
-    await new Promise(r => setTimeout(r, 1000))
-    if (transcriptSawIncoming(dir, at, needle)) {
-      return true
-    }
+// Боевая обвязка сторожа: реальные часы, транскрипт на диске, сокеты стаба и Telegram.
+// Сама логика — в src/delivery.ts, её и покрывают сценарные тесты.
+function deliveryDeps(key: string, dir: string, payload: HubToStub): DeliveryDeps {
+  return {
+    clock: { now: () => Date.now(), sleep: ms => new Promise(r => setTimeout(r, ms)) },
+    sawIncoming: transcriptSawIncoming,
+    resend: () => { for (const conn of connsForBinding(key, dir)) { send(conn, payload) } },
+    warn: async () => {
+      const target = keyToTarget(key)
+      await bot.api
+        .sendMessage(target.chat_id, t().deliveryLost, {
+          ...(target.thread_id != null ? { message_thread_id: target.thread_id } : {}), parse_mode: 'HTML',
+        })
+        .catch(() => {})
+    },
+    log,
   }
-  return false
 }
 
 // Не долетело — переотправляем ОДИН раз (потеря обычно на старте сессии и не повторяется),
 // и если снова тишина — говорим вслух: молчаливая потеря заметна только по «мне не ответили».
 async function watchDelivery(key: string, dir: string, payload: HubToStub, needle: string, at: number): Promise<void> {
-  if (await landed(dir, at, needle)) {
-    return
-  }
-  log(`delivery: ${key} — сообщения нет в транскрипте, переотправляю`)
-  for (const conn of connsForBinding(key, dir)) {
-    send(conn, payload)
-  }
-  // Считаем от ПЕРВОЙ отправки, а не от повторной: запись, появившаяся между попытками,
-  // — это доставка, а не потеря. Окно от retryAt её отбрасывало (запись оказывалась
-  // «слишком старой») и рождало ложную тревогу поверх дошедшего сообщения.
-  if (await landed(dir, at, needle)) {
-    return
-  }
-  log(`delivery: ${key} — сообщение так и не дошло до сессии`)
-  const target = keyToTarget(key)
-  void bot.api
-    .sendMessage(target.chat_id, t().deliveryLost, {
-      ...(target.thread_id != null ? { message_thread_id: target.thread_id } : {}), parse_mode: 'HTML',
-    })
-    .catch(() => {})
+  await watchDeliveryCore(deliveryDeps(key, dir, payload), key, dir, needle, at)
 }
 
 // ── debug log: pane snapshots + raw Telegram traffic, one correlated JSONL ──
