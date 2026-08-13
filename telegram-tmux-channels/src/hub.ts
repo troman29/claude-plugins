@@ -1183,6 +1183,9 @@ async function injectSlashToPanes(
     if (!pane) {
       continue
     }
+    // Единственный путь доставки, который печатал сразу: в поднимающуюся сессию команда
+    // уходила в никуда и молча пропадала. Ждём так же, как обычные сообщения.
+    await waitPaneReady(pane, PANE_READY_MS)
     await typeSlashCommand(pane, cmdText).catch(e => log(`inject slash failed: ${e}`))
     typed = true
   }
@@ -2084,6 +2087,10 @@ async function startLiveScreen(chatId: string, threadId: number | undefined, pan
 // в эту щель, съедает модалка или молча теряет неготовый CLI — так пропадало ровно первое
 // сообщение при пробуждении. Ждём отрисованного приглашения и даём CLI дозапуститься.
 const PANE_SETTLE_MS = 1500
+// Сколько ждём, пока сессия дорисуется и начнёт принимать ввод. Один срок на ВСЕ пути
+// доставки: печать в пейн раньше готовности молча теряется, а «сколько ждать» — свойство
+// поднимающегося Claude Code, а не конкретного вызова.
+const PANE_READY_MS = 60_000
 async function waitPaneReady(pane: string | undefined, ms: number): Promise<boolean> {
   if (!pane) {
     return true
@@ -2662,7 +2669,7 @@ async function handleInbound(inbound: Inbound): Promise<void> {
 //  3. сторож проверяет, что сообщение реально легло в транскрипт (src/delivery.ts) — тихая
 //     потеря больше не тихая.
 async function deliverMessage(key: string, dir: string, payload: HubToStub, needle: string): Promise<number> {
-  await waitPaneReady(router.get(connsForBinding(key, dir)[0]!)?.pane, 60_000)
+  await waitPaneReady(router.get(connsForBinding(key, dir)[0]!)?.pane, PANE_READY_MS)
   const at = Date.now()
   const conns = connsForBinding(key, dir)
   for (const conn of conns) {
@@ -3041,7 +3048,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
     }
     if (arg) {
       // директива — первое сообщение ветке; ждём готовности пейна, иначе неготовый CLI её теряет
-      await waitPaneReady(router.get(conns[0]!)?.pane, 60_000)
+      await waitPaneReady(router.get(conns[0]!)?.pane, PANE_READY_MS)
       const meta: Record<string, string> = {
         chat_id, user: senderId, user_id: senderId,
         ts: new Date().toISOString(), topic_id: String(newThreadId),
@@ -3167,6 +3174,9 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
         await spawnSession(key, binding, 'resume', () => {})
         live = await waitForBinding(key, 30_000)
         const pane = live.length > 0 ? router.get(live[0])?.pane : undefined
+        // Здесь срок НАМЕРЕННО короче PANE_READY_MS: это не ожидание доставки, а проба —
+        // не готов за 12 с, значит сессия о чём-то спрашивает, и пользователю надо сказать
+        // об этом сейчас, а не через минуту молчания. Не сводить к общей константе.
         if (!(await waitPaneReady(pane, 12_000))) {
           void say(L.sessionAsksFirst(cmd)) // кнопки уже отправил picker bridge
           return
