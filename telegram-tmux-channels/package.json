@@ -6,7 +6,9 @@
   "scripts": {
     "hub": "bun src/hub.ts",
     "stub": "bun src/stub.ts",
-    "test": "bun test"
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "check": "bun run typecheck && bun test"
   },
   "dependencies": {
     "@grammyjs/auto-retry": "^2.0.2",
