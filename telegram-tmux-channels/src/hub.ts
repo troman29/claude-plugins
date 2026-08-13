@@ -2660,7 +2660,9 @@ async function handleInbound(inbound: Inbound): Promise<void> {
 //  2. conn резолвим прямо перед записью: на старте стаб подключается дважды, первый сокет
 //     умирает сразу после подписки, а `send()` в закрытый сокет молчит;
 //  3. сторож проверяет, что сообщение реально легло в транскрипт — тихая потеря больше не тихая.
-const DELIVERY_ACK_TRIES = 12 // ~12 с на появление записи в транскрипте
+// ~40 с: свежая сессия ещё дорисовывает баннер и крутит SessionStart-хуки, до транскрипта
+// доходит не сразу. На 12 с сторож регулярно бил тревогу по живым сообщениям.
+const DELIVERY_ACK_TRIES = 40
 async function deliverMessage(key: string, dir: string, payload: HubToStub, needle: string): Promise<number> {
   await waitPaneReady(router.get(connsForBinding(key, dir)[0]!)?.pane, 60_000)
   const at = Date.now()
@@ -2691,11 +2693,13 @@ async function watchDelivery(key: string, dir: string, payload: HubToStub, needl
     return
   }
   log(`delivery: ${key} — сообщения нет в транскрипте, переотправляю`)
-  const retryAt = Date.now()
   for (const conn of connsForBinding(key, dir)) {
     send(conn, payload)
   }
-  if (await landed(dir, retryAt, needle)) {
+  // Считаем от ПЕРВОЙ отправки, а не от повторной: запись, появившаяся между попытками,
+  // — это доставка, а не потеря. Окно от retryAt её отбрасывало (запись оказывалась
+  // «слишком старой») и рождало ложную тревогу поверх дошедшего сообщения.
+  if (await landed(dir, at, needle)) {
     return
   }
   log(`delivery: ${key} — сообщение так и не дошло до сессии`)

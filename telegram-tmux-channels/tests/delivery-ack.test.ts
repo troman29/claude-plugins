@@ -58,6 +58,16 @@ describe('transcriptSawIncoming', () => {
     transcript([queuedLine('старое сообщение прошлого хода', iso(now - 600_000))])
     expect(transcriptSawIncoming(PROJECT, now, 'старое сообщение')).toBe(false)
   })
+  // Сообщение доходит поздно — уже после того, как сторож сдался и переотправил. Считать
+  // надо от ПЕРВОЙ отправки: окно от повторной объявляло такую запись слишком старой и
+  // рождало «сообщение не дошло» поверх дошедшего.
+  test('запись между попытками: найдена от первой отправки, потеряна от повторной', () => {
+    const sent = now
+    const retry = now + 40_000
+    transcript([queuedLine('<channel source="telegram">Изучи issues/384</channel>', iso(now + 20_000))])
+    expect(transcriptSawIncoming(PROJECT, sent, 'Изучи issues/384')).toBe(true)
+    expect(transcriptSawIncoming(PROJECT, retry, 'Изучи issues/384')).toBe(false)
+  })
   test('no transcript at all → not landed, no throw', () => {
     process.env.HOME = mkdtempSync(join(tmpdir(), 'ack-empty-'))
     expect(transcriptSawIncoming(PROJECT, now, 'привет')).toBe(false)
