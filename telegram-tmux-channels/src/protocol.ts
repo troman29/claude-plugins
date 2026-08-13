@@ -46,8 +46,16 @@ export type StubToHub =
   // Without this the TUI's "Background tasks" were invisible in Telegram entirely.
   | { op: 'bg'; bindingKeys: string[]; sessionId?: string; command: string; description?: string }
 
+  // Подтверждение доставки входящего. Стаб отдаёт сообщение в Claude Code MCP-уведомлением,
+  // и до сих пор его провал был виден только в логе стаба: хаб считал отправку удавшейся и
+  // догадывался о судьбе сообщения по транскрипту. Здесь — прямой ответ вместо догадки.
+  // Необязательное: старые стабы в уже живых сессиях его не шлют, и хаб откатывается
+  // на проверку по транскрипту.
+  | { op: 'ack'; id: string; ok: boolean; error?: string }
+
 export type HubToStub =
-  | { op: 'event'; kind: 'message'; content: string; meta: Record<string, string> }
+  // id есть только у входящих, чью доставку сторожим; стаб отвечает на него 'ack'
+  | { op: 'event'; kind: 'message'; content: string; meta: Record<string, string>; id?: string }
   | { op: 'event'; kind: 'permission'; request_id: string; behavior: 'allow' | 'deny' }
   | { op: 'result'; id: number; ok: boolean; result?: string; error?: string }
 

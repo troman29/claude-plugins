@@ -84,12 +84,19 @@ const onHubMessage = (msg: HubToStub): void => {
     return
   }
   if (msg.op === 'event' && msg.kind === 'message') {
+    const id = msg.id
     void mcp
       .notification({
         method: 'notifications/claude/channel',
         params: { content: msg.content, meta: msg.meta },
       })
-      .catch(err => log(`failed to deliver inbound to Claude: ${err}`))
+      // Раньше провал уведомления оставался внутри стаба, и хаб о потере не знал.
+      // Теперь отвечаем хабу в обе стороны — и на успех, и на ошибку.
+      .then(() => ackHub(id, true))
+      .catch(err => {
+        log(`failed to deliver inbound to Claude: ${err}`)
+        ackHub(id, false, String(err))
+      })
     return
   }
   if (msg.op === 'event' && msg.kind === 'permission') {
@@ -98,6 +105,15 @@ const onHubMessage = (msg: HubToStub): void => {
       params: { request_id: msg.request_id, behavior: msg.behavior },
     })
   }
+}
+
+function ackHub(id: string | undefined, ok: boolean, error?: string): void {
+  if (!id || !sock) {
+    return
+  }
+  try {
+    sock.write(encode({ op: 'ack', id, ok, ...(error ? { error } : {}) } satisfies StubToHub))
+  } catch {} // хаб мог уйти — доставка от этого не меняется, сторож разберётся по транскрипту
 }
 
 function rpc(method: RpcMethod, params: Record<string, unknown>): Promise<string> {

@@ -14,6 +14,8 @@ export type Clock = {
 
 export type DeliveryDeps = {
   clock: Clock
+  /** Ответ стаба: отдал сообщение в сессию, не смог, или молчит (старый стаб). */
+  awaitAck(): Promise<'ok' | 'failed' | 'silent'>
   /** Видел ли транскрипт сессии это входящее после момента `since`. */
   sawIncoming(dir: string, since: number, needle: string): boolean
   /** Отправить payload в сессию ещё раз (в бою — запись в сокеты стаба). */
@@ -42,10 +44,16 @@ async function landed(d: DeliveryDeps, dir: string, since: number, needle: strin
 export async function watchDelivery(
   d: DeliveryDeps, key: string, dir: string, needle: string, at: number,
 ): Promise<DeliveryOutcome> {
-  if (await landed(d, dir, at, needle)) {
+  const ack = await d.awaitAck()
+  if (ack === 'ok') {
+    return 'landed' // стаб прямо сказал, что отдал — гадать по транскрипту незачем
+  }
+  // 'failed' — стаб сказал, что НЕ отдал: ждать сорок секунд транскрипта бессмысленно,
+  // сразу переотправляем. 'silent' — старый стаб, решаем как раньше, по транскрипту.
+  if (ack === 'silent' && await landed(d, dir, at, needle)) {
     return 'landed'
   }
-  d.log(`delivery: ${key} — сообщения нет в транскрипте, переотправляю`)
+  d.log(`delivery: ${key} — ${ack === 'failed' ? 'стаб не смог отдать' : 'сообщения нет в транскрипте'}, переотправляю`)
   d.resend()
   // Считаем от ПЕРВОЙ отправки, а не от повторной: запись, появившаяся между попытками,
   // — это доставка, а не потеря. Окно от момента переотправки её отбрасывало (запись

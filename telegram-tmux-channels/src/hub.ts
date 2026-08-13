@@ -1797,7 +1797,26 @@ function syncSessionId(bindingKeys: string[], sessionId: string): void {
   }
 }
 
+// Подтверждения доставки от стаба: id → кому его отдать. Прямой ответ «отдал/не отдал»
+// вместо гадания по транскрипту; старые стабы молчат, и сторож работает как раньше.
+const pendingAcks = new Map<string, (r: 'ok' | 'failed') => void>()
+const ACK_WAIT_MS = 10_000
+
+function awaitAck(id: string): Promise<'ok' | 'failed' | 'silent'> {
+  return new Promise(resolve => {
+    pendingAcks.set(id, r => { pendingAcks.delete(id); resolve(r) })
+    setTimeout(() => { if (pendingAcks.delete(id)) { resolve('silent') } }, ACK_WAIT_MS)
+  })
+}
+
 async function handleStubMessage(sock: Socket<undefined>, msg: StubToHub): Promise<void> {
+  if (msg.op === 'ack') {
+    pendingAcks.get(msg.id)?.(msg.ok ? 'ok' : 'failed')
+    if (!msg.ok) {
+      log(`delivery: стаб не отдал сообщение в сессию: ${msg.error ?? '?'}`)
+    }
+    return
+  }
   if (msg.op === 'subscribe') {
     const session = verifyClaimedKeys(msg.session)
     router.subscribe(sock, session)
@@ -2668,24 +2687,29 @@ async function handleInbound(inbound: Inbound): Promise<void> {
 //     умирает сразу после подписки, а `send()` в закрытый сокет молчит;
 //  3. сторож проверяет, что сообщение реально легло в транскрипт (src/delivery.ts) — тихая
 //     потеря больше не тихая.
+let nextDeliveryId = 1
 async function deliverMessage(key: string, dir: string, payload: HubToStub, needle: string): Promise<number> {
   await waitPaneReady(router.get(connsForBinding(key, dir)[0]!)?.pane, PANE_READY_MS)
   const at = Date.now()
+  // id живёт на самом событии: по нему стаб отвечает, отдал он сообщение в сессию или нет
+  const id = `d${nextDeliveryId++}`
+  const tagged: HubToStub = payload.op === 'event' && payload.kind === 'message' ? { ...payload, id } : payload
   const conns = connsForBinding(key, dir)
   for (const conn of conns) {
-    send(conn, payload)
+    send(conn, tagged)
   }
   if (conns.length) {
-    void watchDelivery(key, dir, payload, needle.trim().slice(0, 60), at)
+    void watchDelivery(key, dir, tagged, needle.trim().slice(0, 60), at, id)
   }
   return conns.length
 }
 
 // Боевая обвязка сторожа: реальные часы, транскрипт на диске, сокеты стаба и Telegram.
 // Сама логика — в src/delivery.ts, её и покрывают сценарные тесты.
-function deliveryDeps(key: string, dir: string, payload: HubToStub): DeliveryDeps {
+function deliveryDeps(key: string, dir: string, payload: HubToStub, id: string): DeliveryDeps {
   return {
     clock: { now: () => Date.now(), sleep: ms => new Promise(r => setTimeout(r, ms)) },
+    awaitAck: () => awaitAck(id),
     sawIncoming: transcriptSawIncoming,
     resend: () => { for (const conn of connsForBinding(key, dir)) { send(conn, payload) } },
     warn: async () => {
@@ -2702,8 +2726,10 @@ function deliveryDeps(key: string, dir: string, payload: HubToStub): DeliveryDep
 
 // Не долетело — переотправляем ОДИН раз (потеря обычно на старте сессии и не повторяется),
 // и если снова тишина — говорим вслух: молчаливая потеря заметна только по «мне не ответили».
-async function watchDelivery(key: string, dir: string, payload: HubToStub, needle: string, at: number): Promise<void> {
-  await watchDeliveryCore(deliveryDeps(key, dir, payload), key, dir, needle, at)
+async function watchDelivery(
+  key: string, dir: string, payload: HubToStub, needle: string, at: number, id: string,
+): Promise<void> {
+  await watchDeliveryCore(deliveryDeps(key, dir, payload, id), key, dir, needle, at)
 }
 
 // ── debug log: pane snapshots + raw Telegram traffic, one correlated JSONL ──

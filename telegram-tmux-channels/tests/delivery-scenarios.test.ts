@@ -13,7 +13,12 @@ import { watchDelivery, type DeliveryDeps } from '../src/delivery'
  * появилась через 2 секунды, а увидели её сильно позже (первый проход искал не тот тип
  * записи). Проверка от момента переотправки такую запись отбрасывала как «слишком старую».
  */
-function scenario(opts: { recordAt: number | null; visibleFrom?: number }) {
+function scenario(opts: {
+  recordAt: number | null
+  visibleFrom?: number
+  /** По умолчанию — старый стаб: молчит, и сторож решает по транскрипту. */
+  ack?: 'ok' | 'failed' | 'silent'
+}) {
   let t = 0
   const sent: number[] = [t] // моменты отправок: первая — сразу
   const warnings: number[] = []
@@ -23,6 +28,7 @@ function scenario(opts: { recordAt: number | null; visibleFrom?: number }) {
       now: () => t,
       sleep: async ms => { t += ms },
     },
+    awaitAck: async () => opts.ack ?? 'silent',
     sawIncoming: (_dir, since, _needle) => {
       if (opts.recordAt === null) {
         return false
@@ -73,6 +79,24 @@ describe('доставка сообщения в сессию', () => {
     expect(out).toBe('landed-after-retry')
     expect(s.sent.length).toBe(2) // одна переотправка — так и задумано
     expect(s.warnings).toEqual([])
+  })
+
+  // Прямое подтверждение от стаба вместо гадания по транскрипту.
+  test('стаб подтвердил доставку: транскрипт не нужен вовсе', async () => {
+    const s = scenario({ recordAt: null, ack: 'ok' }) // транскрипт пуст — и это неважно
+    const out = await watchDelivery(s.deps, 'chat/1', '/dir', 'привет', s.at())
+    expect(out).toBe('landed')
+    expect(s.sent.length).toBe(1)
+    expect(s.warnings).toEqual([])
+  })
+
+  test('стаб сказал, что не отдал: переотправка сразу, без сорока секунд ожидания', async () => {
+    const s = scenario({ recordAt: null, ack: 'failed' })
+    const out = await watchDelivery(s.deps, 'chat/1', '/dir', 'привет', s.at())
+    expect(out).toBe('lost')
+    expect(s.sent.length).toBe(2)
+    // на переотправку ушло 0 мс виртуального времени: первое окно пропущено
+    expect(s.sent[1]).toBe(0)
   })
 
   test('сессия мертва: ровно одна переотправка и ровно одно предупреждение', async () => {
