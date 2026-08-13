@@ -104,15 +104,10 @@ try {
     }
   }
 } catch {} // no .env file — token may come from the real env
+// Проверка токена — в start(), а не здесь: иначе импорт модуля из теста просто убивал бы
+// процесс. Всё, что лезет наружу (сокет, поллинг, таймеры, pid-файл), тоже живёт в start().
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN
-if (!TOKEN) {
-  log(`TELEGRAM_BOT_TOKEN required — set in ${ENV_FILE}`)
-  process.exit(1)
-}
 const ADMINS = (process.env.TELEGRAM_ADMINS ?? '').split(',').map(s => s.trim()).filter(Boolean)
-if (ADMINS.length === 0) {
-  log(`WARNING: TELEGRAM_ADMINS is empty — nobody can bind or converse`)
-}
 const isAdmin = (id: string) => ADMINS.includes(id)
 // Optional: incoming voice messages get auto-transcribed if set. Unset = leave voice
 // messages as the raw attachment + "(voice message)" placeholder, same as before.
@@ -188,19 +183,18 @@ function persistUnloaded(keys: string[], unloaded: boolean): void {
 }
 
 // kill a zombie poller (incl. the old plugin) — one getUpdates per token
-mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 })
-try {
-  const stale = parseInt(readFileSync(PID_FILE, 'utf8'), 10)
-  if (stale > 1 && stale !== process.pid) {
-    process.kill(stale, 0)
-    log(`replacing stale poller pid=${stale}`)
-    process.kill(stale, 'SIGTERM')
-  }
-} catch {} // no pid file, or the process is already gone
-writeFileSync(PID_FILE, String(process.pid))
-
-process.on('unhandledRejection', err => log(`unhandled rejection: ${err}`))
-process.on('uncaughtException', err => log(`uncaught exception: ${err}`))
+function claimPollerSlot(): void {
+  mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 })
+  try {
+    const stale = parseInt(readFileSync(PID_FILE, 'utf8'), 10)
+    if (stale > 1 && stale !== process.pid) {
+      process.kill(stale, 0)
+      log(`replacing stale poller pid=${stale}`)
+      process.kill(stale, 'SIGTERM')
+    }
+  } catch {} // no pid file, or the process is already gone
+  writeFileSync(PID_FILE, String(process.pid))
+}
 
 const SPAWN_LOCK = join(STATE_DIR, 'hub.spawnlock')
 const MAX_409_ATTEMPTS = 8
@@ -208,7 +202,9 @@ const MAX_BACKOFF_MS = 15_000
 const SCREEN_POLL_MS = 1500
 const CUSTOM_TIMEOUT_MS = 120_000
 
-const bot = new Bot(TOKEN)
+// Заглушка вместо токена — чтобы модуль импортировался в тесте. Сам объект в сеть не ходит:
+// наружу выходит только bot.start(), а он в start().
+const bot = new Bot(TOKEN || 'import-only:no-token')
 let botUsername = ''
 
 // Raw Telegram traffic → debug log (see logDebugEvent below; hoisted).
@@ -631,6 +627,7 @@ async function notifyUnexpectedDeath(s: SessionInfo): Promise<void> {
     .catch(() => {})
 }
 
+function listenForStubs(): void {
 rmQuiet(SOCK_PATH)
 Bun.listen<undefined>({
   unix: SOCK_PATH,
@@ -660,6 +657,7 @@ Bun.listen<undefined>({
 })
 chmodSync(SOCK_PATH, 0o600)
 log(`listening on ${SOCK_PATH}`)
+}
 
 // ── picker bridge: forward Claude Code TUI pickers to Telegram buttons ──
 type ActivePicker = {
@@ -1641,7 +1639,7 @@ async function pollScreens(): Promise<void> {
   await Promise.race([done.catch(() => {}), new Promise<void>(r => setTimeout(r, 25_000))])
   detectorsRunning = false
 }
-setInterval(() => void pollScreens(), SCREEN_POLL_MS)
+const startScreenPoll = (): void => void setInterval(() => void pollScreens(), SCREEN_POLL_MS)
 
 // Stop a quiet, unpinned, past-threshold session; the next inbound message revives it.
 async function maybeIdleUnload(s: SessionInfo & { pane: string }, working: boolean): Promise<void> {
@@ -3821,10 +3819,28 @@ function shutdown(): void {
   setTimeout(() => process.exit(0), 2000)
   void Promise.resolve(bot.stop()).finally(() => process.exit(0))
 }
-process.on('SIGTERM', shutdown)
-process.on('SIGINT', shutdown)
+// Единственная точка, где хаб выходит наружу: до её вызова импорт модуля ничего не делает —
+// не занимает сокет, не убивает чужой поллер, не заводит таймеров и не ходит в Telegram.
+// Ради этого всё и разносилось: без импортируемого модуля логику хаба нечем тестировать.
+export async function start(): Promise<void> {
+  if (!TOKEN) {
+    log(`TELEGRAM_BOT_TOKEN required — set in ${ENV_FILE}`)
+    process.exit(1)
+  }
+  if (ADMINS.length === 0) {
+    log(`WARNING: TELEGRAM_ADMINS is empty — nobody can bind or converse`)
+  }
+  process.on('unhandledRejection', err => log(`unhandled rejection: ${err}`))
+  process.on('uncaughtException', err => log(`uncaught exception: ${err}`))
+  process.on('SIGTERM', shutdown)
+  process.on('SIGINT', shutdown)
+  claimPollerSlot()
+  listenForStubs()
+  startScreenPoll()
+  await pollForever()
+}
 
-void (async () => {
+async function pollForever(): Promise<void> {
   for (let attempt = 1; ; attempt++) {
     try {
       await bot.start({
@@ -3865,4 +3881,8 @@ void (async () => {
       await new Promise(r => setTimeout(r, delay))
     }
   }
-})()
+}
+
+if (import.meta.main) {
+  void start()
+}
