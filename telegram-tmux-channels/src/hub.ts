@@ -1949,6 +1949,9 @@ type LiveScreen = { chatId: string; threadId?: number; msgId: number; pane: stri
 const liveScreens = new Map<string, LiveScreen>() // token -> view
 let screenSeq = 0
 const SCREEN_REFRESH_MS = 5000 // calm cadence — a busier tick just spams "edited" on the message
+// Живой /last крутится до получаса, а лимит группы (~20 сообщений/мин) он делит с ответами
+// агентов: на пятисекундном такте активно работающий пейн выедал его почти целиком.
+const LAST_REFRESH_MS = 15_000
 const SCREEN_LIVE_MS = 3 * 60_000
 const LAST_LIVE_MS = 30 * 60_000 // /last — это editMessageText, ни рендера, ни заливки: живёт долго
 
@@ -2005,8 +2008,13 @@ async function refreshLiveScreen(token: string): Promise<void> {
   }
   const text = await capturePane(v.pane).catch(() => '')
   if (v.kind === 'text') {
-    // editMessageText is cheap (no render, no upload) — always re-edit; the live timestamp makes an
-    // unchanged pane still a distinct edit (Telegram rejects an identical body).
+    // Не «всегда re-edit»: у Telegram ~20 сообщений в минуту НА ГРУППУ, и этот бюджет общий с
+    // ответами агентов. Тикающая метка времени делала каждый тик новым edit'ом — два открытых
+    // дайджеста забивали лимит целиком, throttler ставил настоящие ответы в очередь на минуты,
+    // стаб ловил таймаут RPC и слал дубль. Пейн не изменился — молчим.
+    if (text === v.lastText) {
+      return
+    }
     v.lastText = text
     await bot.api
       .editMessageText(v.chatId, v.msgId, digestMsg(v.pane, paneDigest(text)), { parse_mode: 'HTML', reply_markup: closeKb(token) })
@@ -2048,7 +2056,7 @@ async function startLiveScreen(chatId: string, threadId: number | undefined, pan
       .sendMessage(chatId, digestMsg(pane, paneDigest(raw)), { ...threadOpt, parse_mode: 'HTML', reply_markup: kb })
       .catch(() => undefined)
     if (sent) {
-      const timer = setInterval(() => void refreshLiveScreen(token), SCREEN_REFRESH_MS)
+      const timer = setInterval(() => void refreshLiveScreen(token), LAST_REFRESH_MS)
       liveScreens.set(token, { chatId, ...(threadId != null ? { threadId } : {}), msgId: sent.message_id, pane, lastText: raw, kind: 'text', timer })
       setTimeout(() => stopRefreshing(token), LAST_LIVE_MS)
     }
