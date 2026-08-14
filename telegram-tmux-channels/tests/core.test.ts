@@ -199,6 +199,19 @@ describe('tmux-ops', () => {
     expect(parseOpsCommand('/unknown x')).toBeUndefined()
   })
 
+  test('parseOpsCommand: /queue и его алиас /q', () => {
+    expect(parseOpsCommand('/queue посмотри логи')).toEqual({ cmd: 'queue', arg: 'посмотри логи' })
+    expect(parseOpsCommand('/q посмотри логи')).toEqual({ cmd: 'queue', arg: 'посмотри логи' }) // алиас → та же команда
+    expect(parseOpsCommand('/q@some_bot дело')).toEqual({ cmd: 'queue', bot: 'some_bot', arg: 'дело' })
+    expect(parseOpsCommand('/queue')).toEqual({ cmd: 'queue' }) // без текста — хаб покажет подсказку
+    // задача бывает многострочной, и перевод строки не должен обрывать аргумент
+    expect(parseOpsCommand('/q собери стенд\nи прогони тесты')).toEqual({
+      cmd: 'queue', arg: 'собери стенд\nи прогони тесты',
+    })
+    // …но остальным командам многострочность не даём: письмо, начатое с «/new», остаётся письмом
+    expect(parseOpsCommand('/new и дальше текст\nвторая строка')).toBeUndefined()
+  })
+
   test('resolveSkillCommand: /add_model → /add-model (project skill)', () => {
     const global = new Map([['deep_research', 'deep-research']])
     const project = [{ name: 'add-model' }, { name: 'add-mcp' }] as never[]

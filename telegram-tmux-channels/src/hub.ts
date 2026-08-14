@@ -1052,6 +1052,7 @@ function opsCommands(): { command: string; description: string }[] {
     { command: 'clear', description: L.cmd_clear },
     { command: 'esc', description: L.cmd_esc },
     { command: 'enter', description: L.cmd_enter },
+    { command: 'queue', description: L.cmd_queue },
     { command: 'model', description: L.cmd_model },
     { command: 'stop', description: L.cmd_stop },
     { command: 'restart', description: L.cmd_restart },
@@ -1268,6 +1269,7 @@ async function handleSubagentEvent(msg: Extract<StubToHub, { op: 'subagent' }>):
       await reconcileBg(key, msg.bg ?? []) // before endTurn: pushStatus clears the turn-ended flag
       statusPost.endTurn(key)
       await forwardFallbackReply(key) // agent didn't reply → forward its final text ourselves
+      await flushQueued(key) // отложенное через /queue — ход кончился, самое время
     }
     return
   }
@@ -1573,6 +1575,18 @@ async function reconcileBg(key: string, live: BgTask[]): Promise<void> {
 // last captured frame per pane — a change since the previous poll means the
 // agent (or something) is actively doing something, worth a "typing…" nudge
 const lastPaneText = new Map<string, string>()
+
+// Идёт ли прямо сейчас ход в этой сессии. Берём последний кадр экрана из общего опроса,
+// а не снимаем свой: `/queue` приходит в разгар работы, и лишний capture тут ни к чему.
+// Свежесть кадра — в пределах такта опроса; для «занят / свободен» этого достаточно.
+function keyIsWorking(key: string, dir: string): boolean {
+  if (keyIsBusy(key)) {
+    return true // работают сабагенты — ход точно не кончился
+  }
+  const pane = router.get(connsForBinding(key, dir)[0]!)?.pane
+  const text = pane ? lastPaneText.get(pane) : undefined
+  return text !== undefined && paneIsWorking(text)
+}
 
 const captureTimeout = (pane: string): Promise<string> =>
   Promise.race([capturePane(pane).catch(() => ''), new Promise<string>(r => setTimeout(() => r(''), 2000))])
@@ -2516,6 +2530,27 @@ async function handleInbound(inbound: Inbound): Promise<void> {
   // explicit commands always win — never swallowed by an auto-topic prompt waiting for text
   const ops = parseOpsCommand(text)
   if (ops && (!ops.bot || ops.bot.toLowerCase() === botUsername.toLowerCase())) {
+    // `/queue` живёт здесь, а не в handleOps: ему нужен сам inbound (картинки, вложения,
+    // message_id), чтобы позже проиграть доставку обычным путём. Текст команды при этом
+    // снимается — иначе на выдаче из очереди сообщение снова опознается как команда.
+    if (ops.cmd === 'queue') {
+      const body = ops.arg?.trim()
+      if (!body) {
+        say(t().queueUsage)
+        return
+      }
+      const held: Inbound = { ...inbound, text: body }
+      const binding = loadBindings()[key]
+      // Держать имеет смысл, только пока сессия занята ходом. Свободной отдаём сразу:
+      // иначе сообщение ждало бы конца хода, который никто не начинал.
+      if (binding && keyIsWorking(key, binding.dir)) {
+        log(`queue: ${key} — держу до конца хода`)
+        enqueueForTopic(key, held) // 👌 = принято, доставлю после хода
+        return
+      }
+      await handleInbound(held)
+      return
+    }
     pendingTopics.delete(key)
     pendingModeChoice.delete(key)
     await handleOps({ cmd: ops.cmd, arg: ops.arg, key, chat_id, threadId, senderId, ...(msgId != null ? { msgId } : {}) })

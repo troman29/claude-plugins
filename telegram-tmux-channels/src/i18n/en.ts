@@ -18,6 +18,10 @@ export const en = {
   cmd_clear: 'Clear session history',
   cmd_esc: 'Interrupt the current turn',
   cmd_enter: 'Send Enter (submit the input line)',
+  cmd_queue: 'Queue a message instead of interrupting the running turn',
+  queueUsage:
+    '📥 <b>/queue &lt;text&gt;</b> (or <code>/q</code>) — hold the text until the current turn ends, ' +
+    'instead of cutting into it. With the session idle it goes straight through.',
   cmd_model: 'Pick a model (interactive, buttons)',
   cmd_stop: 'Stop the session (graceful /exit → Ctrl-C)',
   cmd_restart: 'Gracefully restart the session',

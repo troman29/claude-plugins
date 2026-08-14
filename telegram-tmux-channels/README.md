@@ -111,6 +111,7 @@ Sent in a bound topic or DM. These are handled by the bot and never reach the ag
 | `/restart` · `/stop` | Graceful restart / stop |
 | `/compact` · `/clear` | Compact or clear the conversation |
 | `/esc` · `/enter` | Interrupt the current turn / submit what's sitting in the input line |
+| `/queue <text>` · `/q` | Hold the text until the current turn ends instead of cutting into it. A plain message reaches the agent right away, mid-turn — this one waits its turn (👌 while held). With the session idle it goes straight through |
 | `/model` | The CLI's model picker, as buttons |
 
 **Looking inside**
