@@ -46,6 +46,7 @@ import { resolveModeDir, gitBranch, runHookDelete, removePlainWorktree, runStand
 import { PROJECT_CONFIG_FILE, parseStandLinks, standLogTail } from './project-config'
 import { jsonlMtimes, captureNewSessionId, recentSessions, lastAssistantText, newestJsonlSize, transcriptSawIncoming } from './session-id'
 import { watchDelivery as watchDeliveryCore, type DeliveryDeps } from './delivery'
+import { FallbackGate } from './fallback-gate'
 import { topic as inTopic } from './chat'
 import { HubStateRepository, type PersistedPicker } from './state-repo'
 import { recordChat, recordTopic, topicTitle, chatLabel } from './known-chats'
@@ -979,6 +980,9 @@ for (const [k, v] of stateRepo.pendingEntries()) pendingAnswer.set(k, v)
 for (const [k, v] of stateRepo.fallbackEntries()) lastFallback.set(k, v)
 function armPending(key: string, v: { dir: string; at: number }): void { pendingAnswer.set(key, v); stateRepo.setPending(key, v) }
 function disarmPending(key: string): void { pendingAnswer.delete(key); stateRepo.delPending(key) }
+// Пускать ли досылку (см. src/fallback-gate.ts). Живёт в пределах хода и рестарт хаба не
+// переживает — тогда просто вернётся прежнее поведение, лишняя досылка вместо потерянной.
+const fallbackGate = new FallbackGate()
 function recordFallback(key: string, text: string): void { lastFallback.set(key, text); stateRepo.setFallback(key, text) }
 const FALLBACK_MAX_CHARS = 3500 // cap the safety-net forward; a huge answer gets truncated, not spammed
 
@@ -1206,6 +1210,7 @@ async function injectSlashToPanes(
 function clearPendingAnswer(conn: Socket<undefined>): void {
   for (const k of ownKeys(conn)) {
     disarmPending(k)
+    fallbackGate.noteAnswered(k) // и на дописанное в этот же ход досылка уже не сработает
   }
 }
 
@@ -1215,6 +1220,10 @@ async function forwardFallbackReply(key: string): Promise<void> {
     return
   }
   disarmPending(key) // one shot per inbound, whatever the transcript holds
+  if (!fallbackGate.shouldForward(key)) {
+    log(`reply-fallback: ${key} — агент в этом ходе уже отвечал, не досылаю`)
+    return
+  }
   // Read THIS binding's conversation, not whatever file in the project dir was touched last:
   // several topics routinely share one project dir, and "newest in dir" forwarded a neighbour
   // topic's answer into this one. Resolved now, not at arm time — /clear or an in-TUI /resume
@@ -1269,6 +1278,7 @@ async function handleSubagentEvent(msg: Extract<StubToHub, { op: 'subagent' }>):
       await reconcileBg(key, msg.bg ?? []) // before endTurn: pushStatus clears the turn-ended flag
       statusPost.endTurn(key)
       await forwardFallbackReply(key) // agent didn't reply → forward its final text ourselves
+      fallbackGate.endTurn(key) // ход закрыт: следующий начинается с чистого листа
       await flushQueued(key) // отложенное через /queue — ход кончился, самое время
     }
     return
