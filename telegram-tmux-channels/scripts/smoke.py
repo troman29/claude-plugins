@@ -116,7 +116,52 @@ def buttons(mcp, chat, msg_id=None):
     return raw if isinstance(raw, dict) else {}
 
 
-def run(mcp, chat, agent, reply_timeout):
+def pick_mode(opts, case):
+    """Индекс кнопки режима. worktree в пикере подписан по базе («🌿 worktree от dev»)."""
+    if case == 'worktree':
+        i = next((i for i, t in enumerate(opts) if 'worktree' in t.lower()), None)
+        if i is None:
+            raise AssertionError(f'в пикере нет ворктри-режима: {opts}')
+        return i
+    return next(i for i, t in enumerate(opts) if 'Default folder' in t)
+
+
+def exchange(mcp, chat, tid, agent, reply_timeout, prompt=PROMPT):
+    """Написать в топик и дождаться РОВНО ОДНОГО чистого ответа. Возвращает (секунды, проблемы)."""
+    mcp.call('reply_to_message', chat_id=chat, message_id=tid, text=prompt)
+    start = time.time()
+    prompt_id = wait_for(
+        lambda: next((m['id'] for m in messages(mcp, chat, 15)
+                      if m.get('text') == prompt and 'bot' not in m.get('sender', '').lower()), None),
+        30, step=2, what='своего промпта в ленте')
+
+    def answers():
+        out = []
+        for m in messages(mcp, chat, 25):
+            if 'bot' not in m.get('sender', '').lower():
+                continue
+            if m.get('id', 0) <= prompt_id:
+                continue
+            if str(m.get('reply_to')) not in (str(prompt_id), str(tid)):
+                continue
+            if m.get('text', '').startswith(SERVICE):
+                continue
+            out.append(m)
+        return out or None
+
+    got = wait_for(answers, reply_timeout, what=f'ответа от {agent}')
+    problems = []
+    if len(got) > 1:
+        problems.append(f'ответов {len(got)}, а должен быть один: {[m["id"] for m in got]}')
+    for m in got:
+        if 'auto-forward' in m['text']:
+            problems.append(f'ответ пришёл досылом (id {m["id"]})')
+        if m['text'].startswith('❓'):
+            problems.append(f'вместо ответа вопрос-пикер (id {m["id"]})')
+    return int(time.time() - start), problems
+
+
+def run(mcp, chat, agent, reply_timeout, case='folder'):
     topic = mcp.call('create_forum_topic', chat_id=chat, title=f'smoke {agent} {int(time.time())}')
     tid = (topic.get('results') or [{}])[0].get('topic_id') if isinstance(topic, dict) else None
     if not tid:
@@ -135,47 +180,21 @@ def run(mcp, chat, agent, reply_timeout):
             break
         mcp.call('press_inline_button', chat_id=chat, message_id=pick_id, button_index=0)
         opts = [b['text'] for b in buttons(mcp, chat, pick_id)['results']]
-    folder = next(i for i, t in enumerate(opts) if 'Default folder' in t)
-    mcp.call('press_inline_button', chat_id=chat, message_id=pick_id, button_index=folder)
-    print(f'  выбран {want} + Default folder')
+    mode_idx = pick_mode(opts, case)
+    mcp.call('press_inline_button', chat_id=chat, message_id=pick_id, button_index=mode_idx)
+    print(f'  выбран {want} + {opts[mode_idx]}')
 
-    mcp.call('reply_to_message', chat_id=chat, message_id=tid, text=PROMPT)
-    start = time.time()
-    # id своего же промпта: только ответы НА НЕГО считаем ответами. Без этой привязки смоук
-    # находил «пинг» из прошлого прогона в другом топике и радостно зеленел за 0 секунд.
-    prompt_id = wait_for(
-        lambda: next((m['id'] for m in messages(mcp, chat, 15)
-                      if m.get('text') == PROMPT and 'bot' not in m.get('sender', '').lower()), None),
-        30, step=2, what='своего промпта в ленте')
+    took, problems = exchange(mcp, chat, tid, agent, reply_timeout)
 
-    def answers():
-        out = []
-        for m in messages(mcp, chat, 25):
-            if 'bot' not in m.get('sender', '').lower():
-                continue
-            if m.get('id', 0) <= prompt_id:
-                continue  # всё, что старше промпта, к делу не относится
-            # Ответ бывает адресован и промпту, и корню топика (агент волен звать `reply` без
-            # reply_to) — привязываться к адресату нельзя. К тексту тоже: модель на «скажи пинг»
-            # отвечает «понг». Поэтому структурно: всё в топике после промпта, что не служебная
-            # плашка хаба, — это ответ.
-            if str(m.get('reply_to')) not in (str(prompt_id), str(tid)):
-                continue
-            if m.get('text', '').startswith(SERVICE):
-                continue
-            out.append(m)
-        return out or None
+    # Мёртвая сессия: гасим её штатным `/stop` и пишем снова — хаб обязан поднять и ответить.
+    # Это самый частый реальный сценарий после простоя, и раньше он ломался молча.
+    if case == 'revive' and not problems:
+        mcp.call('reply_to_message', chat_id=chat, message_id=tid, text='/stop')
+        time.sleep(20)
+        took2, problems = exchange(mcp, chat, tid, agent, reply_timeout, 'после стопа ответь одним словом: жив')
+        took += took2
+        print(f'  сессия погашена и поднята заново')
 
-    got = wait_for(answers, reply_timeout, what=f'ответа от {agent}')
-    took = int(time.time() - start)
-    problems = []
-    if len(got) > 1:
-        problems.append(f'ответов {len(got)}, а должен быть один: {[m["id"] for m in got]}')
-    for m in got:
-        if 'auto-forward' in m['text']:
-            problems.append(f'ответ пришёл досылом (id {m["id"]})')
-        if m['text'].startswith('❓'):
-            problems.append(f'вместо ответа вопрос-пикер (id {m["id"]})')
     return tid, took, problems
 
 
@@ -184,6 +203,8 @@ def main():
     ap.add_argument('--chat', required=True)
     ap.add_argument('--agent', action='append', choices=['claude', 'codex'], required=True)
     ap.add_argument('--timeout', type=int, default=180, help='сколько ждать ответа, с')
+    ap.add_argument('--case', action='append', choices=['folder', 'worktree', 'revive'],
+                    help='клетки матрицы; по умолчанию folder')
     args = ap.parse_args()
 
     url, headers = mcp_config()
@@ -192,9 +213,10 @@ def main():
 
     failed = False
     for agent in args.agent:
-        print(f'== {agent}')
+      for case in (args.case or ['folder']):
+        print(f'== {agent} / {case}')
         try:
-            tid, took, problems = run(mcp, args.chat, agent, args.timeout)
+            tid, took, problems = run(mcp, args.chat, agent, args.timeout, case)
         except Exception as e:  # noqa: BLE001 — смоук: любая осечка это провал прогона
             print(f'  ПРОВАЛ: {e}')
             failed = True
