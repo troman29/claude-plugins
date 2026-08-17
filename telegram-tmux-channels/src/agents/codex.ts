@@ -37,10 +37,17 @@ const NO_APPROVALS = ['--ask-for-approval', 'never']
 const FULL_ACCESS = ['--sandbox', 'danger-full-access']
 const SANDBOX_FLAGS = ['--sandbox', '-s', '--dangerously-bypass-approvals-and-sandbox']
 
+// Другой размен: вопросы не гасить, а показывать кнопками в чате. Модалка одобрения Codex —
+// обычный пикер с footer'ом «Esc to cancel», мост уводит её в Telegram сам, кода не нужно.
+// Тогда и песочница остаётся дефолтной: без неё спрашивать не о чем. Плата — round-trip в чат
+// на каждую команду вне рабочего каталога, поэтому по умолчанию выключено.
+const APPROVALS_IN_CHAT = ['--ask-for-approval', 'on-request']
+
 function withDefaults(base: string[]): string[] {
+  const inChat = process.env.TELEGRAM_CODEX_APPROVALS === '1'
   const flags = [
-    ...(base.includes('--ask-for-approval') ? [] : NO_APPROVALS),
-    ...(base.some(a => SANDBOX_FLAGS.includes(a)) ? [] : FULL_ACCESS),
+    ...(base.includes('--ask-for-approval') ? [] : inChat ? APPROVALS_IN_CHAT : NO_APPROVALS),
+    ...(inChat || base.some(a => SANDBOX_FLAGS.includes(a)) ? [] : FULL_ACCESS),
   ]
   return flags.length ? [base[0]!, ...flags, ...base.slice(1)] : base
 }

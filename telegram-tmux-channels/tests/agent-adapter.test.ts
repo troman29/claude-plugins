@@ -215,6 +215,17 @@ describe('запуск Codex без запросов одобрения', () => 
       .toBe('codex --ask-for-approval never --sandbox danger-full-access resume abc')
   })
 
+  // Проверено на живой модалке Codex 0.147: она парсится пикер-мостом как обычный вопрос,
+  // поэтому «одобрения в чат» — это только флаги запуска, отдельного кода не нужно.
+  test('с TELEGRAM_CODEX_APPROVALS спрашиваем в чате и оставляем песочницу', () => {
+    process.env.TELEGRAM_CODEX_APPROVALS = '1'
+    try {
+      expect(buildCodexLaunch(undefined, 'new')).toBe('codex --ask-for-approval on-request')
+    } finally {
+      delete process.env.TELEGRAM_CODEX_APPROVALS
+    }
+  })
+
   test('чужой выбор не перетираем', () => {
     expect(buildCodexLaunch(['codex', '--ask-for-approval', 'on-request'], 'new'))
       .toBe('codex --sandbox danger-full-access --ask-for-approval on-request')

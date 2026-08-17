@@ -123,6 +123,11 @@ counterpart of `--permission-mode bypassPermissions` it uses for Claude: nobody 
 terminal to approve an escalation, and the default `workspace-write` sandbox has no network. Pass
 your own `--sandbox`/`-s` in the launch command to keep Codex confined.
 
+Prefer to be asked? Set `TELEGRAM_CODEX_APPROVALS=1` and Codex launches with
+`--ask-for-approval on-request` inside its normal sandbox. Its approval dialog is an ordinary TUI
+picker, so the picker bridge forwards it to the topic as buttons — the command, the reason and
+`Yes / Yes, don't ask again / No`. Costs a chat round-trip per command that leaves the workspace.
+
 <details>
 <summary><b>Developing the plugin itself</b> — keep Codex on the live checkout</summary>
 
@@ -332,6 +337,7 @@ Environment, in `~/.claude/channels/telegram/.env`:
 | `TELEGRAM_LANG` | `en` | Initial UI language (`en`/`ru`); `/lang` overrides at runtime |
 | `TELEGRAM_PROJECTS_DIR` | `$HOME/projects` | Where `/bind <name>` looks |
 | `TELEGRAM_LAUNCH_CMD` | `claude --permission-mode bypassPermissions` | Claude launch command; Codex defaults to `codex` and learns its live argv |
+| `TELEGRAM_CODEX_APPROVALS` | off | `1` keeps Codex sandboxed and asks for approvals in the topic instead of running with full access |
 | `TELEGRAM_IDLE_UNLOAD_MINUTES` | `0` | Idle minutes before a session is stopped; `0` disables |
 | `TELEGRAM_MEMORY_MAX` | — | Per-session memory cap (`6G`) via `systemd-run --scope`, so a runaway session dies alone instead of OOM-ing the host. Linux/systemd only |
 | `TELEGRAM_CONTEXT_WARN_PCT` | `80` | Warn under a reply once the context window is this full; `0` disables |
