@@ -172,7 +172,23 @@ working session automatically — no `/bind` needed. Two modes:
   `git worktree add`.
 
 A new topic always asks first — mode buttons, plus **✏️ own folder** for a one-off path — so
-nothing starts in the wrong directory behind your back. Cyrillic topic names are transliterated
+nothing starts in the wrong directory behind your back. List more than one harness for the group
+and the same message grows a toggle on top:
+
+```jsonc
+"agents": ["claude", "codex"]   // in trusted-groups.json, per group or in defaults
+```
+
+```
+[ 🤖 Harness: Claude Code — tap to switch ]   ← flips in place, no new message
+[ 📁 Default folder ]
+[ ✏️ Own folder ]
+```
+
+Tapping the harness rewrites that one button; tapping a mode then starts the session with
+whatever harness is showing. One harness (or none listed) — no extra row, as before. A group
+`cmdline` is carried into the binding only when it belongs to the chosen harness, so a Codex
+topic can't inherit a `claude …` command line. Cyrillic topic names are transliterated
 before they become branch and tmux-session names.
 
 Name the new topic like one you closed months ago and the branch name collides. The bot never

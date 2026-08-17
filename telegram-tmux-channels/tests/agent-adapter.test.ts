@@ -160,3 +160,17 @@ describe('Codex CLI adapter', () => {
     }
   })
 })
+
+// Пикер харнесса (2026-08-17): один переключатель вместо пары кнопок на каждый режим.
+// Здесь — то, что можно проверить без Telegram: cmdline не должен переезжать чужому агенту.
+describe('харнесс и cmdline группы', () => {
+  test('codex не наследует cmdline, написанный для claude', () => {
+    const claudeArgv = ['claude', '--permission-mode', 'bypassPermissions']
+    expect(agentAdapter('claude').isProcessArgv(claudeArgv)).toBe(true)
+    expect(agentAdapter('codex').isProcessArgv(claudeArgv)).toBe(false) // → в биндинг не попадёт
+  })
+
+  test('свой cmdline агент забирает', () => {
+    expect(agentAdapter('codex').isProcessArgv(['codex', '--yolo'])).toBe(true)
+  })
+})

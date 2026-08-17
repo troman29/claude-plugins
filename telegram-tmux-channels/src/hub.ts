@@ -2665,10 +2665,10 @@ async function onTopicGone(key: string): Promise<void> {
 }
 
 // new forum topic in a trusted group → auto-bind + auto-start, no /bind needed
-type PendingTopic = { cfg: TrustedGroupConfig; mode: TrustedGroupMode; topicName: string; say: (html: string) => void; base?: string }
+type PendingTopic = { cfg: TrustedGroupConfig; mode: TrustedGroupMode; topicName: string; say: (html: string) => void; base?: string; agent?: AgentKind }
 const pendingTopics = new Map<string, PendingTopic>() // waiting for a "which folder?" answer
 // mode picker sent, waiting for a button tap — before dir resolution starts
-type PendingModeChoice = { cfg: TrustedGroupConfig; topicName: string; say: (html: string) => void }
+type PendingModeChoice = { cfg: TrustedGroupConfig; topicName: string; say: (html: string) => void; agent?: AgentKind }
 const pendingModeChoice = new Map<string, PendingModeChoice>()
 
 // Messages typed while a topic is still being set up (mode not yet picked, session not yet
@@ -2738,13 +2738,14 @@ function beginTopicSession(
   topicName: string,
   say: (html: string) => void,
   base?: string,
+  agent?: AgentKind,
 ): void {
   if (!cfg.dir) {
     say(t().sendFolderPromptBind(codePath(PROJECTS_DIR)))
-    pendingTopics.set(key, { cfg, mode, topicName, say, ...(base ? { base } : {}) })
+    pendingTopics.set(key, { cfg, mode, topicName, say, ...(base ? { base } : {}), ...(agent ? { agent } : {}) })
     return
   }
-  void runAutoTopic(key, cfg, cfg.dir, mode, slugFromTopicName(topicName), say, base)
+  void runAutoTopic(key, cfg, cfg.dir, mode, slugFromTopicName(topicName), say, base, agent)
 }
 
 async function runAutoTopic(
@@ -2755,7 +2756,9 @@ async function runAutoTopic(
   branch: string,
   say: (html: string) => void,
   base?: string,
+  agent?: AgentKind,
 ): Promise<void> {
+  const usedAgent = agent ?? cfg.agent // выбор в пикере важнее группового умолчания
   const branchNote = mode === 'folder' ? '' : t().branchNote(escHtml(branch))
   say(t().preparingSession(escHtml(mode), branchNote))
   settingUp.add(key)
@@ -2779,8 +2782,10 @@ async function runAutoTopic(
     const reg = loadBindings()
     reg[key] = {
       dir: resolvedDir,
-      ...(cfg.agent ? { agent: cfg.agent } : {}),
-      ...(cfg.cmdline ? { cmdline: cfg.cmdline } : {}),
+      ...(usedAgent ? { agent: usedAgent } : {}),
+      // cmdline из конфига группы — только если он про ТОГО ЖЕ агента. Адаптер чужой argv
+      // и сам отбросит, но хранить в биндинге запуск claude под codex — врать состоянием.
+      ...(cfg.cmdline && agentAdapter(usedAgent).isProcessArgv(cfg.cmdline) ? { cmdline: cfg.cmdline } : {}),
       ...(usedHook ? { hookBranch: usedBranch } : {}), // именно ту, что создали, — её же сносить
     }
     saveBindings(reg)
@@ -2803,9 +2808,21 @@ async function runAutoTopic(
 
 const ownDirLabel = () => t().ownDirLabel
 
-function modeKeyboard(key: string, cfg: TrustedGroupConfig): InlineKeyboard {
+/** Харнессы, между которыми переключает кнопка. Пусто/один — переключателя нет. */
+function harnessChoices(cfg: TrustedGroupConfig): AgentKind[] {
+  return (cfg.agents ?? []).length > 1 ? cfg.agents! : []
+}
+
+function modeKeyboard(key: string, cfg: TrustedGroupConfig, agent?: AgentKind): InlineKeyboard {
   const kb = new InlineKeyboard()
   const bases = cfg.dir ? worktreeBases(cfg.dir) : []
+  // Переключатель, а не отдельная кнопка на каждую пару «режим × харнесс»: режимов уже три,
+  // и перемножать их значит утопить пикер в рядах.
+  const choices = harnessChoices(cfg)
+  if (choices.length) {
+    const current = agent ?? cfg.agent ?? choices[0]!
+    kb.text(t().harnessToggle(agentAdapter(current).displayName), `topicharness:${key}`).row()
+  }
   for (const m of cfg.modes) {
     // Несколько баз — размножаем саму кнопку «worktree», отдельного пикера не заводим:
     // выбор режима и выбор базы — один вопрос, один тап.
@@ -2972,7 +2989,7 @@ async function handleInbound(inbound: Inbound): Promise<void> {
       return
     }
     pendingTopics.delete(key)
-    await runAutoTopic(key, pendingTopic.cfg, dir, pendingTopic.mode, slugFromTopicName(pendingTopic.topicName), pendingTopic.say, pendingTopic.base)
+    await runAutoTopic(key, pendingTopic.cfg, dir, pendingTopic.mode, slugFromTopicName(pendingTopic.topicName), pendingTopic.say, pendingTopic.base, pendingTopic.agent)
     return
   }
 
@@ -4278,6 +4295,28 @@ bot.on('callback_query:data', async ctx => {
     }
     return
   }
+  const th = /^topicharness:(.+)$/.exec(ctx.callbackQuery.data)
+  if (th) {
+    const [, key] = th
+    const pending = pendingModeChoice.get(key!)
+    if (!pending) {
+      await ctx.answerCallbackQuery({ text: t().toastAlreadyChosen }).catch(() => {})
+      return
+    }
+    if (!isAdmin(String(ctx.from.id))) {
+      await ctx.answerCallbackQuery({ text: t().toastNoRights }).catch(() => {})
+      return
+    }
+    // По кругу: следующий харнесс из настроенных. Сообщение не пересоздаём — правим клавиатуру
+    // на месте, чтобы выбор режима остался тем же одним тапом.
+    const choices = harnessChoices(pending.cfg)
+    const cur = pending.agent ?? pending.cfg.agent ?? choices[0]!
+    const next = choices[(choices.indexOf(cur) + 1) % choices.length]!
+    pendingModeChoice.set(key!, { ...pending, agent: next })
+    await ctx.answerCallbackQuery({ text: agentAdapter(next).displayName }).catch(() => {})
+    await ctx.editMessageReplyMarkup({ reply_markup: modeKeyboard(key!, pending.cfg, next) }).catch(() => {})
+    return
+  }
   const tm = /^topicmode:(.+):(folder|worktree)(?::(\d+))?$/.exec(ctx.callbackQuery.data)
   if (tm) {
     const [, key, modeStr, baseIdx] = tm
@@ -4297,7 +4336,7 @@ bot.on('callback_query:data', async ctx => {
     const base = baseIdx !== undefined && pending.cfg.dir
       ? worktreeBases(pending.cfg.dir)[Number(baseIdx)]
       : undefined
-    beginTopicSession(key, pending.cfg, mode, pending.topicName, pending.say, base)
+    beginTopicSession(key, pending.cfg, mode, pending.topicName, pending.say, base, pending.agent)
     return
   }
   const td = /^topicdir:(.+)$/.exec(ctx.callbackQuery.data)

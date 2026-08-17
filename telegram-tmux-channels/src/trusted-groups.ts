@@ -21,6 +21,8 @@ export type TrustedGroupConfig = {
   hook?: HookConfig
   cmdline?: string[]
   agent?: AgentKind
+  /** Какие харнессы предлагать в пикере. Один (или пусто) — кнопки-переключателя нет. */
+  agents?: AgentKind[]
   exclude?: { topicIds?: number[]; nameContains?: string[] }
 }
 
@@ -30,7 +32,7 @@ export function modeLabel(mode: TrustedGroupMode): string {
 
 const DEFAULT_MODES: TrustedGroupMode[] = ['folder']
 
-type GroupDefaults = { modes?: TrustedGroupMode[]; cmdline?: string[]; dir?: string; agent?: AgentKind }
+type GroupDefaults = { modes?: TrustedGroupMode[]; cmdline?: string[]; dir?: string; agent?: AgentKind; agents?: AgentKind[] }
 type GroupEntry = GroupDefaults & { hook?: HookConfig; exclude?: TrustedGroupConfig['exclude'] }
 type TrustedGroupsFile = { defaults?: GroupDefaults; groups?: Record<string, GroupEntry> }
 
@@ -40,6 +42,7 @@ export function mergeGroupConfig(defaults: GroupDefaults | undefined, group: Gro
     modes: group.modes ?? defaults?.modes ?? DEFAULT_MODES,
     cmdline: group.cmdline ?? defaults?.cmdline,
     agent: group.agent ?? defaults?.agent,
+    agents: group.agents ?? defaults?.agents,
     hook: group.hook,
     exclude: group.exclude,
   }
