@@ -2457,6 +2457,7 @@ async function spawnSession(
     return
   }
   spawningBindings.add(key)
+  hintedKeys.delete(key) // новая сессия — напомним ей про reply-тул ещё раз
   let launchIssued = false
   try {
   // bindings.json is hand-editable/hot-reloaded. Never let a stale or mistyped
@@ -3208,11 +3209,21 @@ let nextDeliveryId = 1
 const REPLY_HINT = 'Answer via the telegram `reply` tool (chat_id/thread_id from the tag above); '
   + 'terminal output alone never reaches the user.'
 
-function fallbackInboundText(content: string, meta: Record<string, string>): string {
-  const details = Object.entries(meta).map(([key, value]) => `${key}=${JSON.stringify(value)}`).join(' ')
-  return details
-    ? `[Telegram message; ${details}]\n${REPLY_HINT}\n${content}`
-    : content
+// Подсказку даём ОДИН раз на сессию: агенту хватает, а печатать её в каждое сообщение —
+// засорять и пейн, и его контекст. Ключ — БИНДИНГ, а не пейн: пейн приходит то как id (`%13`),
+// то как цель сессии (`=name:`), и на разных путях доставки подсказка выдавалась повторно.
+const hintedKeys = new Set<string>()
+
+function fallbackInboundText(content: string, meta: Record<string, string>, key?: string): string {
+  const details = Object.entries(meta).map(([k, value]) => `${k}=${JSON.stringify(value)}`).join(' ')
+  if (!details) {
+    return content
+  }
+  const first = key !== undefined && !hintedKeys.has(key)
+  if (first) {
+    hintedKeys.add(key)
+  }
+  return `[Telegram message; ${details}]\n${first ? `${REPLY_HINT}\n` : ''}${content}`
 }
 
 async function deliverMessage(key: string, dir: string, payload: HubToStub, needle: string): Promise<number> {
@@ -3279,7 +3290,7 @@ function deliveryDeps(key: string, dir: string, payload: HubToStub, id: string, 
           ? `=${sessionName(key, binding.dir)}:`
           : undefined
       if (pane && payload.op === 'event' && payload.kind === 'message') {
-        await typeLine(pane, fallbackInboundText(payload.content, payload.meta))
+        await typeLine(pane, fallbackInboundText(payload.content, payload.meta, key))
       }
     },
     warn: async () => {
