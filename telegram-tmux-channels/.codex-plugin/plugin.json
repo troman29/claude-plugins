@@ -1,0 +1,30 @@
+{
+  "name": "telegram-tmux-channels",
+  "version": "2.13.0",
+  "description": "Telegram tmux bridge for Claude Code and Codex sessions.",
+  "author": {
+    "name": "Windbit"
+  },
+  "license": "Apache-2.0",
+  "keywords": [
+    "telegram",
+    "tmux",
+    "codex",
+    "claude-code"
+  ],
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Telegram tmux channels",
+    "shortDescription": "Control Codex and Claude Code sessions from Telegram.",
+    "longDescription": "Routes Telegram topics to durable tmux sessions with lifecycle controls, replies, permissions, pickers, and status updates for Codex and Claude Code.",
+    "developerName": "Windbit",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Configure Telegram control for this Codex session."
+    ]
+  }
+}

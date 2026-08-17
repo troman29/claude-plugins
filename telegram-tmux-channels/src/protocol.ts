@@ -1,6 +1,8 @@
 // NDJSON protocol between stub and hub over the hub.sock unix socket.
+import type { AgentKind } from './agents/types'
 
 export type SessionInfo = {
+  agent?: AgentKind // absent on an old stub means Claude
   pane?: string
   pid?: number
   cmdline?: string[]
@@ -45,6 +47,9 @@ export type StubToHub =
   // the line shows up mid-turn. Completion arrives later via turnend's `bg` above.
   // Without this the TUI's "Background tasks" were invisible in Telegram entirely.
   | { op: 'bg'; bindingKeys: string[]; sessionId?: string; command: string; description?: string }
+  // Codex exposes compaction lifecycle through PreCompact/PostCompact hooks but no progress
+  // percentage.  Keeping this separate from pane scraping makes start/done deterministic.
+  | { op: 'compaction'; phase: 'start' | 'done'; bindingKeys: string[]; sessionId?: string; trigger?: 'manual' | 'auto' }
 
   // Подтверждение доставки входящего. Стаб отдаёт сообщение в Claude Code MCP-уведомлением,
   // и до сих пор его провал был виден только в логе стаба: хаб считал отправку удавшейся и

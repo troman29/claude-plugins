@@ -63,5 +63,20 @@
     скрыла. Починено переносом ack в screen-loop (жмёт, пока промпт не исчез; видит пейны без
     подключённого stub) — **теперь PB5 ✅ по реальному e2e**: пейн, застрявший на промпте без
     stub, хаб сам разблокировал (`startup prompt auto-acked`). См. regression-checklist.
-- **TODO проход 2:** PB3 custom-ответ («Свой вариант»→текст→`typeLine`), PB4 multi-select
-  (чекбоксы+Submit), PB6 «отвечено в терминале», PB7 non-hub сессия не хайджекает.
+- **2026-08-15 (Docker + настоящий MTProto, Claude topic 464)** —
+  - **PB3 ✅** single-select `Red/Blue/Other`: tap «✍️ Custom option» → бот запросил текст;
+    `TTC_CUSTOM_VALUE_20260815` был введён в TUI как ответ и Claude подтвердил его обратно в
+    Telegram. После завершения старое picker-сообщение не содержало кнопок.
+  - **PB4 ✅** multi-select `Alpha/Beta/Gamma/Other`: taps `Alpha` и `Gamma` перерисовали
+    клавиатуру с `✅`; `Submit` доставил Claude ровно `Alpha, Gamma`, что агент подтвердил
+    сообщением `Выбор получен: Alpha, Gamma`.
+  - **PB3+PB4 custom multi ✅**: Telegram выбрал `Alpha` → «Свой вариант» →
+    `TTC_CUSTOM_FINAL_VALUE` → Submit. Хаб ввёл строку прямо в inline-поле Claude
+    `Type something` (не через `$EDITOR`), сохранил один Telegram picker и подтвердил
+    review+submit. Claude получил ровно `Alpha, TTC_CUSTOM_FINAL_VALUE` и ответил
+    `TTC_CUSTOM_FINAL_OK`.
+  - **PB6 ✅** picker `Red or Blue?` (msg650) был отвечен непосредственно в Claude TUI (`Red`),
+    после чего та же Telegram bubble стала `answered in the terminal`; агент получил `Red`, а
+    fallback дослал итог `Выбор получен: Red` (msg651).
+  - **PB7 ✅** в той же папке запущен отдельный Claude pane `%4` без `TELEGRAM_BINDING_KEYS`;
+    он открыл `Alpha or Beta?` в TUI, но hub не написал `picker sent` и бот не создал bubble.

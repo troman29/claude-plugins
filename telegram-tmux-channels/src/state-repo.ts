@@ -10,6 +10,7 @@ import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'fs'
 import { STATE_DIR } from './paths'
 import { join } from 'path'
 import type { Picker } from './picker'
+import type { TrustedGroupConfig } from './trusted-groups'
 
 type PendingAnswer = { dir: string; at: number }
 // An open TUI picker mirrored to Telegram buttons. Keyed by tmux pane. `key` (the binding) lets us
@@ -22,9 +23,19 @@ export type HubState = {
   pendingAnswer: Record<string, PendingAnswer>
   lastFallback: Record<string, string>
   pickers: Record<string, PersistedPicker>
+  pendingModes: Record<string, PersistedPendingMode>
+  queuedMessages: Record<string, PersistedInbound[]>
+  launchCaptures: Record<string, PersistedLaunchCapture>
 }
 
-const empty = (): HubState => ({ version: 1, pendingAnswer: {}, lastFallback: {}, pickers: {} })
+export type PersistedPendingMode = { cfg: TrustedGroupConfig; topicName: string; chatId: string; threadId: number }
+export type PersistedInbound = { text: string; chatId: string; threadId?: number; senderId: string; username?: string; msgId?: number; at: number }
+// A fresh launch has no session id yet. Preserve the pre-launch rollout ids so
+// a hub restart can continue the exact capture instead of guessing the newest
+// conversation in a shared directory.
+export type PersistedLaunchCapture = { beforeIds: string[]; at: number }
+
+const empty = (): HubState => ({ version: 1, pendingAnswer: {}, lastFallback: {}, pickers: {}, pendingModes: {}, queuedMessages: {}, launchCaptures: {} })
 
 export class HubStateRepository {
   private state: HubState = empty()
@@ -49,6 +60,9 @@ export class HubStateRepository {
           pendingAnswer: raw.pendingAnswer ?? {},
           lastFallback: raw.lastFallback ?? {},
           pickers: raw.pickers ?? {},
+          pendingModes: raw.pendingModes ?? {},
+          queuedMessages: raw.queuedMessages ?? {},
+          launchCaptures: raw.launchCaptures ?? {},
         }
       }
     } catch {} // no file / corrupt → start empty
@@ -65,6 +79,16 @@ export class HubStateRepository {
   pickerEntries(): [string, PersistedPicker][] { return Object.entries(this.state.pickers) }
   setPicker(pane: string, v: PersistedPicker): void { this.state.pickers[pane] = v; this.schedule() }
   delPicker(pane: string): void { delete this.state.pickers[pane]; this.schedule() }
+
+  pendingModeEntries(): [string, PersistedPendingMode][] { return Object.entries(this.state.pendingModes) }
+  setPendingMode(key: string, v: PersistedPendingMode): void { this.state.pendingModes[key] = v; this.schedule() }
+  delPendingMode(key: string): void { delete this.state.pendingModes[key]; this.schedule() }
+  queuedEntries(): [string, PersistedInbound[]][] { return Object.entries(this.state.queuedMessages) }
+  setQueued(key: string, v: PersistedInbound[]): void { this.state.queuedMessages[key] = v; this.schedule() }
+  delQueued(key: string): void { delete this.state.queuedMessages[key]; this.schedule() }
+  launchCaptureEntries(): [string, PersistedLaunchCapture][] { return Object.entries(this.state.launchCaptures) }
+  setLaunchCapture(key: string, v: PersistedLaunchCapture): void { this.state.launchCaptures[key] = v; this.schedule() }
+  delLaunchCapture(key: string): void { delete this.state.launchCaptures[key]; this.schedule() }
 
   private schedule(): void {
     if (this.timer) return

@@ -9,6 +9,7 @@ allowed-tools:
   - Bash(mkdir *)
   - Bash(chmod *)
   - Bash(claude mcp *)
+  - Bash(codex mcp *)
   - Bash(systemctl --user *)
   - Bash(launchctl *)
 ---
@@ -73,8 +74,10 @@ Optional (all have working defaults — mention them only if asked):
 
 1. **Find the stub**:
    `ls -d ~/.claude/plugins/cache/*/telegram-tmux-channels/*/src/stub.ts | tail -1`
-2. **Register it for every session**:
+2. **Register it for every session** (skip the Codex command when installed as a Codex plugin;
+   its `.mcp.json` registers the bundled server automatically):
    `claude mcp add --scope user telegram -- bun run <that stub.ts path>`
+   For Codex too: `codex mcp add telegram -- bun run <that stub.ts path>`.
    Needs [Bun](https://bun.sh); tmux is needed too for session control (see the README).
 3. **Token** — validate the shape `/^\d+:[\w-]+$/`, then
    `mkdir -p ~/.claude/channels/telegram`, merge `TELEGRAM_BOT_TOKEN=<token>` into `.env`
@@ -84,7 +87,7 @@ Optional (all have working defaults — mention them only if asked):
 5. **Start a session** in a project:
    `claude --dangerously-load-development-channels server:telegram`
    The hub autospawns on the first connect — no service required.
-6. **Bind from Telegram** — in the target topic or DM, an admin sends `/bind <folder>`.
+6. **Bind from Telegram** — `/bind <folder>` for Claude Code or `/bind codex <folder>` for Codex.
 
 If the bot will live in a group: privacy mode **off**, topics **on**, and the bot must actually
 be added to the group — otherwise it sees nothing.

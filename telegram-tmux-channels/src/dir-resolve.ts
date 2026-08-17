@@ -1,5 +1,6 @@
 // Resolve a working directory for an auto-topic binding, per trusted-group mode.
 import { basename, dirname, join } from 'path'
+import { existsSync } from 'fs'
 import type { HookConfig, TrustedGroupMode } from './trusted-groups'
 import { loadProjectConfig } from './project-config'
 
@@ -21,13 +22,38 @@ export async function gitBranch(dir: string): Promise<string | undefined> {
   return branch || undefined
 }
 
+export function worktreeDirFor(baseDir: string, branch: string): string {
+  return join(dirname(baseDir), `${basename(baseDir)}--${branch.replace(/\//g, '+')}`)
+}
+
+/** Свободно ли имя: нет такой ветки И нет папки ворктри под неё. */
+export async function branchNameTaken(baseDir: string, branch: string): Promise<boolean> {
+  const ref = await run(['git', '-C', baseDir, 'rev-parse', '--verify', '--quiet', branch])
+  return ref.ok || existsSync(worktreeDirFor(baseDir, branch))
+}
+
+/** Свободное имя ветки: занято — добавляем -2, -3, … (первое имя без суффикса).
+ *
+ * Имя топика уникальным не бывает: назвал новый топик как давно закрытый — и ветка та же.
+ * Раньше ворктри молча вставал на СТАРУЮ ветку, и работа ложилась поверх её состояния —
+ * так PR #773 уехал на базу месячной давности (703 коммита позади dev). Молчаливое
+ * переиспользование чужой истории хуже лишней цифры в имени.
+ */
+export async function freeBranchName(baseDir: string, branch: string, limit = 50): Promise<string> {
+  for (let n = 1; n <= limit; n++) {
+    const candidate = n === 1 ? branch : `${branch}-${n}`
+    if (!(await branchNameTaken(baseDir, candidate))) {
+      return candidate
+    }
+  }
+  throw new Error(`no free branch name for "${branch}" after ${limit} tries`)
+}
+
 export async function resolveWorktreeDir(baseDir: string, branch: string): Promise<string> {
-  const slug = branch.replace(/\//g, '+')
-  const dir = join(dirname(baseDir), `${basename(baseDir)}--${slug}`)
-  const exists = await run(['git', '-C', baseDir, 'rev-parse', '--verify', '--quiet', branch])
-  const res = exists.ok
-    ? await run(['git', '-C', baseDir, 'worktree', 'add', dir, branch])
-    : await run(['git', '-C', baseDir, 'worktree', 'add', '-b', branch, dir])
+  const dir = worktreeDirFor(baseDir, branch)
+  // Всегда НОВАЯ ветка: имя сюда приходит уже свободным (freeBranchName), а вставать на
+  // существующую — это и есть тот самый баг с чужой историей.
+  const res = await run(['git', '-C', baseDir, 'worktree', 'add', '-b', branch, dir])
   if (!res.ok) {
     throw new Error(`git worktree add failed: ${(res.err || res.out).trim()}`)
   }
@@ -109,14 +135,21 @@ export async function resolveModeDir(
   baseDir: string,
   hook: HookConfig | undefined,
   branch: string,
-): Promise<{ dir: string; hook: HookConfig | undefined }> {
+): Promise<{ dir: string; hook: HookConfig | undefined; branch: string }> {
   if (mode === 'folder') {
-    return { dir: baseDir, hook: undefined }
+    return { dir: baseDir, hook: undefined, branch }
   }
+  // Развод имён — здесь, а не у вызывающего: точка одна, обойти её нельзя. Хук тоже получает
+  // уже свободное имя — он режет ветку сам и про занятость знать не обязан.
+  const free = await freeBranchName(baseDir, branch)
   // worktree mode: a configured hook replaces plain `git worktree add` (e.g. a wrapper
   // that also provisions a per-branch DB) — no hook, no customization needed, just git.
   const h = worktreeHook(baseDir, hook)
-  return { dir: h ? await resolveHookDir(h, branch, baseDir) : await resolveWorktreeDir(baseDir, branch), hook: h }
+  return {
+    dir: h ? await resolveHookDir(h, free, baseDir) : await resolveWorktreeDir(baseDir, free),
+    hook: h,
+    branch: free,
+  }
 }
 
 // Stand command from the binding folder's `.tmux-channels.json`. Returns the run result or undefined

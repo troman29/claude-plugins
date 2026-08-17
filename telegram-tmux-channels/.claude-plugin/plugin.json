@@ -1,6 +1,6 @@
 {
   "name": "telegram-tmux-channels",
-  "description": "Telegram channel for Claude Code, hub-and-spoke: one bot, many sessions, topic→folder bindings via /bind from chat, tmux ops /compact,/esc,/restart,/resume,/new,/status. Fork of telegram@claude-plugins-official.",
+  "description": "Telegram tmux bridge for Claude Code and Codex: one bot, many sessions, per-topic agent adapters, lifecycle controls, pickers, permissions and status hooks.",
   "version": "2.13.0",
   "keywords": [
     "telegram",

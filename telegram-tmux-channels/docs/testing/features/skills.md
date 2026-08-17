@@ -50,6 +50,20 @@
 - `tests/core.test.ts`: `parseOpsCommand` (ops vs не-ops). Мэнглинг/скилл-парсинг — кандидаты в юниты.
 
 ## Лог прогона
+- **2026-08-17 (Codex, Docker+MTProto) — SK3 ✅ (menu + run):** `/skills` в topic 515 показал
+  кнопку project skill `telegram-e2e`. Tap дал Telegram toast `▶ /telegram-e2e`, а pane получил
+  совместимую с Codex явную инструкцию «Read and follow … skill named \"telegram-e2e\"».
+  Скилл прочитал свой `SKILL.md`, открыл tool-approval picker, после `Allow for this session`
+  отправил в тот же topic msg960 `TTC_CODEX_SKILL_E2E_OK`. Подтверждение — Telegram API и pane.
+- **2026-08-17 (Codex, Docker+MTProto) — SK3 pagination ✅:** в isolated test project добавлены
+  девять minimal skill fixtures, итого 10 skills. `/skills` в Telegram отрисовал page 1/2 с
+  восемью skills и `▶`; tap обновил *то же* сообщение до page 2/2 (`page-skill-09`,
+  `telegram-e2e`, `◀`). Проверено через `list_inline_buttons`; fixtures после прогона удалены.
+- **2026-08-17 (Codex, Docker+MTProto) — SK4 ✅:** Docker-only global skill с настоящим именем
+  `fixture-plugin:skill` после `/reload` дал `refreshCommands … skills 1`. Команда
+  `/fixture_plugin_skill` в Telegram была сопоставлена обратно с исходным именем: pane прямо
+  показал `fixture-plugin:skill`, прочитал его `SKILL.md` и отправил msg971
+  `TTC_SK4_MANGLE_OK` в тот же topic. Fixture после прогона перемещён в тестовую корзину.
 - **2026-07-18 (проход 1)** —
   - **SK2 ✅ (регрессия прод-баги):** `/oh` в топик → пейн «● Unknown command: /oh. Did you mean /cd?»
     — впечатан ЛИТЕРАЛ, Enter не выбрал фаззи-вариант. Guard прод-баги 8f0d050 закрыт (e2e).
@@ -57,5 +71,4 @@
     Глобальные — набирай как команды». Корректный пустой стейт.
   - **SK1 ~✅:** механизм инъекции подтверждён SK2 (слэш идёт через `injectSlashToPanes`/`typeSlashCommand`).
   - **SK5 ✅ (шов, по наблюдению):** `/status` и др. ops стабильно отвечают как ops, не инжектятся скиллом.
-- **TODO:** SK3 полное меню (пагинация `skpg`/тап `skrun`) — нужен проект С скиллами; SK4 мэнглинг
   (`plugin:skill`→bot-cmd→обратно); юнит на мэнглинг/скилл-парсинг.

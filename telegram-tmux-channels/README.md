@@ -1,6 +1,6 @@
 # telegram-tmux-channels
 
-Run Claude Code from Telegram. One bot, many sessions — each forum topic is its own project.
+Run Claude Code or Codex from Telegram. One bot, many sessions — each forum topic is its own project.
 
 ```
 You  → #frontend:  fix the login redirect
@@ -16,8 +16,8 @@ A fork of the official `telegram@claude-plugins-official`. Linux and macOS.
 
 ## Why this and not a mirror
 
-Tools like ccgram stream the whole transcript into chat. This one doesn't: **only what the
-agent deliberately sends** shows up — the `reply` tool from Claude Code's native channels.
+Tools like ccgram stream the whole transcript into chat. This one doesn't: **only the final
+answer or an explicit `reply` tool call** shows up; intermediate tool chatter stays in the TUI.
 Your phone stays readable while the agent grinds through 40 tool calls.
 
 What you get beyond plain messaging:
@@ -87,6 +87,33 @@ That's a platform rule, not ours. The hub starts itself on the first session; no
 
 Now in Telegram: create a topic, send `/bind myproject`, and talk to it.
 
+### Codex setup
+
+Codex uses the same hub, MCP tools, hooks, tmux sessions and state. Installing the Codex plugin
+registers its bundled Telegram MCP server automatically. For a standalone checkout without a
+plugin installation, register the stub once using its absolute path:
+
+```bash
+codex mcp add telegram -- bun run /absolute/path/to/telegram-tmux-channels/src/stub.ts
+```
+
+Review and trust the plugin hooks, then check the MCP server with `/mcp` in Codex. Bind a topic
+explicitly to Codex:
+
+```text
+/bind codex myproject
+```
+
+Legacy `/bind myproject` continues to select Claude Code. The choice is persisted per topic, so
+session lifecycle commands and idle revive keep using the selected agent.
+
+### Docker integration test
+
+The Docker harness is the release gate: it has its own bot, Telegram state and home volume. For
+the Codex half of the smoke test, set either `CODEX_API_KEY` or `CODEX_ACCESS_TOKEN` in
+`docker.env`; do not mount the host's `~/.codex` into the container. The image installs both CLIs
+and its entrypoint registers the same Telegram MCP stub for each.
+
 ## Commands
 
 Sent in a bound topic or DM. These are handled by the bot and never reach the agent.
@@ -95,7 +122,7 @@ Sent in a bound topic or DM. These are handled by the bot and never reach the ag
 
 | Command | What it does |
 |---|---|
-| `/bind <folder>` | Bind this topic to a folder — a name under `$TELEGRAM_PROJECTS_DIR` or an absolute path |
+| `/bind [claude\|codex] <folder>` | Bind this topic to a folder and agent (Claude by default) |
 | `/unbind` | Unbind and kill the tmux session it created |
 | `/allow <id…>` | Let another Telegram user into this binding |
 | `/delete` | Unbind, tear down the worktree, and delete the topic itself — one move |
@@ -105,7 +132,7 @@ Sent in a bound topic or DM. These are handled by the bot and never reach the ag
 
 | Command | What it does |
 |---|---|
-| `/status` | Folder, branch, tmux name, session id, whether claude is alive, usage limits, context fill |
+| `/status` | Folder, branch, tmux name, session id, selected agent state, and supported usage/context data |
 | `/resume` | Bring the session back. `/resume <id>` picks one specific past conversation — works even with tmux down |
 | `/new` | Start fresh |
 | `/restart` · `/stop` | Graceful restart / stop |
@@ -147,6 +174,11 @@ working session automatically — no `/bind` needed. Two modes:
 A new topic always asks first — mode buttons, plus **✏️ own folder** for a one-off path — so
 nothing starts in the wrong directory behind your back. Cyrillic topic names are transliterated
 before they become branch and tmux-session names.
+
+Name the new topic like one you closed months ago and the branch name collides. The bot never
+reuses the old branch — it takes the next free name (`name-2`, `name-3`, …), cuts it fresh from
+the current base, and says so in the topic. Reusing would silently stack today's work on a
+month-old state, which is exactly how a PR ends up 700 commits behind.
 
 ## Per-project config
 
@@ -233,7 +265,7 @@ Environment, in `~/.claude/channels/telegram/.env`:
 | `TELEGRAM_ADMINS` | — | Admin user ids, comma-separated |
 | `TELEGRAM_LANG` | `en` | Initial UI language (`en`/`ru`); `/lang` overrides at runtime |
 | `TELEGRAM_PROJECTS_DIR` | `$HOME/projects` | Where `/bind <name>` looks |
-| `TELEGRAM_LAUNCH_CMD` | `claude --permission-mode bypassPermissions` | Launch command for `/new` and `/resume` |
+| `TELEGRAM_LAUNCH_CMD` | `claude --permission-mode bypassPermissions` | Claude launch command; Codex defaults to `codex` and learns its live argv |
 | `TELEGRAM_IDLE_UNLOAD_MINUTES` | `0` | Idle minutes before a session is stopped; `0` disables |
 | `TELEGRAM_MEMORY_MAX` | — | Per-session memory cap (`6G`) via `systemd-run --scope`, so a runaway session dies alone instead of OOM-ing the host. Linux/systemd only |
 | `TELEGRAM_CONTEXT_WARN_PCT` | `80` | Warn under a reply once the context window is this full; `0` disables |
@@ -262,7 +294,7 @@ Two processes and a Unix socket:
 - **Hub** (`src/hub.ts`) — the only thing holding the bot token and polling Telegram. It maps
   chat → binding → the live session in that folder, drives tmux, and renders buttons. Starts
   itself when the first session connects.
-- **Stub** (`src/stub.ts`) — a tiny MCP server inside each Claude session. Tells the hub where
+- **Stub** (`src/stub.ts`) — a tiny MCP server inside each Claude or Codex session. Tells the hub where
   the session lives (folder, tmux pane, pid) and relays `reply` / `react` / `edit_message`.
 
 Two details worth knowing, because they explain most of the behaviour:

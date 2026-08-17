@@ -19,6 +19,10 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
  && apt-get install -y --no-install-recommends nodejs \
  && rm -rf /var/lib/apt/lists/*
 
+# Codex is part of the integration matrix, not a host-only afterthought. Authentication is
+# supplied at runtime through docker.env, keeping this image independent from host ~/.codex.
+RUN npm install -g @openai/codex
+
 # uid 1000 to match the host user (bind-mounted files keep sane ownership). Ubuntu 24.04 ships a
 # default `ubuntu` user already on uid 1000 — drop it first.
 RUN userdel -r ubuntu 2>/dev/null || true; \

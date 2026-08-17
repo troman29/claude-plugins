@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "telegram": {
+      "cwd": ".",
+      "command": "bun",
+      "args": [
+        "src/stub.ts"
+      ]
+    }
+  }
+}

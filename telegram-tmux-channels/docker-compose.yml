@@ -14,6 +14,10 @@ services:
     hostname: claude-tmux
     env_file:
       - ./docker.env
+    # The Docker harness starts one hub explicitly.  Prevent Claude/Codex stubs
+    # from spawning a competing long-polling hub while that process is restarted.
+    environment:
+      TELEGRAM_HUB_AUTOSPAWN: "0"
     volumes:
       # isolated, persistent home — Claude auth + hub state survive restarts, separate from host ~/.
       - claude-home:/home/user

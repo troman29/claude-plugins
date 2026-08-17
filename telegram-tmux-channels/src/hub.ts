@@ -16,26 +16,26 @@ import type { Socket } from 'bun'
 import { STATE_DIR, ENV_FILE, INBOX_DIR, PID_FILE, SOCK_PATH } from './paths'
 import { messageKey, keyToTarget, targetFor, type Target } from './bindings'
 import {
-  loadBindings, saveBindings, keysForDir, resolveProjectDir, type BindingEntry,
+  loadBindings, saveBindings, keysForDir, sessionOwner, setSessionId, resolveProjectDir, parseBindSpec, type BindingEntry,
 } from './registry'
 import { encode, makeLineDecoder, type StubToHub, type HubToStub, type SessionInfo } from './protocol'
 import { Router } from './router'
 import { chunk, MAX_CHUNK_LIMIT, MAX_RICH_LIMIT, MAX_ATTACHMENT_BYTES, planAttachments } from './chunk'
 import { escapeForRich, mdToHtml, needsRich } from './md-html'
 import {
-  parseOpsCommand, parseCompaction, parseContextPct, parseError, parseWorkflow, paneIsWorking, paneDigest, isHeadlessArgv, sendKeys, typeLine, typeSlashCommand, selectOption, restartSession, stopSession, alive,
-  hasTmuxSession, ensureTmuxSession, killTmuxSession, buildLaunch, shellQuote, isIdleToUnload, tmuxSessionName,
+  parseOpsCommand, paneDigest, sendKeys, typeLine, typeText, typeSlashCommand, selectOption, restartSession, stopSession, alive,
+  hasTmuxSession, ensureTmuxSession, killTmuxSession, shellQuote, isIdleToUnload, tmuxSessionName,
+  paneCurrentCommand,
   type LaunchMode,
-  RESUME_PROMPT_OFF, memoryCapPrefix,
+  memoryCapPrefix,
   capturePane, capturePaneAnsi, type OpsCommand,
 } from './tmux-ops'
 import { ansiToImage } from './ansi-image'
 import { emptyStatus, hasLiveWork, renderBg, renderStatus, statusIsEmpty, syncBg, type BgTask, type StatusState } from './status-render'
-import { discoverGlobalSkills, discoverProjectSkills, mangleCmd, resolveSkillCommand, tgDescription, type Skill } from './skills'
-import { claudePidsInDir, cmdlineOf } from './proc'
-import { readLimits, formatLimits } from './limits'
+import { discoverGlobalSkills, discoverProjectSkills, mangleCmd, resolveSkillCommand, skillInvocation, tgDescription, type Skill } from './skills'
+import { agentPidsInDir, cmdlineOf } from './proc'
 import { rmQuiet } from './util'
-import { parsePicker, checkedIndexes, parseResumeList, fnv1a, FOOTER, paneReady, type Picker, type ResumeRow } from './picker'
+import { parsePicker, checkedIndexes, pickerCursorIndex, parseResumeList, fnv1a, hasPickerFooter, isStartupTrustPrompt, isCodexStartupTrustScreen, type Picker, type ResumeRow } from './picker'
 import { buildKeyboard, parseCallback } from './picker-drive'
 import {
   loadTrustedGroups, isExcludedTopic, slugFromTopicName, modeLabel,
@@ -44,14 +44,47 @@ import {
 import { t, getLang, setLang, type Lang } from './i18n'
 import { resolveModeDir, gitBranch, runHookDelete, removePlainWorktree, runStandCommand, worktreeHook, isLinkedWorktree } from './dir-resolve'
 import { PROJECT_CONFIG_FILE, parseStandLinks, standLogTail } from './project-config'
-import { jsonlMtimes, captureNewSessionId, recentSessions, lastAssistantText, newestJsonlSize, transcriptSawIncoming } from './session-id'
 import { watchDelivery as watchDeliveryCore, type DeliveryDeps } from './delivery'
 import { FallbackGate } from './fallback-gate'
 import { topic as inTopic } from './chat'
-import { HubStateRepository, type PersistedPicker } from './state-repo'
+import { HubStateRepository, type PersistedPicker, type PersistedInbound, type PersistedLaunchCapture } from './state-repo'
 import { recordChat, recordTopic, topicTitle, chatLabel } from './known-chats'
+import { agentAdapter, type AgentAdapter, type AgentKind, type AgentStatusPanel } from './agents'
 
 const log = (s: string) => process.stderr.write(`telegram hub: ${s}\n`)
+
+function adapterForBinding(binding: BindingEntry | undefined): AgentAdapter {
+  return agentAdapter(binding?.agent)
+}
+
+function adapterForKey(key: string): AgentAdapter {
+  return adapterForBinding(loadBindings()[key])
+}
+
+function adapterForSession(session: SessionInfo): AgentAdapter {
+  if (session.agent) return agentAdapter(session.agent)
+  const key = session.bindingKeys?.[0]
+  return key ? adapterForKey(key) : agentAdapter('claude')
+}
+
+async function captureNewAdapterSessionId(
+  adapter: AgentAdapter,
+  dir: string,
+  before: Map<string, number>,
+  timeoutMs: number,
+): Promise<string | undefined> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    // Recursive rollout scans are filesystem-order dependent. Select the newest fresh session;
+    // otherwise a previous rollout can win and `/restart` resumes the wrong Codex conversation.
+    const fresh = [...adapter.sessionMtimes(dir).entries()]
+      .filter(([id]) => !before.has(id))
+      .sort(([, a], [, b]) => b - a)
+    if (fresh[0]) return fresh[0][0]
+    await new Promise(r => setTimeout(r, 2000))
+  }
+  return undefined
+}
 
 function escHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -66,6 +99,54 @@ function tildePath(p: string): string {
 // HTML <code> with a home-shortened, escaped path.
 function codePath(p: string): string {
   return `<code>${escHtml(tildePath(p))}</code>`
+}
+
+// `/status` is a modal in Codex, not a stable machine API.  Open it only on an explicitly
+// requested Telegram /status and only if the adapter proves that the composer is untouched;
+// otherwise a local tmux draft could be submitted.  The panel is always closed before return.
+async function readLiveStatusPanel(adapter: AgentAdapter, pane: string): Promise<AgentStatusPanel | undefined> {
+  if (!adapter.statusPanelCommand) return undefined
+  const [before, ansiBefore] = await Promise.all([
+    capturePane(pane).catch(() => ''),
+    capturePaneAnsi(pane).catch(() => ''),
+  ])
+  if (!adapter.canOpenStatusPanel(before, ansiBefore)) return undefined
+  let opened = false
+  try {
+    await typeLine(pane, adapter.statusPanelCommand)
+    for (let i = 0; i < 12; i++) {
+      const text = await capturePane(pane).catch(() => '')
+      const panel = adapter.parseStatusPanel(text)
+      if (panel) {
+        opened = true
+        return panel
+      }
+      // Codex's slash palette can consume the first Enter as selection.  Submit the command
+      // once more only when we can see the exact command we inserted, never arbitrary text.
+      if (i === 1 && text.split('\n').some(line => line.trim() === `› ${adapter.statusPanelCommand}`)) {
+        await sendKeys(pane, 'Enter')
+      }
+      await new Promise(resolve => setTimeout(resolve, 150))
+    }
+    return undefined
+  } finally {
+    if (opened) await sendKeys(pane, 'Escape').catch(() => {})
+    else {
+      const text = await capturePane(pane).catch(() => '')
+      if (text.split('\n').some(line => line.trim() === `› ${adapter.statusPanelCommand}`)) {
+        await sendKeys(pane, 'Escape').catch(() => {})
+      }
+    }
+  }
+}
+
+function formatLiveStatusPanel(panel: AgentStatusPanel): string[] {
+  const L = t()
+  const lines: string[] = []
+  if (panel.contextUsedPct != null) lines.push(L.statusContextUsed(panel.contextUsedPct))
+  lines.push(...panel.limits.map(limit => L.statusQuota(escHtml(limit.label), limit.remainingPct, escHtml(limit.resets ?? ''))))
+  if (panel.stale) lines.push(L.statusQuotaStale)
+  return lines
 }
 
 // "typing…" hint — shown whenever the agent is handed input to work on.
@@ -191,9 +272,19 @@ function claimPollerSlot(): void {
   try {
     const stale = parseInt(readFileSync(PID_FILE, 'utf8'), 10)
     if (stale > 1 && stale !== process.pid) {
-      process.kill(stale, 0)
-      log(`replacing stale poller pid=${stale}`)
-      process.kill(stale, 'SIGTERM')
+      // A persistent Docker home can retain a PID from a previous container.  Treat a
+      // non-existent process as stale, but never let ESRCH prevent us from claiming the
+      // slot (otherwise the hub cannot come back after a container recreate).
+      try {
+        process.kill(stale, 0)
+        log(`replacing stale poller pid=${stale}`)
+        process.kill(stale, 'SIGTERM')
+      } catch (e: unknown) {
+        if (!(e instanceof Error) || (e as NodeJS.ErrnoException).code !== 'ESRCH') {
+          throw e
+        }
+        log(`discarding dead poller pid=${stale}`)
+      }
     }
   } catch {} // no pid file, or the process is already gone
   writeFileSync(PID_FILE, String(process.pid))
@@ -384,8 +475,11 @@ async function doReply(conn: Socket<undefined>, params: Record<string, unknown>)
   // messages don't go through doReply). % is scraped from the session's pane status line
   // (cached by pollScreens). Only when at/above the configured threshold.
   if (CONTEXT_WARN_PCT > 0) {
-    const pane = router.get(conn)?.pane
-    const pct = pane ? parseContextPct(await capturePane(pane).catch(() => '')) : undefined
+    const session = router.get(conn)
+    const pane = session?.pane
+    const pct = pane && session
+      ? adapterForSession(session).parseContextPct(await capturePane(pane).catch(() => ''))
+      : undefined
     if (pct != null && pct >= CONTEXT_WARN_PCT) {
       text = `${text}${t().contextWarn(String(pct))}` // at the bottom — so it doesn't push the reply itself down the screen
     }
@@ -673,7 +767,7 @@ type ActivePicker = {
   key: string // binding key — reject a tap if the pane got recycled to another session post-restart
 }
 const activePickers = new Map<string, ActivePicker>() // key = pane
-const awaitingCustom = new Map<string, { chatId: string; threadId?: number; at: number }>()
+const awaitingCustom = new Map<string, { chatId: string; threadId?: number; at: number; multi: boolean }>()
 
 function bindingAllows(chatId: string, senderId: string): boolean {
   const reg = loadBindings()
@@ -730,10 +824,8 @@ function paneByToken(token: string): string | undefined {
 // The 'Exit anyway' confirm during /stop//restart is NOT here on purpose: it
 // surfaces as Telegram buttons via the picker bridge so the user can see the
 // background task and choose; stopSession auto-answers only after a grace period.
-const AUTO_ACK_MARKERS = ['I trust this folder', 'I am using this for local development']
-
 function isAutoAckPrompt(picker: Picker): boolean {
-  return picker.options.some(o => AUTO_ACK_MARKERS.some(m => o.label.includes(m)))
+  return isStartupTrustPrompt(picker)
 }
 
 // spawnSession/restartSession also ack these, but only inside a fixed 30s window after typing the
@@ -754,6 +846,17 @@ async function ackStartupPrompt(pane: string, picker: Picker): Promise<void> {
   await sendKeys(pane, 'Enter').catch(() => {})
 }
 
+async function ackCodexStartupTrustScreen(pane: string, text: string): Promise<void> {
+  const hash = fnv1a(text)
+  const prev = autoAcked.get(pane)
+  if (prev && prev.hash === hash && Date.now() - prev.at < AUTO_ACK_RETRY_MS) {
+    return
+  }
+  autoAcked.set(pane, { hash, at: Date.now() })
+  log(`startup prompt auto-acked on ${pane}: Codex directory trust`)
+  await sendKeys(pane, 'Enter').catch(() => {})
+}
+
 // A session sitting on a startup prompt has NOT connected its stub yet (the MCP stub comes up only
 // after the prompts are answered), so it is invisible to router.all() and PASS 1 never sees it —
 // which is exactly how a swallowed Enter used to hang a pane forever. Scan the tmux session of each
@@ -770,6 +873,10 @@ async function ackStartupPromptsOnBoundPanes(): Promise<void> {
     }
     const target = `=${name}:`
     const text = await captureTimeout(target).catch(() => '')
+    if (text && isCodexStartupTrustScreen(text)) {
+      await ackCodexStartupTrustScreen(target, text)
+      continue
+    }
     const picker = text ? parsePicker(text) : undefined
     if (picker && isAutoAckPrompt(picker)) {
       await ackStartupPrompt(target, picker)
@@ -976,6 +1083,7 @@ const lastFallback = new Map<string, string>() // key -> last auto-forwarded tex
 // the pending marker (the fallback would then never fire). Maps stay the runtime source of truth;
 // the repo mirrors them to disk and rehydrates on boot.
 const stateRepo = new HubStateRepository(log)
+const launchCaptures = new Map<string, PersistedLaunchCapture>(stateRepo.launchCaptureEntries())
 for (const [k, v] of stateRepo.pendingEntries()) pendingAnswer.set(k, v)
 for (const [k, v] of stateRepo.fallbackEntries()) lastFallback.set(k, v)
 function armPending(key: string, v: { dir: string; at: number }): void { pendingAnswer.set(key, v); stateRepo.setPending(key, v) }
@@ -984,6 +1092,48 @@ function disarmPending(key: string): void { pendingAnswer.delete(key); stateRepo
 // переживает — тогда просто вернётся прежнее поведение, лишняя досылка вместо потерянной.
 const fallbackGate = new FallbackGate()
 function recordFallback(key: string, text: string): void { lastFallback.set(key, text); stateRepo.setFallback(key, text) }
+
+function armLaunchCapture(key: string, before: Map<string, number>): void {
+  const value: PersistedLaunchCapture = { beforeIds: [...before.keys()], at: Date.now() }
+  launchCaptures.set(key, value)
+  stateRepo.setLaunchCapture(key, value)
+  // This is the crash boundary: the command is typed immediately afterwards.
+  stateRepo.flush()
+}
+
+function disarmLaunchCapture(key: string): void {
+  launchCaptures.delete(key)
+  stateRepo.delLaunchCapture(key)
+}
+
+function resumeLaunchCapture(key: string, binding: BindingEntry): void {
+  const capture = launchCaptures.get(key)
+  if (!capture || binding.sessionId || Date.now() - capture.at > 90_000) {
+    if (capture && Date.now() - capture.at > 90_000) disarmLaunchCapture(key)
+    return
+  }
+  const adapter = adapterForBinding(binding)
+  if (!adapter.capabilities.captureSessionIdAtLaunch) {
+    disarmLaunchCapture(key)
+    return
+  }
+  const before = new Map(capture.beforeIds.map(id => [id, 0]))
+  void captureNewAdapterSessionId(adapter, binding.dir, before, 60_000).then(id => {
+    if (!id) {
+      disarmLaunchCapture(key)
+      return
+    }
+    const reg = loadBindings()
+    if (reg[key] && !reg[key].sessionId && !sessionOwner(reg, reg[key].dir, id, key)) {
+      reg[key].sessionId = id
+      saveBindings(reg)
+      log(`recovered sessionId after hub restart for ${key}: ${id}`)
+    } else if (reg[key] && !reg[key].sessionId) {
+      log(`recovered sessionId rejected for ${key}: ${id} is owned by another binding`)
+    }
+    disarmLaunchCapture(key)
+  })
+}
 const FALLBACK_MAX_CHARS = 3500 // cap the safety-net forward; a huge answer gets truncated, not spammed
 
 // ── restart-survivable interactive state (Stage 3) ──────────────────────────
@@ -1177,10 +1327,12 @@ function skillMenuKeyboard(token: string, names: string[], page: number): Inline
   return kb
 }
 
-// Type a slash command into every live pane of a binding, ack, and arm the reply-fallback.
-async function injectSlashToPanes(
+// Type an agent-native skill invocation into every live pane, ack, and arm reply fallback.
+// Claude needs its slash-autocomplete escape dance; Codex gets a normal explicit instruction
+// so the supported 0.147 Docker CLI does not strand a `$skill` selector in its input field.
+async function injectSkillToPanes(
   conns: Socket<undefined>[], cmdText: string, key: string, dir: string,
-  chat_id: string, threadId: number | undefined, msgId: number | undefined,
+  chat_id: string, threadId: number | undefined, msgId: number | undefined, agent: AgentKind,
 ): Promise<boolean> {
   let typed = false
   for (const conn of conns) {
@@ -1190,8 +1342,10 @@ async function injectSlashToPanes(
     }
     // Единственный путь доставки, который печатал сразу: в поднимающуюся сессию команда
     // уходила в никуда и молча пропадала. Ждём так же, как обычные сообщения.
-    await waitPaneReady(pane, PANE_READY_MS)
-    await typeSlashCommand(pane, cmdText).catch(e => log(`inject slash failed: ${e}`))
+    const session = router.get(conn)
+    await waitPaneReady(pane, PANE_READY_MS, session ? adapterForSession(session) : undefined)
+    const inject = agent === 'claude' ? typeSlashCommand : typeLine
+    await inject(pane, cmdText).catch(e => log(`inject skill failed: ${e}`))
     typed = true
   }
   if (typed) {
@@ -1228,7 +1382,9 @@ async function forwardFallbackReply(key: string): Promise<void> {
   // several topics routinely share one project dir, and "newest in dir" forwarded a neighbour
   // topic's answer into this one. Resolved now, not at arm time — /clear or an in-TUI /resume
   // may have moved the binding to another session id since the inbound arrived.
-  const sessionId = loadBindings()[key]?.sessionId
+  const binding = loadBindings()[key]
+  const sessionId = binding?.sessionId
+  const adapter = adapterForBinding(binding)
   // Wait for the turn's transcript writes to FINISH before reading — not just for some text
   // to appear. The Stop hook that triggers turnend fires mid-flush: when only an intermediate
   // preamble is on disk while the real final answer is still being written (seen live —
@@ -1237,7 +1393,7 @@ async function forwardFallbackReply(key: string): Promise<void> {
   let lastSize = -1
   let stable = 0
   for (let i = 0; i < 30; i++) {
-    const sz = newestJsonlSize(pending.dir, sessionId)
+    const sz = adapter.transcriptSize(pending.dir, sessionId)
     if (sz === lastSize) {
       if (++stable >= 3) {
         break // size unchanged for ~600ms — the turn has fully flushed
@@ -1248,7 +1404,7 @@ async function forwardFallbackReply(key: string): Promise<void> {
     }
     await new Promise(r => setTimeout(r, 200)) // ~6s hard cap
   }
-  const text = lastAssistantText(pending.dir, pending.at, sessionId)
+  const text = adapter.lastAssistantText(pending.dir, pending.at, sessionId)
   if (!text || lastFallback.get(key) === text) {
     return // no fresh textual answer this turn, or already forwarded
   }
@@ -1331,7 +1487,7 @@ function renderCompactBar(pct: number, elapsed?: string): string {
 }
 
 async function handleCompaction(pane: string, session: SessionInfo, text: string): Promise<void> {
-  const prog = parseCompaction(text)
+  const prog = adapterForSession(session).parseCompaction(text)
   const existing = compactMessages.get(pane)
   if (prog) {
     if (!existing) {
@@ -1385,7 +1541,7 @@ function renderWorkflow(name: string, done: number, total: number): string {
 }
 
 async function handleWorkflow(pane: string, session: SessionInfo, text: string): Promise<void> {
-  const wf = parseWorkflow(text)
+  const wf = adapterForSession(session).parseWorkflow(text)
   const existing = workflowMessages.get(pane)
   if (wf) {
     const key = `${wf.name} ${wf.done}/${wf.total}`
@@ -1441,7 +1597,8 @@ const errorMisses = new Map<string, number>() // pane → сколько под�
 const ERROR_FORGET_TICKS = 10 // ~15с при опросе раз в 1.5с: столько ждём, прежде чем забыть баннер
 
 async function handleErrors(pane: string, session: SessionInfo, text: string): Promise<void> {
-  const err = parseError(text)
+  const adapter = adapterForSession(session)
+  const err = adapter.parseError(text)
   if (!err) {
     // Не забываем баннер мгновенно: он уезжает и приезжает обратно в просматриваемое окно,
     // пока агент печатает, и на каждом возврате слался бы дубль. Чистим после нескольких
@@ -1462,7 +1619,7 @@ async function handleErrors(pane: string, session: SessionInfo, text: string): P
   // Агент уже работает дальше — значит ошибка была разовой и он от неё оправился
   // (типичный случай: "API Error: Connection closed mid-response", после которого идёт
   // повторная попытка). Молчим: паниковать поверх работающего агента только пугает.
-  if (paneIsWorking(text)) {
+  if (adapter.paneIsWorking(text)) {
     lastError.set(pane, err) // запомнить, чтобы не всплыло позже, когда агент затихнет
     return
   }
@@ -1561,6 +1718,29 @@ async function handleBgEvent(msg: Extract<StubToHub, { op: 'bg' }>): Promise<voi
   }
 }
 
+// Unlike Claude's TUI bar, Codex hooks expose an exact compaction lifecycle but no numeric
+// progress. One message per binding gives start → completion visibility without inventing a
+// percentage from an unstable transcript.
+const hookCompactions = new Map<string, { chatId: string; threadId?: number; msgId: number }>()
+async function handleCompactionEvent(msg: Extract<StubToHub, { op: 'compaction' }>): Promise<void> {
+  for (const key of msg.bindingKeys) {
+    const existing = hookCompactions.get(key)
+    if (msg.phase === 'start') {
+      if (existing) continue
+      const target = keyToTarget(key)
+      const sent = await bot.api.sendMessage(target.chat_id, t().compactionStarted(msg.trigger ?? ''), {
+        ...inTopic(target.thread_id), parse_mode: 'HTML',
+      }).catch(() => undefined)
+      if (sent) hookCompactions.set(key, { chatId: target.chat_id, ...(target.thread_id != null ? { threadId: target.thread_id } : {}), msgId: sent.message_id })
+      continue
+    }
+    hookCompactions.delete(key)
+    if (existing) {
+      await bot.api.editMessageText(existing.chatId, existing.msgId, t().compactionDone, { parse_mode: 'HTML' }).catch(() => {})
+    }
+  }
+}
+
 // The completion half (syncBg does the diffing). Claude Code delivers each finished shell as a
 // fresh prompt to the session, which ends in another Stop — that second turnend is what flips
 // the line, seconds after the shell actually exited.
@@ -1595,7 +1775,7 @@ function keyIsWorking(key: string, dir: string): boolean {
   }
   const pane = router.get(connsForBinding(key, dir)[0]!)?.pane
   const text = pane ? lastPaneText.get(pane) : undefined
-  return text !== undefined && paneIsWorking(text)
+  return text !== undefined && adapterForKey(key).paneIsWorking(text)
 }
 
 const captureTimeout = (pane: string): Promise<string> =>
@@ -1620,7 +1800,7 @@ async function pollScreens(): Promise<void> {
       // Fire typing on: a running subagent, a visible working footer (covers static/byte-identical
       // captures where elapsed hadn't ticked — a pure diff would miss those and the indicator lapses),
       // or any pane change. paneIsWorking is the robust "agent is busy" signal from the live TUI.
-      if (subagentBusy || paneIsWorking(text) || (prev !== undefined && prev !== text)) {
+      if (subagentBusy || adapterForSession(s).paneIsWorking(text) || (prev !== undefined && prev !== text)) {
         const target = pickerChatFor(s)
         if (target) {
           typing(target.chatId, target.threadId)
@@ -1635,7 +1815,8 @@ async function pollScreens(): Promise<void> {
   // next inbound message revives it (handleInbound). Guarded so we never stop a working pane.
   for (const { s, text } of captured) {
     const busy = s.bindingKeys?.some(k => keyIsBusy(k)) ?? false
-    const working = busy || paneIsWorking(text) || !!parseWorkflow(text)
+    const adapter = adapterForSession(s)
+    const working = busy || adapter.paneIsWorking(text) || !!adapter.parseWorkflow(text)
     if (working) {
       markActivity(s.bindingKeys)
     }
@@ -1750,24 +1931,42 @@ async function handlePickCallback(
       .editMessageReplyMarkup({ reply_markup: kbFrom(ap.picker, ap.token, checkedIndexes(text)) })
       .catch(() => {})
   } else if (action.kind === 'submit') {
-    const chosen = checkedIndexes(await capturePane(pane).catch(() => '')).map(labelOf)
-    await sendKeys(pane, 'Right') // → review screen
-    await selectOption(pane, 1) // Submit answers
+    const screen = await capturePane(pane).catch(() => '')
+    const checked = checkedIndexes(screen)
+    const chosen = checked.map(labelOf)
+    if (ap.picker.customIndex != null && checked.includes(ap.picker.customIndex)) {
+      // An inline custom value leaves focus in its input. Tab moves to the
+      // adjacent Submit control; Enter submits without appending a digit.
+      await sendKeys(pane, 'Tab')
+      await new Promise(resolve => setTimeout(resolve, 100))
+      await sendKeys(pane, 'Enter') // opens Claude's confirmation screen
+      await new Promise(resolve => setTimeout(resolve, 100))
+      await sendKeys(pane, 'Enter') // its preselected “Submit answers” action
+    } else {
+      await sendKeys(pane, 'Right') // → review screen
+      await selectOption(pane, 1) // Submit answers
+    }
     await resolvePickerMessage(ap, `✅ <b>${chosen.length ? escHtml(chosen.join(', ')) : '—'}</b>`)
     disarmPicker(pane)
     typing(ap.chatId, ap.threadId) // agent resumes on the submitted answers
     await ctx.answerCallbackQuery({ text: t().toastSent }).catch(() => {})
   } else {
-    // "Type something" is an inline-editable option: the digit navigates to it and
-    // makes it editable; the user's text is typed straight in (no Enter yet — that
-    // would decline). typeLine below fills the field and submits with Enter.
+    // The custom row is an inline field. In a multi picker navigate to it first;
+    // Ctrl-G is only Claude's optional external-editor shortcut, never required UX.
     if (ap.picker.customIndex != null) {
-      await sendKeys(pane, String(ap.picker.customIndex))
+      if (ap.picker.mode === 'multi') {
+        const cursor = pickerCursorIndex(await capturePane(pane).catch(() => '')) ?? 1
+        const move = ap.picker.customIndex - cursor
+        if (move) await sendKeys(pane, ...Array(Math.abs(move)).fill(move > 0 ? 'Down' : 'Up'))
+      } else {
+        await sendKeys(pane, String(ap.picker.customIndex))
+      }
     }
     awaitingCustom.set(pane, {
       chatId: ap.chatId,
       ...(ap.threadId != null ? { threadId: ap.threadId } : {}),
       at: Date.now(),
+      multi: ap.picker.mode === 'multi',
     })
     await ctx.answerCallbackQuery({ text: t().toastSendText }).catch(() => {})
     void bot.api
@@ -1810,6 +2009,14 @@ function syncSessionId(bindingKeys: string[], sessionId: string): void {
   let changed = false
   for (const key of bindingKeys) {
     const b = reg[key]
+    const owner = b && sessionOwner(reg, b.dir, sessionId, key)
+    if (owner) {
+      // A hook is authoritative for its own process, but never turn two same-folder
+      // topics into writers of one transcript. This also contains a late launch-capture
+      // result from an older hub after a replacement session has already claimed the id.
+      log(`sessionId sync rejected for ${key}: ${sessionId} is owned by ${owner}`)
+      continue
+    }
     if (b && b.sessionId !== sessionId) {
       log(`sessionId synced for ${key}: ${b.sessionId ?? '<none>'} → ${sessionId}`)
       b.sessionId = sessionId
@@ -1843,6 +2050,16 @@ async function handleStubMessage(sock: Socket<undefined>, msg: StubToHub): Promi
   }
   if (msg.op === 'subscribe') {
     const session = verifyClaimedKeys(msg.session)
+    // A launch is not complete merely because its command was typed into tmux:
+    // a second `/new` can arrive in the small gap before the stub connects. Keep
+    // the per-binding launch guard until this authoritative handshake, otherwise
+    // that second command sees a foreground `claude` and gets a misleading
+    // foreign-pane refusal instead of being deduplicated.
+    for (const key of session.bindingKeys ?? []) {
+      spawningBindings.delete(key)
+      const binding = loadBindings()[key]
+      if (binding) resumeLaunchCapture(key, binding)
+    }
     router.subscribe(sock, session)
     markActivity(session.bindingKeys) // fresh session = active now; starts the idle clock
     persistUnloaded(session.bindingKeys ?? [], false)
@@ -1862,10 +2079,18 @@ async function handleStubMessage(sock: Socket<undefined>, msg: StubToHub): Promi
   }
   // Every hook event carries the live session id — one chokepoint keeps bindings.json honest.
   if ('bindingKeys' in msg && msg.sessionId) {
-    syncSessionId(msg.bindingKeys, msg.sessionId)
+    const reliableKeys = msg.bindingKeys.filter(key => adapterForKey(key).capabilities.hookSessionIdReliable)
+    if (reliableKeys.length) syncSessionId(reliableKeys, msg.sessionId)
+    if (reliableKeys.length !== msg.bindingKeys.length) {
+      log(`sessionId hook ignored for ${msg.bindingKeys.filter(key => !reliableKeys.includes(key)).join(',')}: adapter requires transcript correlation`)
+    }
   }
   if (msg.op === 'subagent') {
     await handleSubagentEvent(msg)
+    return
+  }
+  if (msg.op === 'compaction') {
+    await handleCompactionEvent(msg)
     return
   }
   if (msg.op === 'task') {
@@ -1892,7 +2117,7 @@ function learnCmdline(session: SessionInfo): void {
   // replays that batch prompt into the user's chat and exits immediately, so the next inbound revives
   // it again — an endless loop. Hit in prod on 2026-07-21: a Role-2 review ran 5× in 11 minutes and
   // left the topic with no live session.
-  if (isHeadlessArgv(session.cmdline)) {
+  if (adapterForSession(session).isHeadlessArgv(session.cmdline)) {
     log(`learnCmdline: ignoring headless (-p) argv for ${session.bindingKeys?.join(',') ?? session.cwd}`)
     return
   }
@@ -1905,6 +2130,11 @@ function learnCmdline(session: SessionInfo): void {
     }
     if (JSON.stringify(reg[k].cmdline) !== JSON.stringify(session.cmdline)) {
       reg[k].cmdline = session.cmdline
+      changed = true
+    }
+    const kind = session.agent ?? 'claude'
+    if ((reg[k].agent ?? 'claude') !== kind || (kind === 'codex' && reg[k].agent !== 'codex')) {
+      reg[k].agent = kind
       changed = true
     }
   }
@@ -1966,7 +2196,8 @@ function forkRiskPids(binding: BindingEntry): number[] {
     return []
   }
   const tracked = trackedPids()
-  return claudePidsInDir(binding.dir).filter(pid => {
+  const adapter = adapterForBinding(binding)
+  return agentPidsInDir(binding.dir, adapter.isProcessArgv).filter(pid => {
     if (tracked.has(pid)) {
       return false
     }
@@ -2134,12 +2365,12 @@ const PANE_SETTLE_MS = 1500
 // доставки: печать в пейн раньше готовности молча теряется, а «сколько ждать» — свойство
 // поднимающегося Claude Code, а не конкретного вызова.
 const PANE_READY_MS = 60_000
-async function waitPaneReady(pane: string | undefined, ms: number): Promise<boolean> {
+async function waitPaneReady(pane: string | undefined, ms: number, adapter = agentAdapter('claude')): Promise<boolean> {
   if (!pane) {
     return true
   }
   for (let waited = 0; ; waited += 500) {
-    if (paneReady(await capturePane(pane).catch(() => ''))) {
+    if (adapter.paneReady(await capturePane(pane).catch(() => ''))) {
       await new Promise(r => setTimeout(r, PANE_SETTLE_MS))
       return true
     }
@@ -2168,12 +2399,31 @@ async function stopLiveSessions(key: string, binding: BindingEntry): Promise<boo
 }
 
 // tmux+launch for a binding — shared by /resume,/new and auto-topic creation
+const spawningBindings = new Set<string>()
+const SPAWN_GUARD_MS = 30_000
 async function spawnSession(
   key: string,
   binding: BindingEntry,
   mode: LaunchMode,
   say: (html: string) => void,
 ): Promise<void> {
+  if (spawningBindings.has(key)) {
+    log(`spawn skipped: already starting ${key}`)
+    say(t().spawnInProgress)
+    return
+  }
+  spawningBindings.add(key)
+  let launchIssued = false
+  try {
+  // bindings.json is hand-editable/hot-reloaded. Never let a stale or mistyped
+  // directory turn into a tmux session rooted somewhere else (tmux otherwise
+  // creates a bare shell and the topic looks deceptively alive).
+  if (!statSync(binding.dir, { throwIfNoEntry: false })?.isDirectory()) {
+    const err = `binding directory does not exist: ${binding.dir}`
+    log(`spawn refused: ${err} (${key})`)
+    say(t().bindingDirectoryMissing(codePath(binding.dir)))
+    return
+  }
   const name = sessionName(key, binding.dir)
   // форк тоже получает свой session id — его надо выучить, иначе биндинг ветки указывает
   // на оригинал и следующий подъём поднимет (и снова форкнёт) не ту сессию
@@ -2181,17 +2431,37 @@ async function spawnSession(
   // удаляет .jsonl, а id остаётся в биндинге. `--resume <мёртвый id>` не запускается, а
   // мгновенно выходит с "No conversation found", и хаб зацикливается: поднял → «сессия
   // оборвалась» → на следующее сообщение поднял тем же id. Резюмим только живое.
-  const resumeId = binding.sessionId && jsonlMtimes(binding.dir).has(binding.sessionId)
+  const adapter = adapterForBinding(binding)
+  const resumeId = binding.sessionId && adapter.sessionMtimes(binding.dir).has(binding.sessionId)
     ? binding.sessionId
     : undefined
   const lostConversation = mode === 'resume' && !!binding.sessionId && !resumeId
   // Не подменяем на --continue: у общей папки он подхватит разговор соседнего топика.
   const launchMode: LaunchMode = lostConversation ? 'new' : mode
   const fresh = launchMode !== 'resume' || !resumeId
-  const before = fresh ? jsonlMtimes(binding.dir) : new Map<string, number>()
+  // A /new must never survive a hub restart as the previous conversation. Claude learns a fresh
+  // id from its launch scan; Codex learns it once the first tagged Telegram input appears.
+  if (fresh && binding.sessionId) {
+    const reg = loadBindings()
+    if (reg[key]?.sessionId === binding.sessionId) {
+      delete reg[key].sessionId
+      saveBindings(reg)
+      binding = reg[key]!
+    }
+  }
+  const before = fresh ? adapter.sessionMtimes(binding.dir) : new Map<string, number>()
+  if (fresh && adapter.capabilities.captureSessionIdAtLaunch) armLaunchCapture(key, before)
   try {
     const created = await ensureTmuxSession(name, binding.dir)
-    const launch = buildLaunch(binding.cmdline, launchMode, resumeId)
+    if (!created) {
+      const command = await paneCurrentCommand(`=${name}:`).catch(() => '')
+      if (adapter.isPaneCommand(command)) {
+        log(`spawn refused: ${key} has an unconnected ${adapter.kind} in ${name}`)
+        say(t().tmuxForeignAgent(escHtml(command || adapter.displayName)))
+        return
+      }
+    }
+    const launch = adapter.buildLaunch(binding.cmdline, launchMode, resumeId)
     if (lostConversation) {
       log(`spawn: conversation ${binding.sessionId} gone from disk — starting fresh for ${key}`)
       say(t().conversationGone)
@@ -2201,8 +2471,12 @@ async function spawnSession(
         ? t().tmuxCreated(escHtml(name), codePath(binding.dir))
         : t().tmuxExists(escHtml(name)),
     )
-    const envPrefix = `${RESUME_PROMPT_OFF} TELEGRAM_BINDING_KEYS=${shellQuote([key])}`
+    const envPrefix = adapter.launchEnvPrefix([key])
     await typeLine(`=${name}:`, `cd ${shellQuote([binding.dir])} && ${envPrefix} ${memoryCapPrefix()}${launch}`)
+    launchIssued = true
+    // A broken launch must not wedge future retries forever. Successful launches
+    // clear this sooner, from the stub's subscribe handshake above.
+    setTimeout(() => spawningBindings.delete(key), SPAWN_GUARD_MS)
     // mode 'new' covers two different things: an explicit /new over an EXISTING conversation
     // (genuinely "from scratch"), and the very first launch of a binding that never had one — calling
     // that "from scratch" reads as if something was discarded, when nothing existed yet.
@@ -2214,21 +2488,30 @@ async function spawnSession(
           ? t().modeRestart
           : t().modeNew
     say(`${startedLabel}\n\n<code>${escHtml(launch)}</code>`)
-    if (fresh) {
-      void captureNewSessionId(binding.dir, before, 60_000).then(id => {
+    if (fresh && adapter.capabilities.captureSessionIdAtLaunch) {
+      void captureNewAdapterSessionId(adapter, binding.dir, before, 60_000).then(id => {
         if (!id) {
+          disarmLaunchCapture(key)
           return
         }
         const reg = loadBindings()
-        if (reg[key]) {
+        if (reg[key] && !sessionOwner(reg, reg[key].dir, id, key)) {
           reg[key].sessionId = id
           saveBindings(reg)
           log(`learned sessionId for ${key}: ${id}`)
+        } else if (reg[key]) {
+          log(`learned sessionId rejected for ${key}: ${id} is owned by another binding`)
         }
+        disarmLaunchCapture(key)
       })
     }
-  } catch (e) {
-    say(t().spawnFailed(mode, escHtml(String(e))))
+    } catch (e) {
+      say(t().spawnFailed(mode, escHtml(String(e))))
+    }
+  } finally {
+    if (!launchIssued) {
+      spawningBindings.delete(key)
+    }
   }
 }
 
@@ -2251,10 +2534,34 @@ async function reviveBoundSessions(): Promise<void> {
     }
     log(`boot-revive: ${key} → ${binding.dir}`)
     const t = keyToTarget(key)
+    // Telegram sends no update for a deleted forum topic.  After a host reboot
+    // there is no live session to make the usual reactive `typing`/reply call,
+    // so probe the thread before reviving it.  Without this, a deleted topic
+    // becomes an invisible zombie binding and tmux session on every boot.
+    try {
+      await bot.api.sendChatAction(t.chat_id, 'typing', inTopic(t.thread_id))
+    } catch (err) {
+      if (t.thread_id != null && isThreadGoneError(err)) {
+        await onTopicGone(key)
+      } else {
+        log(`boot-revive probe failed: ${key} ${err}`)
+      }
+      continue
+    }
     const say = (html: string) =>
       void bot.api
         .sendMessage(t.chat_id, html, { ...inTopic(t.thread_id), parse_mode: 'HTML' })
-        .catch(() => {})
+        .catch(err => {
+          // `sendChatAction` is accepted even for a deleted forum topic on
+          // Telegram, whereas the first real message reliably reports
+          // `message thread not found`.  Do not swallow that signal during
+          // boot revive: tear down the freshly-created zombie immediately.
+          if (t.thread_id != null && isThreadGoneError(err)) {
+            void onTopicGone(key)
+          } else {
+            log(`boot-revive notify failed: ${key} ${err}`)
+          }
+        })
     await spawnSession(key, binding, binding.sessionId ? 'resume' : 'new', say)
     await new Promise(r => setTimeout(r, 3000))
   }
@@ -2372,10 +2679,24 @@ const queuedMessages = new Map<string, Inbound[]>()
 // сообщение из этого окна уходит в late-binding, поднимает ВТОРОЙ пикер и запирает очередь:
 // flushQueued вернёт всё обратно в неё, потому что pendingModeChoice снова взведён.
 const settingUp = new Set<string>()
+// A trusted-topic launch is asynchronous (worktree/hook resolution and then tmux).  A manual
+// /bind is an explicit override, not a second competing setup request. Track the auto-owned
+// record separately so a late manual bind can also tear down an auto tmux that already started.
+const autoTopicBindings = new Set<string>()
+const cancelledAutoTopics = new Set<string>()
+function sayFor(chatId: string, threadId: number) {
+  return (html: string) => void bot.api.sendMessage(chatId, html, { ...inTopic(threadId), parse_mode: 'HTML' }).catch(() => {})
+}
+function armMode(key: string, value: PendingModeChoice, chatId: string, threadId: number): void {
+  pendingModeChoice.set(key, value)
+  stateRepo.setPendingMode(key, { cfg: value.cfg, topicName: value.topicName, chatId, threadId })
+}
+function disarmMode(key: string): void { pendingModeChoice.delete(key); stateRepo.delPendingMode(key) }
 function enqueueForTopic(key: string, inbound: Inbound): void {
   const q = queuedMessages.get(key) ?? []
   q.push(inbound)
   queuedMessages.set(key, q)
+  stateRepo.setQueued(key, q.map(persistInbound))
   const msgId = inbound.ctx.message?.message_id
   if (msgId != null) {
     // 👌 = "held, will deliver once the session is up" (⏳ isn't in Telegram's reaction set)
@@ -2385,6 +2706,7 @@ function enqueueForTopic(key: string, inbound: Inbound): void {
 async function flushQueued(key: string): Promise<void> {
   const q = queuedMessages.get(key)
   queuedMessages.delete(key)
+  stateRepo.delQueued(key)
   if (!q?.length) {
     return
   }
@@ -2438,18 +2760,39 @@ async function runAutoTopic(
   try {
     // hook comes back resolved (project config wins over the group's) — flag the binding from THAT,
     // not from `cfg.hook`, so teardown runs the same hook creation used.
-    const { dir: resolvedDir, hook: usedHook } = await resolveModeDir(mode, dir, cfg.hook, branch)
+    const { dir: resolvedDir, hook: usedHook, branch: usedBranch } = await resolveModeDir(mode, dir, cfg.hook, branch)
+    if (usedBranch !== branch) {
+      // Имя было занято прошлым топиком — говорим вслух, иначе человек ищет ветку под старым
+      // именем и правит не то (а именно так и уехал PR на месячную базу).
+      log(`auto-topic: branch "${branch}" занята → "${usedBranch}"`)
+      say(t().branchRenamed(escHtml(branch), escHtml(usedBranch)))
+    }
+    // A manual /bind may have won while resolving a worktree/hook. Do not write the
+    // stale auto-topic defaults over that deliberate adapter/path choice, and do not
+    // launch a second agent into the topic behind the user's back.
+    if (cancelledAutoTopics.has(key) || loadBindings()[key]) {
+      log(`auto-topic cancelled: ${key} was manually bound while resolving its directory`)
+      return
+    }
     const reg = loadBindings()
     reg[key] = {
       dir: resolvedDir,
+      ...(cfg.agent ? { agent: cfg.agent } : {}),
       ...(cfg.cmdline ? { cmdline: cfg.cmdline } : {}),
-      ...(usedHook ? { hookBranch: branch } : {}),
+      ...(usedHook ? { hookBranch: usedBranch } : {}), // именно ту, что создали, — её же сносить
     }
     saveBindings(reg)
+    autoTopicBindings.add(key)
+    if (cancelledAutoTopics.has(key)) {
+      log(`auto-topic cancelled: ${key} was manually bound before launch`)
+      return
+    }
     await spawnSession(key, reg[key], 'new', say)
   } catch (e) {
     say(t().sessionSpawnFail(escHtml(String(e))))
   } finally {
+    autoTopicBindings.delete(key)
+    cancelledAutoTopics.delete(key)
     settingUp.delete(key) // снять ДО flush — иначе очередь уйдёт сама в себя
     // always drain the hold queue — deliver on success, or tell the user + clear it on failure
     await flushQueued(key)
@@ -2495,7 +2838,7 @@ async function handleLateTopic(
   topicName: string,
   say: (html: string) => void,
 ): Promise<void> {
-  pendingModeChoice.set(key, { cfg, topicName, say })
+  armMode(key, { cfg, topicName, say }, chatId, threadId)
   void bot.api
     .sendMessage(chatId, modePromptText(cfg, t().newTopicPrompt), {
       message_thread_id: threadId,
@@ -2512,6 +2855,31 @@ type Inbound = {
   attachment?: AttachmentMeta
 }
 
+function persistInbound(inbound: Inbound): PersistedInbound {
+  const msg = inbound.ctx.message
+  return {
+    text: inbound.text, chatId: String(inbound.ctx.chat!.id), threadId: msg?.message_thread_id,
+    senderId: String(inbound.ctx.from!.id), username: inbound.ctx.from?.username,
+    msgId: msg?.message_id, at: Date.now(),
+  }
+}
+
+function reviveInbound(value: PersistedInbound): Inbound {
+  // Queued input only needs the stable Telegram identity/message fields consumed by
+  // handleInbound.  Rebuild those rather than persisting grammY's live Context object.
+  const ctx = {
+    from: { id: Number(value.senderId), username: value.username },
+    chat: { id: Number(value.chatId), type: 'supergroup' },
+    message: value.msgId == null ? undefined : { message_id: value.msgId, message_thread_id: value.threadId, date: Math.floor(value.at / 1000) },
+  } as unknown as Context
+  return { ctx, text: value.text }
+}
+
+for (const [key, values] of stateRepo.queuedEntries()) queuedMessages.set(key, values.map(reviveInbound))
+for (const [key, value] of stateRepo.pendingModeEntries()) {
+  pendingModeChoice.set(key, { cfg: value.cfg, topicName: value.topicName, say: sayFor(value.chatId, value.threadId) })
+}
+
 async function handleInbound(inbound: Inbound): Promise<void> {
   const { ctx, text, downloadImage, attachment } = inbound
   const from = ctx.from
@@ -2522,14 +2890,20 @@ async function handleInbound(inbound: Inbound): Promise<void> {
   const senderId = String(from.id)
   const chat_id = String(chat.id)
   const msgId = ctx.message?.message_id
+  const replyTo = ctx.message?.reply_to_message
+  // MTProto can omit `message_thread_id` on a reply to the forum-topic's
+  // creation service message.  That reply still belongs to this topic; use the
+  // root message id only in that unambiguous service-message shape.
   const threadId = ctx.message?.message_thread_id
+    ?? replyTo?.message_thread_id
+    ?? (replyTo?.forum_topic_created ? replyTo.message_id : undefined)
   const key = messageKey({ chatType: chat.type, chatId: chat_id, threadId })
   const seenAt = new Date().toISOString()
   recordChat(chat_id, chat.type, chatLabel(chat), seenAt)
   if (threadId != null) {
     // A plain message carries no topic name, but a message that roots/replies to the topic
     // sometimes brings the creation service message along — grab the name from it for free.
-    const rootName = ctx.message?.reply_to_message?.forum_topic_created?.name
+    const rootName = replyTo?.forum_topic_created?.name
     recordTopic(chat_id, threadId, rootName || undefined, seenAt)
   }
   const say = (html: string) =>
@@ -2561,8 +2935,13 @@ async function handleInbound(inbound: Inbound): Promise<void> {
       await handleInbound(held)
       return
     }
-    pendingTopics.delete(key)
-    pendingModeChoice.delete(key)
+    // A harmless ops command (notably /status while the mode keyboard is on screen)
+    // must not consume topic setup. Only a command that explicitly replaces or
+    // removes the binding invalidates the still-visible mode callback.
+    if (ops.cmd === 'bind' || ops.cmd === 'unbind' || ops.cmd === 'delete') {
+      pendingTopics.delete(key)
+      disarmMode(key)
+    }
     await handleOps({ cmd: ops.cmd, arg: ops.arg, key, chat_id, threadId, senderId, ...(msgId != null ? { msgId } : {}) })
     return
   }
@@ -2601,12 +2980,29 @@ async function handleInbound(inbound: Inbound): Promise<void> {
       continue
     }
     if (isAdmin(senderId) || bindingAllowsKey(key, senderId)) {
-      await typeLine(pane, text)
-      typing(chat_id, threadId) // agent now processes the custom answer
       const ap = activePickers.get(pane)
-      if (ap) {
-        await resolvePickerMessage(ap, `✅ <b>${escHtml(text)}</b>`)
-        disarmPicker(pane)
+      if (aw.multi) {
+        // Do not press Enter: it toggles the custom checkbox back off. The multi
+        // picker marks the inline value selected as it is typed; Submit remains a
+        // separate Telegram button for the complete selection.
+        await typeText(pane, text)
+        // A multi answer is not complete until the user presses Submit. Keep its
+        // Telegram keyboard armed so subsequent option changes and Submit still work.
+        if (ap) {
+          const screen = await capturePane(pane).catch(() => '')
+          await bot.api.editMessageText(
+            ap.chatId, ap.msgId,
+            `✍️ <b>${escHtml(text)}</b>\n\n${t().pkCustomSavedSubmit}`,
+            { ...inTopic(ap.threadId), parse_mode: 'HTML', reply_markup: kbFrom(ap.picker, ap.token, checkedIndexes(screen)) },
+          ).catch(() => {})
+        }
+      } else {
+        await typeLine(pane, text)
+        typing(chat_id, threadId) // agent now processes the custom answer
+        if (ap) {
+          await resolvePickerMessage(ap, `✅ <b>${escHtml(text)}</b>`)
+          disarmPicker(pane)
+        }
       }
       awaitingCustom.delete(pane)
       return
@@ -2681,9 +3077,10 @@ async function handleInbound(inbound: Inbound): Promise<void> {
     const [head, ...rest] = text.trim().split(/\s+/)
     const name = head!.slice(1).replace(/@\w+$/, '').toLowerCase() // drop leading "/" and "@bot"
     // глобальные И проектные скиллы: /add_model → /add-model (Telegram не даёт дефис)
-    const real = resolveSkillCommand(name, globalSkillMap, discoverProjectSkills(binding.dir))
-    const cmd = ['/' + real, ...rest].join(' ')
-    const ok = await injectSlashToPanes(conns, cmd, key, binding.dir, chat_id, threadId, msgId)
+    const real = resolveSkillCommand(name, globalSkillMap, discoverProjectSkills(binding.dir, binding.agent))
+    const agent = binding.agent ?? 'claude'
+    const cmd = skillInvocation(agent, real, rest)
+    const ok = await injectSkillToPanes(conns, cmd, key, binding.dir, chat_id, threadId, msgId, agent)
     if (!ok) {
       void say(t().notInTmuxSlash)
     }
@@ -2733,30 +3130,81 @@ async function handleInbound(inbound: Inbound): Promise<void> {
 //  3. сторож проверяет, что сообщение реально легло в транскрипт (src/delivery.ts) — тихая
 //     потеря больше не тихая.
 let nextDeliveryId = 1
+
+function fallbackInboundText(content: string, meta: Record<string, string>): string {
+  const details = Object.entries(meta).map(([key, value]) => `${key}=${JSON.stringify(value)}`).join(' ')
+  return details
+    ? `[Telegram message; ${details}]\n${content}`
+    : content
+}
+
 async function deliverMessage(key: string, dir: string, payload: HubToStub, needle: string): Promise<number> {
-  await waitPaneReady(router.get(connsForBinding(key, dir)[0]!)?.pane, PANE_READY_MS)
+  const binding = loadBindings()[key]
+  const adapter = adapterForBinding(binding)
+  const first = connsForBinding(key, dir)[0]
+  // Codex starts its stdio MCP only when it first needs a tool. Until then there is no stub
+  // subscription, although its tmux pane is already a perfectly live interactive session. Do
+  // not relaunch into that pane (which types a second `codex` command into the first agent).
+  const subscribedPane = first ? router.get(first)?.pane : undefined
+  const directPane = !subscribedPane && !adapter.capabilities.nativeInboundTransport && binding
+    && await hasTmuxSession(sessionName(key, binding.dir)).catch(() => false)
+    ? `=${sessionName(key, binding.dir)}:`
+    : undefined
+  const pane = subscribedPane ?? directPane
+  const ready = await waitPaneReady(pane, PANE_READY_MS, adapter)
+  if (!adapter.capabilities.nativeInboundTransport && (!pane || !ready)) {
+    log(`delivery: fallback pane is not ready for key=${key}`)
+    return 0
+  }
   const at = Date.now()
   // id живёт на самом событии: по нему стаб отвечает, отдал он сообщение в сессию или нет
-  const id = `d${nextDeliveryId++}`
-  const tagged: HubToStub = payload.op === 'event' && payload.kind === 'message' ? { ...payload, id } : payload
+  const id = `d${process.pid}-${Date.now()}-${nextDeliveryId++}`
+  // The visible message body is not an identity: two topics that share a directory can
+  // send the same text at once. Put the delivery id into the exact envelope Codex records,
+  // then use that unique marker for both delivery verification and rollout correlation.
+  const tagged: HubToStub = payload.op === 'event' && payload.kind === 'message'
+    ? { ...payload, id, meta: { ...payload.meta, delivery_id: id } }
+    : payload
   const conns = connsForBinding(key, dir)
-  for (const conn of conns) {
-    send(conn, tagged)
+  if (adapter.capabilities.nativeInboundTransport) {
+    for (const conn of conns) send(conn, tagged)
+  } else if (pane && payload.op === 'event' && payload.kind === 'message') {
+    // Codex has no Claude Channels notification transport. Its MCP stub still supplies reply,
+    // files and session identity; inbound text is submitted through the same tmux TUI users see.
+    await typeLine(pane, fallbackInboundText(payload.content, payload.meta))
   }
-  if (conns.length) {
-    void watchDelivery(key, dir, tagged, needle.trim().slice(0, 60), at, id)
+  if (conns.length || pane) {
+    const correlationNeedle = adapter.kind === 'codex'
+      ? `delivery_id=${JSON.stringify(id)}`
+      : needle.trim().slice(0, 60)
+    void watchDelivery(key, dir, tagged, correlationNeedle, at, id, adapter)
   }
-  return conns.length
+  return conns.length || pane ? 1 : 0
 }
 
 // Боевая обвязка сторожа: реальные часы, транскрипт на диске, сокеты стаба и Telegram.
 // Сама логика — в src/delivery.ts, её и покрывают сценарные тесты.
-function deliveryDeps(key: string, dir: string, payload: HubToStub, id: string): DeliveryDeps {
+function deliveryDeps(key: string, dir: string, payload: HubToStub, id: string, adapter: AgentAdapter): DeliveryDeps {
   return {
     clock: { now: () => Date.now(), sleep: ms => new Promise(r => setTimeout(r, ms)) },
-    awaitAck: () => awaitAck(id),
-    sawIncoming: transcriptSawIncoming,
-    resend: () => { for (const conn of connsForBinding(key, dir)) { send(conn, payload) } },
+    awaitAck: () => adapter.capabilities.nativeInboundTransport ? awaitAck(id) : Promise.resolve('silent'),
+    sawIncoming: adapter.transcriptSawIncoming,
+    resend: async () => {
+      if (adapter.capabilities.nativeInboundTransport) {
+        for (const conn of connsForBinding(key, dir)) send(conn, payload)
+        return
+      }
+      const conn = connsForBinding(key, dir)[0]
+      const binding = loadBindings()[key]
+      const pane = conn
+        ? router.get(conn)?.pane
+        : !adapter.capabilities.nativeInboundTransport && binding && await hasTmuxSession(sessionName(key, binding.dir)).catch(() => false)
+          ? `=${sessionName(key, binding.dir)}:`
+          : undefined
+      if (pane && payload.op === 'event' && payload.kind === 'message') {
+        await typeLine(pane, fallbackInboundText(payload.content, payload.meta))
+      }
+    },
     warn: async () => {
       const target = keyToTarget(key)
       await bot.api
@@ -2772,9 +3220,25 @@ function deliveryDeps(key: string, dir: string, payload: HubToStub, id: string):
 // Не долетело — переотправляем ОДИН раз (потеря обычно на старте сессии и не повторяется),
 // и если снова тишина — говорим вслух: молчаливая потеря заметна только по «мне не ответили».
 async function watchDelivery(
-  key: string, dir: string, payload: HubToStub, needle: string, at: number, id: string,
+  key: string, dir: string, payload: HubToStub, needle: string, at: number, id: string, adapter: AgentAdapter,
 ): Promise<void> {
-  await watchDeliveryCore(deliveryDeps(key, dir, payload, id), key, dir, needle, at)
+  const outcome = await watchDeliveryCore(deliveryDeps(key, dir, payload, id, adapter), key, dir, needle, at)
+  if (outcome === 'lost') return
+  const sessionId = adapter.sessionForIncoming(dir, at, needle)
+  if (!sessionId) return
+  const reg = loadBindings()
+  const binding = reg[key]
+  if (!binding || binding.dir !== dir) return
+  const owner = sessionOwner(reg, dir, sessionId, key)
+  if (owner) {
+    log(`incoming-correlated sessionId rejected for ${key}: ${sessionId} is owned by ${owner}`)
+    return
+  }
+  if (binding.sessionId !== sessionId) {
+    log(`incoming-correlated sessionId for ${key}: ${binding.sessionId ?? '<none>'} → ${sessionId}`)
+    binding.sessionId = sessionId
+    saveBindings(reg)
+  }
 }
 
 // ── debug log: pane snapshots + raw Telegram traffic, one correlated JSONL ──
@@ -2901,7 +3365,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
     if (!isAdmin(senderId) && !binding.allow?.includes(senderId)) {
       return
     }
-    const skills = discoverProjectSkills(binding.dir)
+    const skills = discoverProjectSkills(binding.dir, binding.agent)
     if (skills.length === 0) {
       void say(L.noProjectSkills(escHtml(binding.dir)))
       return
@@ -2944,6 +3408,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
 
   if (cmd === 'bind' || cmd === 'unbind' || cmd === 'allow' || cmd === 'delete') {
     if (!isAdmin(senderId)) {
+      void say(L.adminOnly(cmd))
       return
     }
     // /delete = teardown (unbind + tmux + worktree) AND remove the topic itself, in one go.
@@ -2982,17 +3447,36 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
         return
       }
       try {
-        const dir = resolveProjectDir(arg, PROJECTS_DIR)
-        // сохраняем пользовательские флаги биндинга: повторный /bind не должен молча
-        // снимать /pin (и доступы) — человек биндит папку, а не сбрасывает настройки
-        reg[key] = { dir, ...(binding?.allow ? { allow: binding.allow } : {}),
-                     ...(binding?.pinned ? { pinned: true } : {}) }
+        const spec = parseBindSpec(arg)
+        const dir = resolveProjectDir(spec.path, PROJECTS_DIR)
+        const replacesAutoTopic = autoTopicBindings.has(key) || settingUp.has(key)
+        if (replacesAutoTopic) {
+          cancelledAutoTopics.add(key)
+          // If the auto path saved/started first, its binding is implementation state, not a
+          // user-selected conversation. Never preserve its Claude argv/session into the manual
+          // Codex binding, and kill its per-key tmux before publishing the replacement.
+          if (binding) {
+            await killTmuxSession(sessionName(key, binding.dir)).catch(() => {})
+          }
+        }
+        // Rebinding changes only the requested target and adapter.  The rest of
+        // the record is durable session/worktree state: dropping it would orphan
+        // a conversation and prevent a worktree hook from cleaning up later.
+        reg[key] = { ...(replacesAutoTopic ? {} : binding), dir, agent: spec.agent }
         saveBindings(reg)
+        const boundText = binding
+          ? L.rebound(
+              escHtml(key),
+              codePath(binding.dir),
+              codePath(dir),
+              binding.sessionId ? escHtml(binding.sessionId.slice(0, 8)) : undefined,
+            )
+          : L.bound(escHtml(key), codePath(dir))
         void bot.api
           .sendMessage(
             chat_id,
-            L.bound(escHtml(key), codePath(dir)),
-            { ...threadOpt, parse_mode: 'HTML', reply_markup: startChoiceKeyboard(key, dir) },
+            boundText,
+            { ...threadOpt, parse_mode: 'HTML', reply_markup: startChoiceKeyboard(key, reg[key]!) },
           )
           .catch(() => {})
       } catch (e) {
@@ -3101,6 +3585,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
     const fresh = loadBindings()
     fresh[newKey] = {
       dir: binding.dir,
+      ...(binding.agent ? { agent: binding.agent } : {}),
       sessionId: binding.sessionId, // точка разветвления; свой id ветка выучит при старте
       ...(binding.cmdline ? { cmdline: binding.cmdline } : {}),
       ...(binding.allow ? { allow: [...binding.allow] } : {}),
@@ -3119,15 +3604,14 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
     }
     if (arg) {
       // директива — первое сообщение ветке; ждём готовности пейна, иначе неготовый CLI её теряет
-      await waitPaneReady(router.get(conns[0]!)?.pane, PANE_READY_MS)
+      const forkSession = router.get(conns[0]!)
+      await waitPaneReady(forkSession?.pane, PANE_READY_MS, forkSession ? adapterForSession(forkSession) : adapterForBinding(fresh[newKey]))
       const meta: Record<string, string> = {
         chat_id, user: senderId, user_id: senderId,
         ts: new Date().toISOString(), topic_id: String(newThreadId),
       }
-      for (const conn of conns) {
-        send(conn, { op: 'event', kind: 'message', content: arg, meta })
-      }
       armPending(newKey, { dir: binding.dir, at: Date.now() })
+      await deliverMessage(newKey, binding.dir, { op: 'event', kind: 'message', content: arg, meta }, arg)
     }
     return
   }
@@ -3140,7 +3624,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
       return
     }
     const want = arg.trim().toLowerCase()
-    const hits = [...jsonlMtimes(binding.dir).keys()].filter(id => id.startsWith(want))
+    const hits = [...adapterForBinding(binding).sessionMtimes(binding.dir).keys()].filter(id => id.startsWith(want))
     if (hits.length !== 1) {
       void say(
         hits.length === 0
@@ -3149,13 +3633,39 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
       )
       return
     }
+    // A directory can intentionally have several topic bindings, but a concrete
+    // conversation id may have only one owner.  Resuming another topic's id
+    // would create two agents writing the same history (and a later revive
+    // would make that fork look legitimate), so reject it before stopping the
+    // caller's live session.
+    const chosenId = hits[0]!
+    const owner = sessionOwner(loadBindings(), binding.dir, chosenId, key)
+    if (owner) {
+      const target = keyToTarget(owner)
+      const title = target.thread_id != null ? topicTitle(target.chat_id, target.thread_id) : undefined
+      const label = target.thread_id != null
+        ? `<code>#${target.thread_id}</code>${title ? ` «${escHtml(title)}»` : ''}`
+        : `<code>${escHtml(owner)}</code>`
+      void say(L.sessionOwnedByTopic(escHtml(chosenId), label))
+      return
+    }
     if (!(await stopLiveSessions(key, binding))) {
       void say(L.couldntStopCurrentScreen)
       return
     }
-    binding.sessionId = hits[0]
-    saveBindings(reg)
-    await spawnSession(key, binding, 'resume', html => void say(html))
+    // stopLiveSessions may wait for Claude's background-task confirmation.  Do
+    // not save the `reg` snapshot captured before that await: an incoming turn
+    // in another topic can learn its session id in the meantime.  Reload and
+    // touch only this key, otherwise `/resume` silently rolls that other update
+    // back (LM16).
+    const latest = loadBindings()
+    const latestBinding = setSessionId(latest, key, chosenId)
+    if (!latestBinding) {
+      void say(L.noBindingBindFirst)
+      return
+    }
+    saveBindings(latest)
+    await spawnSession(key, latestBinding, 'resume', html => void say(html))
     return
   }
 
@@ -3171,20 +3681,21 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
       `📁 ${codePath(binding.dir)}${branch ? ` <i>(${escHtml(branch)})</i>` : ''}`,
       '',
     ]
+    const adapter = adapterForBinding(binding)
     if (session) {
       const pidState = session.pid
         ? alive(session.pid) ? L.pidAlive(session.pid) : L.pidDead(session.pid)
         : L.pidUnknown
       const tmuxName = sessionName(key, binding.dir)
       lines.push(
-        L.statusClaudeConnected(pidState),
+        `🤖 ${adapter.displayName}: ${pidState}`,
         `🪟 tmux: <code>${escHtml(tmuxName)}</code>${session.pane ? ` <i>(${escHtml(session.pane)})</i>` : ''}`,
       )
       if (binding.sessionId) {
         lines.push(`🆔 session: <code>${escHtml(binding.sessionId)}</code>`)
       }
     } else {
-      lines.push(L.statusClaudeDisconnected)
+      lines.push(`⚫ ${adapter.displayName}: disconnected`)
       const name = sessionName(key, binding.dir)
       const tmuxState = (await hasTmuxSession(name)) ? L.tmuxHas : L.tmuxNone
       lines.push(L.statusTmux(escHtml(name), tmuxState), '', L.statusResumeHint)
@@ -3206,11 +3717,22 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
           : L.statusStandDown,
       )
     }
-    const limits = readLimits(binding.dir)
-    if (limits) {
-      const parts = formatLimits(limits, Date.now())
-      if (parts.length > 0) {
-        lines.push('', ...parts.map(escHtml))
+    const cachedStatus = adapter.cachedStatusLines(binding.dir, Date.now())
+    if (cachedStatus.length) {
+      lines.push('', ...cachedStatus.map(escHtml))
+    }
+    // Codex exposes quota/context only through its own `/status` panel.  This is deliberately
+    // an on-demand read (not a polling side effect) and it refuses to touch a non-empty local
+    // composer, so a person using the tmux pane cannot lose a draft to a Telegram refresh.
+    if (session?.pane && adapter.statusPanelCommand) {
+      const panel = await readLiveStatusPanel(adapter, session.pane)
+      if (panel) {
+        const telemetry = formatLiveStatusPanel(panel)
+        if (telemetry.length) {
+          lines.push('', ...(panel.model ? [`🧠 ${escHtml(panel.model)}`] : []), ...telemetry)
+        }
+      } else {
+        lines.push('', L.statusQuotaUnavailable)
       }
     }
     if (binding.allow?.length) {
@@ -3248,7 +3770,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
         // Здесь срок НАМЕРЕННО короче PANE_READY_MS: это не ожидание доставки, а проба —
         // не готов за 12 с, значит сессия о чём-то спрашивает, и пользователю надо сказать
         // об этом сейчас, а не через минуту молчания. Не сводить к общей константе.
-        if (!(await waitPaneReady(pane, 12_000))) {
+        if (!(await waitPaneReady(pane, 12_000, adapterForBinding(binding)))) {
           void say(L.sessionAsksFirst(cmd)) // кнопки уже отправил picker bridge
           return
         }
@@ -3285,7 +3807,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
           // потом съедает ввод и подсовывает picker'у нумерованные списки из вывода агента.
           // Закрываем то, что сами открыли (интервал не спасает: клавиши доезжают пачкой).
           for (let i = 0; i < 2; i++) {
-            if (!(await capturePane(s.pane).catch(() => '')).includes(FOOTER)) {
+            if (!hasPickerFooter(await capturePane(s.pane).catch(() => ''))) {
               break
             }
             await sendKeys(s.pane, 'Escape')
@@ -3334,7 +3856,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
               // straight into the what-next choice — same keyboard as after /bind
               void bot.api
                 .sendMessage(chat_id, L.sessionStopped, {
-                  ...threadOpt, parse_mode: 'HTML', reply_markup: startChoiceKeyboard(key, binding.dir),
+                  ...threadOpt, parse_mode: 'HTML', reply_markup: startChoiceKeyboard(key, binding),
                 })
                 .catch(() => {})
             })
@@ -3348,7 +3870,15 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
           void say(L.restarting)
           expectedDisconnect.add(key)
           const restartKeys = s.bindingKeys?.length ? s.bindingKeys : [key]
-          void restartSession(s.pane, s.pid, s.cmdline, restartKeys, log)
+          const adapter = adapterForSession(s)
+          const restart = adapter.capabilities.nativeInboundTransport
+            ? restartSession(s.pane, s.pid, s.cmdline, restartKeys, log)
+            : stopSession(s.pane, s.pid, log).then(async ok => {
+                if (!ok) throw new Error('process did not stop')
+                await new Promise(r => setTimeout(r, 1000))
+                await typeLine(s.pane!, adapter.launchEnvPrefix(restartKeys) + ' ' + memoryCapPrefix() + adapter.buildLaunch(s.cmdline, 'resume', binding.sessionId))
+              })
+          void restart
             .then(() => say(L.restartSent))
             .catch(e => say(L.restartFail(escHtml(String(e)))))
             .finally(() => setTimeout(() => expectedDisconnect.delete(key), 90_000))
@@ -3362,6 +3892,33 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
 
   // resume | new
   if (live.length > 0) {
+    // `/new` means a genuinely fresh conversation even if the current agent is
+    // still connected.  Merely refusing here left no way to do that from
+    // Telegram except the awkward two-step `/stop` → button flow.  Stop first:
+    // launching another CLI into the same pane would otherwise become input to
+    // the live agent instead of a process replacement.
+    if (cmd === 'new') {
+      if (!(await stopLiveSessions(key, binding))) {
+        void say(L.couldntStopCurrentScreen)
+        return
+      }
+      await new Promise(r => setTimeout(r, 1000))
+      await spawnSession(key, binding, 'new', html => void say(html))
+      return
+    }
+    const liveAdapter = adapterForBinding(binding)
+    if (cmd === 'resume' && !liveAdapter.capabilities.liveResumePicker) {
+      // Codex 0.147 accepts `/resume` as ordinary composer text while a
+      // conversation is open; it has no selectable in-place history screen.
+      // Keep the current process intact until the user taps a concrete
+      // Telegram choice, which then follows the existing rs: stop→resume path.
+      void bot.api
+        .sendMessage(chat_id, L.whichSessionRaise, {
+          ...threadOpt, parse_mode: 'HTML', reply_markup: startChoiceKeyboard(key, binding),
+        })
+        .catch(e => log(`resume picker send failed: ${e}`))
+      return
+    }
     if (cmd === 'resume' && session?.pane) {
       // Live session → open the CLI's own /resume list and mirror EXACTLY what
       // it shows; taps drive it with arrow keys (nr: callback). In-place switch,
@@ -3436,13 +3993,21 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
   // buttons); tap lands in the rs:/ns: callbacks below. /new and single-session
   // /resume keep the old instant path.
   if (cmd === 'resume') {
-    const recent = recentSessions(binding.dir, 5)
+    const recent = adapterForBinding(binding).recentSessions(binding.dir, 5)
     if (recent.length > 1) {
       void bot.api
         .sendMessage(chat_id, L.whichSessionRaise, {
-          ...threadOpt, parse_mode: 'HTML', reply_markup: startChoiceKeyboard(key, binding.dir),
+          ...threadOpt, parse_mode: 'HTML', reply_markup: startChoiceKeyboard(key, binding),
         })
         .catch(e => log(`resume picker send failed: ${e}`))
+      return
+    }
+    // No conversation exists in this folder.  `--continue` is not a harmless
+    // default: Claude exits with “No conversation found”, leaving the topic
+    // apparently resumed but with an empty shell.  Starting fresh is the only
+    // actionable interpretation of `/resume` here.
+    if (recent.length === 0) {
+      await spawnSession(key, binding, 'new', html => void say(html))
       return
     }
   }
@@ -3493,10 +4058,10 @@ function offerBind(key: string, chatId: string, threadId: number | undefined): v
     .catch(() => {})
 }
 
-function startChoiceKeyboard(key: string, dir: string): InlineKeyboard {
+function startChoiceKeyboard(key: string, binding: BindingEntry): InlineKeyboard {
   const kb = new InlineKeyboard()
   kb.text(t().btnNewSession, `ns:${key}`).row()
-  for (const r of recentSessions(dir, 5)) {
+  for (const r of adapterForBinding(binding).recentSessions(binding.dir, 5)) {
     const when = new Date(r.mtime).toLocaleString('ru-RU', {
       day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
     })
@@ -3534,7 +4099,7 @@ bot.on('message:forum_topic_created', ctx => {
 
   // Always ask, even with a single mode: otherwise the topic silently starts in the default folder
   // and there's no way to pick another (and autostart also races with a manual /resume).
-  pendingModeChoice.set(key, { cfg, topicName, say })
+  armMode(key, { cfg, topicName, say }, chat_id, threadId)
   void bot.api
     .sendMessage(chat_id, modePromptText(cfg, t().howRaiseTopic), {
       message_thread_id: threadId,
@@ -3693,9 +4258,10 @@ bot.on('callback_query:data', async ctx => {
       return
     }
     const msg = ctx.callbackQuery.message
-    const ok = await injectSlashToPanes(
-      conns, `/${name}`, menu.key, menu.dir, String(ctx.chat?.id ?? ''),
-      msg?.message_thread_id, undefined,
+    const agent = binding.agent ?? 'claude'
+    const ok = await injectSkillToPanes(
+      conns, skillInvocation(agent, name), menu.key, menu.dir, String(ctx.chat?.id ?? ''),
+      msg?.message_thread_id, undefined, agent,
     )
     await ctx.answerCallbackQuery({ text: ok ? t().toastRun(name) : t().toastNotInTmux }).catch(() => {})
     if (ok && msg) {
@@ -3716,7 +4282,7 @@ bot.on('callback_query:data', async ctx => {
       await ctx.answerCallbackQuery({ text: t().toastNoRights }).catch(() => {})
       return
     }
-    pendingModeChoice.delete(key)
+    disarmMode(key)
     await ctx.answerCallbackQuery({ text: modeLabel(mode) }).catch(() => {})
     await ctx.editMessageText(t().modeChosen(modeLabel(mode))).catch(() => {})
     beginTopicSession(key, pending.cfg, mode, pending.topicName, pending.say)
@@ -3734,7 +4300,7 @@ bot.on('callback_query:data', async ctx => {
       await ctx.answerCallbackQuery({ text: t().toastNoRights }).catch(() => {})
       return
     }
-    pendingModeChoice.delete(key)
+    disarmMode(key)
     await ctx.answerCallbackQuery({ text: ownDirLabel() }).catch(() => {})
     await ctx.editMessageText(t().modeChosen(ownDirLabel())).catch(() => {})
     pending.say(t().sendFolderPromptShort(codePath(PROJECTS_DIR)))
@@ -3880,13 +4446,18 @@ function shutdown(): void {
   shuttingDown = true
   log('shutting down')
   stateRepo.flush() // persist pending markers synchronously before exit
+  // A replacement hub writes its PID before the old poller finishes reacting to SIGTERM.
+  // Do not let this old process unlink the replacement's socket: that race made newly started
+  // stubs/hooks silently lose their transport after a Docker/service restart.
+  let ownsPollerSlot = false
   try {
-    if (parseInt(readFileSync(PID_FILE, 'utf8'), 10) === process.pid) {
-      rmSync(PID_FILE)
-    }
+    ownsPollerSlot = parseInt(readFileSync(PID_FILE, 'utf8'), 10) === process.pid
+    if (ownsPollerSlot) rmSync(PID_FILE)
   } catch {}
-  rmQuiet(SOCK_PATH)
-  rmQuiet(SPAWN_LOCK)
+  if (ownsPollerSlot) {
+    rmQuiet(SOCK_PATH)
+    rmQuiet(SPAWN_LOCK)
+  }
   setTimeout(() => process.exit(0), 2000)
   void Promise.resolve(bot.stop()).finally(() => process.exit(0))
 }
@@ -3912,6 +4483,11 @@ export async function start(): Promise<void> {
 }
 
 async function pollForever(): Promise<void> {
+  // grammY invokes onStart after every successful long-poll reconnect. Command
+  // registration is a boot task, not a reconnect task: repeating it during a
+  // 409 conflict hammers deleteMyCommands/setMyCommands and turns one poller
+  // conflict into a long Telegram 429 cooldown.
+  let commandsBootstrapped = false
   for (let attempt = 1; ; attempt++) {
     try {
       await bot.start({
@@ -3928,10 +4504,13 @@ async function pollForever(): Promise<void> {
             log(`reply-fallback: rechecking ${pendingAnswer.size} pending marker(s) recovered from disk`)
             setTimeout(() => { for (const key of [...pendingAnswer.keys()]) void forwardFallbackReply(key) }, 8000)
           }
-          // scoped lists (e.g. from an old bot) override the default in DMs/groups — clear them
-          void bot.api.deleteMyCommands({ scope: { type: 'all_private_chats' } }).catch(e => log(`deleteMyCommands: ${e}`))
-          void bot.api.deleteMyCommands({ scope: { type: 'all_group_chats' } }).catch(e => log(`deleteMyCommands: ${e}`))
-          void refreshCommands() // ops + global-skill commands; async plugin scan, don't block polling
+          if (!commandsBootstrapped) {
+            commandsBootstrapped = true
+            // scoped lists (e.g. from an old bot) override the default in DMs/groups — clear them
+            void bot.api.deleteMyCommands({ scope: { type: 'all_private_chats' } }).catch(e => log(`deleteMyCommands: ${e}`))
+            void bot.api.deleteMyCommands({ scope: { type: 'all_group_chats' } }).catch(e => log(`deleteMyCommands: ${e}`))
+            void refreshCommands() // ops + global-skill commands; async plugin scan, don't block polling
+          }
         },
       })
       return

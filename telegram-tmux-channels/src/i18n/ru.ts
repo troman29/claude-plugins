@@ -48,11 +48,16 @@ export const ru: Strings = {
   notInTmuxSlash: '⚠️ Сессия не в tmux — слэш-команду не набрать.',
   tmuxCreated: (name, path) => `🪟 tmux <code>${name}</code> создан в ${path}.`,
   tmuxExists: name => `🪟 tmux <code>${name}</code> уже есть — набираю запуск в его активный pane.`,
+  tmuxForeignAgent: command => `⚠️ В этом tmux-pane уже работает неподключённый <code>${command}</code>; не впечатываю запуск ему в prompt.`,
+  spawnInProgress: '⏳ Сессия уже запускается; повторный запуск пропущен.',
   modeResume: '🚀 <b>Возобновляю</b>',
   modeRestart: '🚀 <b>Запускаю заново</b>',
   modeFork: '🌱 <b>Форкаю разговор</b>',
   modeNew: '🆕 <b>Запускаю сессию</b>',
   spawnFailed: (mode, err) => `⚠️ <b>${mode} не удалось</b>: ${err}`,
+  bindingDirectoryMissing: path =>
+    `⚠️ <b>Привязанной папки больше нет</b>: ${path}\nПерепривяжи этот чат: <code>/bind &lt;папка&gt;</code>.`,
+  adminOnly: command => `🔒 <code>/${command}</code> — только для администратора хаба.`,
   sessionSpawnFail: err => `⚠️ <b>Не удалось поднять сессию</b>: ${err}`,
 
   // ── pickers ──
@@ -61,10 +66,12 @@ export const ru: Strings = {
   pickerClosedRestart: '❓ <i>Пикер закрыт (рестарт)</i>',
   pickerClosedNoRevive: '❓ <i>Пикер закрыт (сессия не восстановилась)</i>',
   sendAnswerMsg: '✍️ <b>Пришли ответ</b> сообщением.',
+  pkCustomSavedSubmit: 'Свой вариант сохранён. Нажми Submit, чтобы отправить весь выбор.',
 
   // ── notifiers ──
   agentsHeader: '🤖 <b>Агенты</b>',
   compaction: (bar, pct, elapsed) => `🗜 <b>Компакция</b> ${bar} ${pct}%${elapsed ? ` <i>(${elapsed})</i>` : ''}`,
+  compactionStarted: trigger => `🗜 <b>Компакция</b>${trigger ? ` <i>(${trigger})</i>` : ''}`,
   compactionDone: '✅ <b>Компакция готова.</b>',
   workflow: (name, done, total) => `${done >= total ? '✅' : '🤖'} <b>Воркфлоу</b> <code>${name}</code> — ${done}/${total} агентов`,
   workflowDone: (name, total) => `✅ <b>Воркфлоу</b> <code>${name}</code> готов (${total} агентов)`,
@@ -125,6 +132,8 @@ export const ru: Strings = {
   noBindingPickFolder: '👋 Тут пока ничего не привязано. Выбери папку — или пришли <code>/bind &lt;путь&gt;</code>.',
   bindUsage: projects => `Использование: <code>/bind &lt;папка&gt;</code>\n\nИмя в ${projects} или абсолютный путь.`,
   bound: (key, path) => `🔗 <b>Привязано</b>\n\n<code>${key}</code> → ${path}\n\nКак стартуем?`,
+  rebound: (key, from, to, sessionId) =>
+    `🔗 <b>Перепривязано</b>\n\n<code>${key}</code>\n${from} → ${to}${sessionId ? `\n\n💬 Сессия <code>${sessionId}</code> сохранена.` : ''}\n\nКак стартуем?`,
   bindFail: err => `⚠️ <b>Не удалось привязать</b>: ${err}`,
   nothingBoundHere: 'Здесь ничего не привязано.',
   nothingBoundBindFirst: 'Здесь ничего не привязано. Сначала <code>/bind &lt;папка&gt;</code>.',
@@ -149,7 +158,9 @@ export const ru: Strings = {
   deleteOnlyInTopic: '❌ <code>/delete</code> — только в топике форума (General/обычную группу так не удалить).',
   noBindingInTopic: (tid, title) => `🔓 <i>Бинда в топике <code>#${tid}</code>${title ? ` «${title}»` : ''} не было.</i>`,
   topicDeletedShort: tid => `🗑 Топик <code>#${tid}</code> удалён.`,
-  topicDeleteFail: err => `⚠️ Топик не удалён (у бота есть право can_delete_messages?): ${err}`,
+  topicDeleteFail: err =>
+    `⚠️ Топик не удалён (у бота есть право can_delete_messages?): ${err}\n` +
+    'Топик остался живым: следующее сообщение снова предложит настройку.',
   deleteKeptOnCleanupFail:
     '🛑 <b>Топик оставил, биндинг вернул</b> — уборка выше не удалась, а удали я топик сейчас, воркри со стендом остались бы жить, и следить за ними стало бы некому. Разберись с причиной и повтори <code>/delete</code>.',
 
@@ -174,6 +185,8 @@ export const ru: Strings = {
   noSessionNamed: (want, dir) =>
     `⚠️ Нет сессии <code>${want}</code> в ${dir}.\n\n<code>/resume</code> без аргумента покажет список.`,
   prefixAmbiguous: (want, count) => `⚠️ Префикс <code>${want}</code> подходит ${count} сессиям — уточни.`,
+  sessionOwnedByTopic: (id, topic) =>
+    `⚠️ Сессия <code>${id}</code> уже привязана к ${topic}. Возобнови её там, не форкая историю.`,
   couldntStopCurrentScreen: '⚠️ Не смог остановить текущую сессию — глянь <code>/screen</code>.',
   sessionListFail: '⚠️ Список сессий не открылся (агент занят?). Попробуй позже, глянь /screen, или /stop и затем /resume.',
   switchSessionHdr: total => `⏪ <b>Переключить сессию</b> <i>(${total}, без перезапуска)</i>`,
@@ -237,12 +250,19 @@ export const ru: Strings = {
   statusStandUp: url => `🖥 стенд: 🟢 поднят${url ? ` → ${url}` : ''}`,
   statusStandDown: '🖥 стенд: ⚪️ не поднят → <code>/stand_up</code>',
   statusAccess: ids => `👥 доступ: <code>${ids}</code>`,
+  statusContextUsed: pct => `Контекст: использовано ${pct}%`,
+  statusQuota: (label, pct, reset) => `${label}: осталось ${pct}%${reset ? ` (сброс ${reset})` : ''}`,
+  statusQuotaStale: '⚠️ Codex сообщает, что лимиты могут быть устаревшими.',
+  statusQuotaUnavailable: 'ℹ️ Живые лимиты Codex не обновлены: пейн занят или в нём есть локальный черновик.',
 
   // ── new-topic mode prompt ──
   ownDirLabel: '✏️ Своя папка',
   sendFolderPromptBind: projects => `📁 Пришли папку для этого топика — как в <code>/bind</code>: имя в ${projects} или абсолютный путь.`,
   sendFolderPromptShort: projects => `📁 Пришли папку — как в <code>/bind</code>: имя в ${projects} или абсолютный путь.`,
   branchNote: branch => `, ветка <code>${branch}</code>`,
+  branchRenamed: (wanted, used) =>
+    `🔀 Ветка <code>${wanted}</code> уже есть (топик с таким именем был раньше) — ` +
+    `работаю в <code>${used}</code>, срезанной от свежей базы.`,
   preparingSession: (mode, branchNote) => `⏳ Готовлю сессию (<code>${mode}</code>${branchNote})…`,
   notAFolder: err => `⚠️ <b>Не похоже на папку</b>: ${err}\n\nПришли ещё раз.`,
   modeIntroFolder: '📁 <b>Папка по умолчанию</b> — работать прямо в базе.',

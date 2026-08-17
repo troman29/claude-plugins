@@ -2,13 +2,12 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "^(Agent|Task)$",
+        "matcher": "^(Agent|Task|spawn_agent)$",
         "hooks": [
           {
             "type": "command",
-            "command": "bun ${CLAUDE_PLUGIN_ROOT}/src/subagent-hook.ts describe",
-            "timeout": 3,
-            "async": true
+            "command": "bun ${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/src/subagent-hook.ts describe",
+            "timeout": 3
           }
         ]
       },
@@ -17,9 +16,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun ${CLAUDE_PLUGIN_ROOT}/src/subagent-hook.ts bg",
-            "timeout": 3,
-            "async": true
+            "command": "bun ${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/src/subagent-hook.ts bg",
+            "timeout": 3
           }
         ]
       },
@@ -28,9 +26,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun ${CLAUDE_PLUGIN_ROOT}/src/subagent-hook.ts skill",
-            "timeout": 3,
-            "async": true
+            "command": "bun ${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/src/subagent-hook.ts skill",
+            "timeout": 3
           }
         ]
       }
@@ -41,9 +38,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun ${CLAUDE_PLUGIN_ROOT}/src/subagent-hook.ts start",
-            "timeout": 3,
-            "async": true
+            "command": "bun ${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/src/subagent-hook.ts start",
+            "timeout": 3
           }
         ]
       }
@@ -54,9 +50,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun ${CLAUDE_PLUGIN_ROOT}/src/subagent-hook.ts stop",
-            "timeout": 3,
-            "async": true
+            "command": "bun ${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/src/subagent-hook.ts stop",
+            "timeout": 3
           }
         ]
       }
@@ -67,9 +62,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun ${CLAUDE_PLUGIN_ROOT}/src/subagent-hook.ts task-create",
-            "timeout": 3,
-            "async": true
+            "command": "bun ${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/src/subagent-hook.ts task-create",
+            "timeout": 3
           }
         ]
       },
@@ -78,9 +72,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun ${CLAUDE_PLUGIN_ROOT}/src/subagent-hook.ts task-update",
-            "timeout": 3,
-            "async": true
+            "command": "bun ${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/src/subagent-hook.ts task-update",
+            "timeout": 3
           }
         ]
       },
@@ -89,9 +82,29 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun ${CLAUDE_PLUGIN_ROOT}/src/subagent-hook.ts todo",
-            "timeout": 3,
-            "async": true
+            "command": "bun ${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/src/subagent-hook.ts todo",
+            "timeout": 3
+          }
+        ]
+      },
+      {
+        "matcher": "^update_plan$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun ${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/src/subagent-hook.ts codex-plan",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun ${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/src/subagent-hook.ts codex-skill",
+            "timeout": 3
           }
         ]
       }
@@ -101,9 +114,32 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun ${CLAUDE_PLUGIN_ROOT}/src/subagent-hook.ts turnend",
-            "timeout": 3,
-            "async": true
+            "command": "bun ${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/src/subagent-hook.ts turnend",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "manual|auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun ${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/src/subagent-hook.ts compaction-start",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "matcher": "manual|auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun ${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/src/subagent-hook.ts compaction-done",
+            "timeout": 3
           }
         ]
       }

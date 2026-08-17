@@ -21,6 +21,7 @@ import { promisify } from 'util'
 import { readdirSync, readFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
+import type { AgentKind } from './agents/types'
 
 const pexec = promisify(execFile)
 
@@ -36,6 +37,18 @@ function claudeBin(): string {
 }
 
 export type Skill = { name: string; description: string }
+
+// Claude expands skills as slash commands. Codex's current documented syntax is `$name`,
+// but the Docker-supported 0.147 TUI leaves `$` invocations unsubmitted. Send an explicit
+// ordinary prompt there instead: it works on 0.147 and newer Codex can still load the skill
+// through its normal discovery path. This is intentionally adapter-owned, not a Telegram
+// special case.
+export function skillInvocation(agent: AgentKind, name: string, args: string[] = []): string {
+  if (agent === 'claude') {
+    return `/${name}${args.length ? ` ${args.join(' ')}` : ''}`
+  }
+  return `Read and follow the Codex skill named "${name}" now. Locate its SKILL.md, follow it exactly, and then handle: ${args.join(' ') || '(no additional request)'}`
+}
 
 // "  Skills (14)  brainstorming, tdd, writing-plans" → ['brainstorming','tdd',…]
 export function parseSkillsLine(detailsOutput: string): string[] {
@@ -163,7 +176,11 @@ function enabledPlugins(): { name: string; installPath: string }[] {
 export async function discoverGlobalSkills(): Promise<{ skills: Skill[]; failed: number }> {
   const plugins = enabledPlugins()
   const userSkills = join(homedir(), '.claude/skills')
-  const idx = descIndex([userSkills, ...plugins.map(p => p.installPath)])
+  // Codex CLI discovers local skills from the open agent skills locations. In particular,
+  // `.codex/skills` looks plausible but is not a Codex CLI discovery root, so advertising it
+  // in Telegram creates buttons that can never run.
+  const codexRoots = [join(homedir(), '.agents', 'skills')]
+  const idx = descIndex([userSkills, ...plugins.map(p => p.installPath), ...codexRoots])
   const names = new Set<string>()
   let failed = 0
   await Promise.all(
@@ -186,6 +203,12 @@ export async function discoverGlobalSkills(): Promise<{ skills: Skill[]; failed:
       names.add(nm)
     }
   }
+  for (const f of codexRoots.flatMap(root => walkSkillMd(root, 5))) {
+    let src: string
+    try { src = readFileSync(f, 'utf8').slice(0, 8000) } catch { continue }
+    const nm = frontmatterField(src, 'name')
+    if (nm) names.add(nm)
+  }
   return { skills: [...names].sort().map(name => ({ name, description: idx.get(name) ?? name })), failed }
 }
 
@@ -204,9 +227,12 @@ export function resolveSkillCommand(
   return globalMap.get(name) ?? projectSkills.find(s => mangleCmd(s.name) === name)?.name ?? name
 }
 
-export function discoverProjectSkills(dir: string): Skill[] {
-  const out: Skill[] = []
-  for (const f of walkSkillMd(join(dir, '.claude', 'skills'), 2)) {
+export function discoverProjectSkills(dir: string, agent: AgentKind = 'claude'): Skill[] {
+  const out = new Map<string, Skill>()
+  const roots = agent === 'codex'
+    ? [join(dir, '.agents', 'skills')]
+    : [join(dir, '.claude', 'skills'), join(dir, '.agents', 'skills')]
+  for (const f of roots.flatMap(root => walkSkillMd(root, 2))) {
     let src: string
     try {
       src = readFileSync(f, 'utf8').slice(0, 8000)
@@ -215,10 +241,10 @@ export function discoverProjectSkills(dir: string): Skill[] {
     }
     const name = frontmatterField(src, 'name')
     if (name) {
-      out.push({ name, description: frontmatterField(src, 'description') ?? name })
+      out.set(name, { name, description: frontmatterField(src, 'description') ?? name })
     }
   }
-  return out.sort((a, b) => a.name.localeCompare(b.name))
+  return [...out.values()].sort((a, b) => a.name.localeCompare(b.name))
 }
 
 // ── self-test ──

@@ -4,6 +4,7 @@ import { join } from 'path'
 import { STATE_DIR } from './paths'
 import { safeJsonParse } from './util'
 import { t } from './i18n'
+import type { AgentKind } from './agents/types'
 
 export const TRUSTED_GROUPS_FILE = join(STATE_DIR, 'trusted-groups.json')
 
@@ -19,6 +20,7 @@ export type TrustedGroupConfig = {
   dir?: string // unset → ask for it per-topic, same as /bind
   hook?: HookConfig
   cmdline?: string[]
+  agent?: AgentKind
   exclude?: { topicIds?: number[]; nameContains?: string[] }
 }
 
@@ -28,7 +30,7 @@ export function modeLabel(mode: TrustedGroupMode): string {
 
 const DEFAULT_MODES: TrustedGroupMode[] = ['folder']
 
-type GroupDefaults = { modes?: TrustedGroupMode[]; cmdline?: string[]; dir?: string }
+type GroupDefaults = { modes?: TrustedGroupMode[]; cmdline?: string[]; dir?: string; agent?: AgentKind }
 type GroupEntry = GroupDefaults & { hook?: HookConfig; exclude?: TrustedGroupConfig['exclude'] }
 type TrustedGroupsFile = { defaults?: GroupDefaults; groups?: Record<string, GroupEntry> }
 
@@ -37,6 +39,7 @@ export function mergeGroupConfig(defaults: GroupDefaults | undefined, group: Gro
     dir: group.dir ?? defaults?.dir,
     modes: group.modes ?? defaults?.modes ?? DEFAULT_MODES,
     cmdline: group.cmdline ?? defaults?.cmdline,
+    agent: group.agent ?? defaults?.agent,
     hook: group.hook,
     exclude: group.exclude,
   }

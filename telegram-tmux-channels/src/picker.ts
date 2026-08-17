@@ -1,10 +1,12 @@
 // Parser for Claude Code's interactive TUI pickers captured from tmux capture-pane.
 // Grounded on real /model and AskUserQuestion renders — see tests/fixtures.
 
-const OPTION_RE = /^\s*❯?\s*(\d+)\.\s+(.*)$/
+const OPTION_RE = /^\s*[❯›]?\s*(\d+)\.\s+(.*)$/
 const CHECKBOX_RE = /^\[[ ✔xX]\]\s*/
 const CUSTOM_RE = /type something|other|custom|own/i
 export const FOOTER = 'Esc to cancel' // общий признак «в пейне открыт модальный диалог»
+const FOOTER_RE = /esc to (?:cancel|go back)/i
+export const hasPickerFooter = (text: string): boolean => FOOTER_RE.test(text)
 
 export type PickerOption = { index: number; label: string }
 export type Picker = {
@@ -15,12 +17,33 @@ export type Picker = {
   hash: string
 }
 
+// Both CLIs require an explicit trust acknowledgement before their local MCP server can start.
+// This is only auto-acknowledged after an admin deliberately bound that directory; never
+// generalise it to arbitrary yes/no prompts such as command approvals.
+export function isStartupTrustPrompt(picker: Picker): boolean {
+  if (picker.options.some(o => /I trust this folder|I am using this for local development/i.test(o.label))) {
+    return true // Claude Code
+  }
+  return /do you trust the contents of this directory/i.test(picker.title)
+    && picker.options.some(o => /^Yes, continue$/i.test(o.label)) // Codex 0.147+
+}
+
+// Unlike its later approval dialogs, Codex's initial directory-trust screen is not a modal
+// picker: it ends with "Press enter to continue", not an Esc footer. Keep its signature narrow
+// so arbitrary text asking a yes/no question can never be acknowledged automatically.
+export function isCodexStartupTrustScreen(text: string): boolean {
+  return /do you trust the contents of this directory\?/i.test(text)
+    && /^[›>]\s*1\.\s+Yes, continue\s*$/mi.test(text)
+    && /^\s*2\.\s+No, quit\s*$/mi.test(text)
+    && /press enter to continue/i.test(text)
+}
+
 const MAX_TITLE_LINES = 3
 // A live picker owns the input area; a leftover footer higher up has the real chat
 // input box (a bare ❯ prompt, no option text) below it — that's the staleness tell.
 // Anything else below (delivered-message echoes, a background task widget) is just
 // chrome and doesn't mean the picker resolved.
-const BARE_PROMPT_RE = /^❯\s*$/
+const BARE_PROMPT_RE = /^[❯›]\s*$/
 
 function hasLiveInputBelow(lines: string[], footerIdx: number): boolean {
   for (let i = footerIdx + 1; i < lines.length; i++) {
@@ -63,7 +86,7 @@ function isChrome(t: string): boolean {
 // «Промпт ушёл» — недостаточный признак: поле ввода появляется на ~секунду позже, и
 // сообщение, отправленное в эту щель, CLI теряет молча.
 export function paneReady(text: string): boolean {
-  return !text.includes(FOOTER) && /^\s*❯/m.test(text)
+  return !hasPickerFooter(text) && /^\s*❯/m.test(text)
 }
 
 export function fnv1a(s: string): string {
@@ -86,7 +109,7 @@ export function parsePicker(text: string): Picker | undefined {
   }
   let footerIdx = -1
   for (let i = lastIdx; i >= 0; i--) {
-    if (lines[i].includes(FOOTER)) {
+    if (hasPickerFooter(lines[i])) {
       footerIdx = i
       break
     }
@@ -134,14 +157,22 @@ export function parsePicker(text: string): Picker | undefined {
   if (options.length < 2) {
     return undefined
   }
+  // Once text is entered inline, Claude replaces "Type something" with the
+  // value itself. The following Submit control is its stable structural marker.
+  const inlineCustom = lines.findIndex((line, i) =>
+    OPTION_RE.test(line) && lines.slice(i + 1).find(l => l.trim())?.trim() === 'Submit',
+  )
   const custom = options.find(o => CUSTOM_RE.test(o.label))
+  const customIndex = custom?.index ?? (inlineCustom >= 0 ? Number(OPTION_RE.exec(lines[inlineCustom]!)![1]) : undefined)
   const title = titleParts.join(' ').trim()
   return {
     title,
     options,
     mode: multi ? 'multi' : 'single',
-    ...(custom ? { customIndex: custom.index } : {}),
-    hash: fnv1a(title + '|' + options.map(o => `${o.index}:${o.label}`).join('|')),
+    ...(customIndex != null ? { customIndex } : {}),
+    // A typed custom value is state, not a new dialog. Keeping its slot stable
+    // prevents a duplicate Telegram bubble after every character.
+    hash: fnv1a(title + '|' + options.map(o => `${o.index}:${o.index === customIndex ? '__custom__' : o.label}`).join('|')),
   }
 }
 
@@ -208,4 +239,13 @@ export function checkedIndexes(text: string): number[] {
     }
   }
   return out
+}
+
+/** Currently highlighted numbered option in a live picker, if its cursor is visible. */
+export function pickerCursorIndex(text: string): number | undefined {
+  for (const line of text.split('\n')) {
+    const m = /^\s*[❯›]\s*(\d+)\.\s+/.exec(line)
+    if (m) return Number(m[1])
+  }
+  return undefined
 }

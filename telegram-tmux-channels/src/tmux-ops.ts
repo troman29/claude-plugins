@@ -279,16 +279,38 @@ export async function sendKeys(pane: string, ...keys: string[]): Promise<void> {
   await tmux('send-keys', '-t', pane, ...keys)
 }
 
+/** The foreground command is a safety signal, not a process inventory. */
+export async function paneCurrentCommand(pane: string): Promise<string> {
+  const proc = Bun.spawn(['tmux', 'display-message', '-p', '-t', pane, '#{pane_current_command}'], {
+    stdout: 'pipe', stderr: 'ignore',
+  })
+  await proc.exited
+  return (await new Response(proc.stdout).text()).trim()
+}
+
 const TYPE_ENTER_GAP_MS = 500
 // Seconds the user gets to answer the exit-confirm via Telegram buttons.
 export const EXIT_CONFIRM_GRACE_S = 10
 
+// Claude Code 2.1.233 renamed the first choice from "Exit anyway" to
+// "Exit and stop tasks".  Both mean that Enter accepts the safe default and
+// terminates the background shells; recognize the semantic prompt, not one UI
+// revision's wording.
+export function isExitConfirm(text: string): boolean {
+  return text.includes('Exit anyway') || text.includes('Exit and stop tasks')
+}
+
 export async function typeLine(pane: string, text: string): Promise<void> {
-  await tmux('send-keys', '-t', pane, '-l', text)
+  await typeText(pane, text)
   // Claude Code's TUI can eat a rapid-fire Enter as a newline instead of submit
   // (ccgram learned this) — let the text settle before Enter.
   await sleep(TYPE_ENTER_GAP_MS)
   await tmux('send-keys', '-t', pane, 'Enter')
+}
+
+/** Type into an already focused inline field without submitting it. */
+export async function typeText(pane: string, text: string): Promise<void> {
+  await tmux('send-keys', '-t', pane, '-l', text)
 }
 
 // Inject a SLASH command literally. Claude Code's "/" autocomplete pops a fuzzy-matched
@@ -430,6 +452,12 @@ export async function stopSession(
   log(`stop: pane=${pane} pid=${pid}`)
   await sendKeys(pane, 'C-c')
   await sleep(1500)
+  // Codex exits on Ctrl-C when it is idle.  Do not type Claude's `/exit` into
+  // the shell that has already replaced it: apart from a noisy error, that can
+  // race the next launch in the same tmux pane.
+  if (!alive(pid)) {
+    return true
+  }
   await typeLine(pane, '/exit')
   // Graceful window, 1s granularity. The background-shell confirm ("Exit
   // anyway / Move to background / Stay") is surfaced to Telegram as buttons by
@@ -443,7 +471,7 @@ export async function stopSession(
       break
     }
     const text = await capturePane(pane).catch(() => '')
-    if (text.includes('Exit anyway')) {
+    if (isExitConfirm(text)) {
       confirmSeenAt ??= i
       if (i - confirmSeenAt >= EXIT_CONFIRM_GRACE_S) {
         log('stop: confirm unanswered → Enter')

@@ -67,18 +67,25 @@ Telegram переживают `/bind` `/unbind` `/delete` `/resume` `/new` `/res
 - Ожидаемо: кнопки режима + «✏️ Своя папка», биндинг и спавн — только после тапа.
 - Fail-режим: молчаливый бинд в дефолтную папку + автостарт (регрессия 2026-07-23).
 - Смотреть: чат топика, `bindings.json`, `tmux ls`.
+- **2026-08-17 ✅ (Docker+MTProto):** topic `1151` получил keyboard `Default folder` +
+  `Own folder` до появления binding/tmux; это исключает прежний молчаливый auto-start.
 
 **LM2. «✏️ Своя папка» → путь.** P1 🤖
 - Шаги: тап `topicdir:` → прислать `sandbox` (и отдельно — абсолютный путь, и `~/projects/x`).
 - Ожидаемо: биндинг на указанную папку, сессия там же, `pendingTopics` очищен.
 - Fail-режим: биндинг в дефолтную папку группы; повторный вопрос про папку.
 - Смотреть: `bindings.json`, пейн (`pwd`), чат.
+- **2026-08-17 ✅ (Docker+MTProto):** `Own folder` + абсолютный
+  `/home/user/projects/ttc-e2e-codex` создали binding и tmux с этим cwd, не с group default.
 
 **LM3. Ответ «своя папка» — несуществующий путь.** P1 🤖
 - Шаги: в ответ на «пришли папку» отправить `/nope/nope`.
 - Ожидаемо: «⚠️ Не похоже на папку: …», топик ОСТАЁТСЯ в ожидании, второй ответ проходит.
 - Fail-режим: топик выпал из `pendingTopics` → дальше сообщения дропаются как unbound.
 - Смотреть: чат, hub-лог (`drop (unbound)`), `bindings.json`.
+- **2026-08-17 ✅ (Docker+MTProto):** после `/tmp/ttc-does-not-exist` тот же topic принял
+  следующий корректный путь и успешно поднял session; ожидание не потеряно. `/delete` оставил
+  `binding=false`, `tmux=false`.
 
 **LM4. Сообщение до выбора режима не теряется.** (=TG4) P0 🤖
 - Шаги: новый топик → НЕ нажимая кнопку, написать задачу → выбрать режим.
@@ -92,6 +99,9 @@ Telegram переживают `/bind` `/unbind` `/delete` `/resume` `/new` `/res
 - Fail-режим: `handleInbound:2226-2227` безусловно делает `pendingTopics.delete`/`pendingModeChoice.delete` →
   кнопки мертвы («Уже выбрано или устарело»), топик остаётся без биндинга, повторного вопроса нет.
 - Смотреть: чат (нажать кнопку после), hub-лог, `bindings.json`.
+- **2026-08-17 ✅ (Docker+MTProto):** в topic `1133` `/status` отправлен до выбора режима;
+  исходный mode-picker остался рабочим, tap folder создал binding и Claude pane. Штатный `/delete`
+  затем удалил binding и tmux (`binding=false`, `tmux=false`).
 
 **LM6. Ручной `/bind` в не-trusted топике → первый запуск.** P1 🤖
 - Шаги: `/bind sandbox` в чистом топике → тап «🆕 Новая сессия».
@@ -99,6 +109,9 @@ Telegram переживают `/bind` `/unbind` `/delete` `/resume` `/new` `/res
   `sessionId` дописан в биндинг за ≤60с (`captureNewSessionId`).
 - Fail-режим: «🚀 Запускаю заново» на первом старте; `sessionId` не выучен → следующий revive `--continue`.
 - Смотреть: чат, `bindings.json` (появление `sessionId`), hub-лог `learned sessionId`.
+- **2026-08-17 ✅ (Codex, Docker+MTProto):** в DM тест-боту выполнен
+  `/bind codex /home/user/projects/ttc-e2e-codex` → tap New → marker. Binding получил
+  `agent=codex`, конкретный id `01a00f6f…`; затем `/unbind` оставил `dm_binding=false`.
 
 **LM7. `/bind` ПОВЕРХ существующего биндинга.** `[ЭКСКЛЮЗИВ]` **P0** 🤖
 - Шаги: в живом биндинге (есть `sessionId`, выученный `cmdline`, worktree с `hookBranch`) — `/bind <та же папка>`.
@@ -114,8 +127,14 @@ Telegram переживают `/bind` `/unbind` `/delete` `/resume` `/new` `/res
 - Ожидаемо: «⏪ Какую сессию поднять?» с датой+снипетом; тап `rs:` → `--resume <id>`, `sessionId` записан.
 - Fail-режим: мгновенный старт не той беседы; кнопки с пустыми лейблами (`firstUserText` не распарсил).
 - Смотреть: `list_inline_buttons`, пейн (argv), `bindings.json`.
+- **2026-08-17 ✅ (Codex, Docker+MTProto):** после `/stop` topic `1100` получил Telegram menu
+  из пяти прошлых rollout. После фикса labels читаемы (`Reply exactly TTC_RERUN_A_OK` и т.п.),
+  без `chat_id/cwd`; tap поднял `codex resume 01a00f6f…` и записал этот же id в binding.
 
 **LM9. `/resume`, ровно одна беседа.** P2 🤖 — без пикера, сразу `--resume`/`--continue`.
+- **2026-08-17 ✅ (Claude, Docker+MTProto):** в одноразовом DM-binding создана ровно одна
+  беседа `0e1a8649…`; после `/stop` обычный `/resume` без menu запустил ровно
+  `--resume 0e1a8649…`. Временный binding, tmux и папка удалены штатно.
 
 **LM10. `/resume` в папке БЕЗ истории бесед.** **P1** 🤖
 - Шаги: `/bind <пустая папка>` → `/resume` (не трогая кнопки).
@@ -161,6 +180,11 @@ Telegram переживают `/bind` `/unbind` `/delete` `/resume` `/new` `/res
 - Ожидаемо: обе записи в `bindings.json` сохранены.
 - Fail-режим: `handleOps` читает `reg` на 2454 и пишет `saveBindings(reg)` на 2598 → изменения B затёрты.
 - Смотреть: `bindings.json` до/после, hub-лог (`sessionId synced` для B, потом откат).
+- **2026-08-17 ✅ (Docker+MTProto + штатный hook):** A/topic `3` получил background shell и
+  `/resume`, удержав `stopSession` на подтверждении. Во время await штатный
+  `subagent-hook.ts` для B/topic `419` записал id `33333333…`; после restart A реестр сохранил
+  A `86d09799…` и B `33333333…`, то есть stale snapshot B не затёр. Затем B возвращён его
+  реальный id. Регрессия дополнительно покрыта `setSessionId` unit.
 
 ### C. `/new` поверх существующего
 
@@ -169,6 +193,9 @@ Telegram переживают `/bind` `/unbind` `/delete` `/resume` `/new` `/res
 - Fail-режим: `captureNewSessionId` не поймал файл за 60с → биндинг держит СТАРЫЙ id → следующий
   revive поднимет прошлую беседу.
 - Смотреть: `bindings.json`, `~/.claude/projects/<slug>/`, hub-лог.
+- **2026-08-17 ✅ (Codex, Docker+MTProto):** topic `1100`: `/stop` → `/new` → marker
+  `TTC_LM17_NEW_OK`. Старый `01a00f6f…` очищен до launch, binding получил новый
+  `01a00f75…`, а pane содержит marker; hub `incoming-correlated sessionId`.
 
 **LM18. `/new` при ЖИВОЙ сессии.** **P1** 🤖
 - Ожидаемо: новая беседа (со стопом текущей) или явный отказ с готовой кнопкой.
@@ -181,6 +208,12 @@ Telegram переживают `/bind` `/unbind` `/delete` `/resume` `/new` `/res
 - Fail-режим: `captureNewSessionId` берёт «первый файл, которого не было в снимке» → топики могут
   обменяться id, дальше `/resume` поднимет чужую беседу.
 - Смотреть: `bindings.json`, содержимое обоих `.jsonl` (первое сообщение).
+- **2026-08-17 ✅ (Codex, Docker+MTProto):** параллельные `/new` в topics `515`/`1100` и два
+  разных маркера дали `01a00f66-fbb7…`/`01a00f66-e9c3…`; оба pane остались Codex. ID берётся
+  из rollout, содержащего конкретный Telegram input, а не по mtime и не из hook payload.
+  В том же расследовании авто-folder + поздний `/bind codex` оставлял orphan sandbox tmux.
+  Topic `1142` теперь подтвердил `manual bind wins`: binding только Codex, auto tmux не создан;
+  штатный `/delete` убрал test binding без остатка.
 
 ### D. `/restart` · `/stop`
 
@@ -195,6 +228,9 @@ Telegram переживают `/bind` `/unbind` `/delete` `/resume` `/new` `/res
 - Fail-режим: `hub.ts:2652-2655` — «⚠️ Нет живой сессии. Попробуй /resume»: лишнее действие,
   а плашка 💀 при этом обещает, что `/resume` поможет — значит и `/restart` должен.
 - Смотреть: чат.
+- **2026-08-17 ✅ (Codex, Docker+MTProto):** после `/stop` в topic `1100` `/restart` без
+  промежуточной команды набрал `codex resume 01a00f75…`; pane вернул `TTC_LM17_NEW_OK`, binding
+  сохранил ровно тот же id.
 
 **LM22. `/stop` живой сессии.** P1 🤖
 - Ожидаемо: «🛑 Останавливаю…» → «Сессия остановлена. Что дальше?» + кнопки; 💀-плашки НЕТ
@@ -207,12 +243,23 @@ Telegram переживают `/bind` `/unbind` `/delete` `/resume` `/new` `/res
 - Ожидаемо: конфирм приезжает кнопками (picker-мост), 10с грейс, иначе Enter; процесс мёртв.
 - Fail-режим: висит вечно; «Процесс не умер» при фактически мёртвом pid.
 - Смотреть: пейн, чат, `alive(pid)`.
+- **2026-08-17 ✅ (Claude, Docker+MTProto):** реальный `Bash(run_in_background)` запустил
+  `sleep 120`; Telegram получил picker `Background work is running` с кнопками
+  `Exit and stop tasks`/`Stay`. Обнаружена регрессия Claude Code 2.1.233: UI переименовал
+  старое `Exit anyway`, из-за чего таймер его не распознавал. `isExitConfirm()` теперь
+  покрывает обе формулировки; повторный `/stop` через 10 с отправил Enter, а shell и Claude
+  PID исчезли. Юнит + полный `bun run check`: 159 pass, 467 expect.
 
 **LM24. `/restart` посреди хода с очередью.** `[СПЕЦ]` P1 🤖
 - Шаги: дать длинную задачу + дослать 2 сообщения → `/restart`.
 - Ожидаемо: ход прерван, очередь не «догоняет» после перезапуска, история цела (`--resume <тот же id>`).
 - Fail-режим: после relaunch агент доигрывает старую очередь; потеря id.
 - Смотреть: `screenlog.jsonl`, транскрипт `.jsonl`, пейн.
+- **2026-08-17 ✅ (Claude, Docker+MTProto):** во время foreground `sleep 30` отправлены
+  два маркера `TTC_LM24_QUEUE_{ONE,TWO}` и сразу `/restart`. Оба были наблюдаемо доставлены
+  старому процессу до его остановки (первый прервал ход); после relaunch с тем же
+  `--resume 812cb548…` новых ответов/повторной обработки маркеров не появилось. История в pane
+  сохранилась, но очередь не «догнала» новую сессию.
 
 ### E. `/unbind` · `/delete`
 
@@ -246,6 +293,10 @@ Telegram переживают `/bind` `/unbind` `/delete` `/resume` `/new` `/res
 - Fail-режим: «Отвязано» + «Топик не удалён» без вывода → юзер думает, что всё сломалось; в trusted-группе
   следующий месседж внезапно запускает мастер режима.
 - Смотреть: чат, права бота, `bindings.json`.
+- **2026-08-17 ✅ (Docker+MTProto):** в test-topic `1254` временно снято только
+  `can_delete_messages`, затем `/delete`. Binding снят, topic остался, отчёт в General содержит
+  понятное «topic is still open; its next message will offer setup again» (и русский эквивалент).
+  Право сразу восстановлено; повторный прогон подтвердил новый текст.
 
 ### F. Топик удалён руками
 
@@ -254,6 +305,9 @@ Telegram переживают `/bind` `/unbind` `/delete` `/resume` `/new` `/res
 - Ожидаемо: `isThreadGoneError` → `onTopicGone` → teardown, отчёт в General, tmux убит.
 - Fail-режим: сессия живёт вечно, отчёта нет; двойной teardown (гвард `tearingDown`).
 - Смотреть: General, `bindings.json`, `tmux ls`, hub-лог `topic gone`.
+- **2026-08-17 ✅ (Claude, Docker+MTProto):** test-topic `464` удалён через Bot API при
+  живом Claude pane `%19`; следующая попытка ответа в удалённый topic дала hub `topic gone`.
+  `bindings.json` больше не содержит ключ, tmux `telegram-tmux-channels---…-464` убит.
 
 **LM31. Удаление топика, пока хаб лежит.** `[СПЕЦ]` **P0** ✋
 - Шаги: остановить хаб → удалить топик → `tmux kill-server` → поднять хаб.
@@ -310,6 +364,10 @@ Telegram переживают `/bind` `/unbind` `/delete` `/resume` `/new` `/res
 - Ожидаемо (известное ограничение, `hub.ts:1558`): `verifyClaimedKeys` пропускает (dir совпал) —
   зафиксировать поведение, чтобы не считать это регрессией.
 - Смотреть: hub-лог `subscribe: dropped unverified keys`, куда уходят ответы.
+- **2026-08-17 ✅ (Docker):** создан соседний binding `#1254` на папку topic `#419`, после чего
+  штатный `src/stub.ts` запущен с `TELEGRAM_BINDING_KEYS=-1004355407865/1254` в том же cwd.
+  Hub записал `subscribe` без `dropped unverified keys`: совпадающий cwd пропускает чужой ключ,
+  как и документировано. Временный binding удалён `/unbind`.
 
 **LM40. Одновременный `/new` в обоих топиках.** `[2-ЧАТА][ЭКСКЛЮЗИВ]` P1 🤖 — см. LM19.
 
@@ -345,12 +403,19 @@ Telegram переживают `/bind` `/unbind` `/delete` `/resume` `/new` `/res
   ОТКАЗ С ТЕКСТОМ.
 - Fail-режим: `hub.ts:2495-2497` — тихий `return`: бот выглядит сломанным (и то же на 2569).
 - Смотреть: чат, hub-лог.
+- **2026-08-17 ⏭️ Пропущено по явному решению владельца:** второго авторизованного Telegram-аккаунта
+  нет. Кодовый UX-дефект закрыт: неадминские административные команды получают явный отказ,
+  но живой E2E allow-user не заявляется пройденным.
 
 **LM46. Посторонний в чужом топике.** P1 👤 — полное молчание, ничего не спавнится, в логе `drop (not allowed)`.
+- **2026-08-17 ⏭️ Пропущено по явному решению владельца:** нужен второй аккаунт; не считается
+  пройденным E2E.
 
 **LM47. allow-юзер отвечает на «пришли папку».** P1 👤
 - Ожидаемо: игнор (только админ, `hub.ts:2237`) — но с честным «папку задаёт админ», а не тишиной.
 - Смотреть: чат, hub-лог `drop (not admin) pending-topic answer`.
+- **2026-08-17 ⏭️ Пропущено по явному решению владельца:** нужен второй аккаунт; не считается
+  пройденным E2E.
 
 ### K. Fault-injection (кросс-группа)
 
@@ -359,13 +424,15 @@ Telegram переживают `/bind` `/unbind` `/delete` `/resume` `/new` `/res
 - Ожидаемо: 💀 через 5с, следующее сообщение поднимает сессию сам (`--resume <id>`).
 - Fail-режим: тишина; двойное 💀; ленивый подъём не срабатывает.
 - Смотреть: чат, hub-лог, `tmux ls`.
+- **2026-08-17 ✅ (Claude, Docker+MTProto):** после `tmux kill-pane %3` topic `464` получил
+  ровно одну 💀-плашку. Следующий marker вызвал `reviving … no live session`, поднял новый pane
+  `%19` с прежним id `02d69cae…` и вернул `TTC_LM48_REVIVED_OK`.
 
 **LM49. Чужой claude ВНУТРИ нашего tmux-пейна.** `[СПЕЦ]` **P0** 🤖
 - Шаги: в tmux-сессии биндинга запустить `claude` руками (без dev-канала, стаб не подключится) → `/resume`.
 - Ожидаемо: хаб видит занятый пейн и отказывается печатать запуск.
-- Fail-режим: `spawnSession:1926-1934` — `hasTmuxSession=true` → `typeLine` отправляет
-  `cd … && TELEGRAM_BINDING_KEYS=… claude …` **как промпт в живого агента**; в чат при этом уходит
-  бодрое «🪟 tmux … уже есть — набираю запуск в его активный pane» + «🚀 Возобновляю».
+- Защита: `spawnSession` сверяет foreground command tmux с адаптером; неподключённый `claude`/`codex`
+  даёт явный отказ, а shell по-прежнему пригоден для штатного запуска.
 - Смотреть: пейн (команда как текст в инпуте/промпте), чат, `screenlog.jsonl`.
 
 **LM50. Чужой claude в папке вне tmux.** `[СПЕЦ]` P1 🤖
@@ -378,8 +445,7 @@ Telegram переживают `/bind` `/unbind` `/delete` `/resume` `/new` `/res
 - Шаги: (а) невалидный JSON; (б) `dir` несуществующей папки; (в) лишние/пустые поля; (г) ключ неверного
   формата (`keyToTarget` кинет).
 - Ожидаемо: битый файл не должен обнулять рабочие биндинги молча — нужен вопль в чат админам/лог `ERROR`.
-- Fail-режим: `loadBindings` → `safeJsonParse ?? {}` → **все биндинги исчезают**, каждое сообщение
-  дропается как unbound, и никто об этом не узнаёт; при (г) `keyToTarget` кидает внутри
+- Fail-режим: невалидный JSON не должен маскироваться под пустой реестр; при (г) `keyToTarget` кидает внутри
   `reviveBoundSessions` и обрывает revive остальных.
 - Смотреть: hub-лог, чат, `bindings.json`.
 
@@ -389,6 +455,12 @@ Telegram переживают `/bind` `/unbind` `/delete` `/resume` `/new` `/res
 - Fail-режим: «⚠️ resume не удалось: Error: tmux new-session … failed» — сырой stderr, слово `resume`
   по-английски (`hub.ts:1958`).
 - Смотреть: чат, hub-лог.
+- **2026-08-17 ✅ (Claude, Docker+MTProto):** одноразовый DM-binding на
+  `/home/user/projects/ttc-lm52-dir` получил реальный id, затем папка удалена и выполнен
+  `/resume`. До фикса Telegram показывал сырой `resume failed: binding directory does not exist`.
+  Теперь: «Привязанной папки больше нет … `/bind <папка>`» (в английском UI — эквивалентный
+  текст); `spawn refused` в логе и новый agent/tmux не создан. Временный binding и shell
+  удалены штатным `/unbind`.
 
 **LM53. Двойная отправка команды старта.** `[СПЕЦ]` **P0** 🤖
 - Шаги: `/resume` `/resume` подряд (<2с); отдельно — два быстрых тапа по одной `rs:`-кнопке; отдельно —
@@ -440,7 +512,7 @@ Telegram переживают `/bind` `/unbind` `/delete` `/resume` `/new` `/res
 | U1 | `hub.ts:2811` | `/new` при живой сессии → «⚙️ Сессия уже подключена… Используй `/restart` или `/compact`». Про `/new` ни слова; начать новую беседу из чата нечем (только `/stop` → кнопка). | «⚙️ Сейчас идёт беседа `<id[:8]>` (`%0`). `/new` начнёт новую — текущую сначала остановлю.» + кнопки [🆕 Начать новую][Отмена] |
 | U2 | `hub.ts:2652-2655` | `/restart` на мёртвой сессии → «⚠️ Нет живой сессии. Попробуй `/resume`» — лишний шаг; 💀-плашка при этом сама зовёт `/resume`. | для `restart`: «♻️ Живой сессии нет — поднимаю заново…» и выполнить `spawnSession` |
 | U3 | `hub.ts:1930-1934` | «🪟 tmux `<name>` уже есть — набираю запуск в его активный pane» — печатает `cd … && claude …` даже в пейн с работающим claude (уйдёт как промпт). | проверять занятость пейна; иначе «⚠️ В пейне tmux `<name>` уже что-то запущено (pid N) — запуск не набираю. `/screen` — посмотреть, `/stop` — закрыть.» |
-| U4 | `hub.ts:2526` | `/bind` поверх существующего затирает `sessionId`/`cmdline`/`hookBranch`, а текст говорит просто «🔗 Привязано». | `reg[key] = { ...binding, dir }` + «🔗 Перепривязано: было `<старая папка>` → стало `<новая>`. Беседа `<id[:8]>` сохранена.» |
+| U4 | ✅ Закрыто 2026-08-15: `/bind` сохраняет весь прежний binding (`sessionId`, `cmdline`, worktree-метаданные и расширения) и сообщает старую/новую папку с id сохранённой беседы. | Docker+настоящий MTProto, LM7. |
 | U5 | `hub.ts:2627-2631` | `/status` без живой сессии не показывает `sessionId` — а именно его поднимет `/resume`, к которому тут же и отсылает. | добавить `🆔 session: <id>` + дату/снипет: «→ `/resume` поднимет `<id[:8]>` («первые слова…», 21.07 14:03)» |
 | U6 | `hub.ts:2312`, `2089` | «Сессия не подключилась вовремя — сообщение не доставлено» — куда смотреть, не сказано; в очередном варианте 👌 остаётся висеть как «принято». | «⚠️ Сессия не поднялась за 30с. Посмотреть: `/screen`, `/status`. Сообщение НЕ доставлено — пришли ещё раз.» + снять 👌 |
 | U7 | `hub.ts:523, 539-541` | 💀 не называет ни папку, ни беседу, и уходит только в `bindingKeys[0]` — при двух ключах второй топик молчит. | «💀 Сессия оборвалась — 📁 `<dir>`, 🆔 `<id[:8]>`…» и слать во ВСЕ `bindingKeys` |
@@ -456,10 +528,11 @@ Telegram переживают `/bind` `/unbind` `/delete` `/resume` `/new` `/res
 
 ## 5. Приоритеты и прогон
 
-**P0 (ломает / теряет данные):** LM4, LM7, LM31, LM35, LM49, LM51, LM53.
-**P1 (путает, лишние шаги):** LM1-3, LM5, LM6, LM8, LM10-24, LM25-30, LM32-34, LM36-38, LM40-48,
+**P0 (ломает / теряет данные):** закрыты: LM4, LM7, LM31, LM35, LM49, LM51, LM53.
+**P1 (путает, лишние шаги):** закрыты/проверены, кроме LM45–47 — они явно пропущены владельцем
+из-за отсутствия второго аккаунта.
 LM50, LM52, LM54.
-**P2 (косметика/фиксация поведения):** LM9, LM39.
+**P2 (косметика/фиксация поведения):** закрыты/зафиксированы.
 
 Автоматизируется в харнессе (🤖, драйв telegram-mcp тест-ботом `@clod_tmux_lab_bot`,
 группа `-1004355407865`): всё, кроме —
@@ -472,4 +545,144 @@ LM50, LM52, LM54.
 
 ## Лог прогона
 
-- (пусто — план написан 2026-07-23, прогон не начинался)
+- 2026-08-15 — LM51(a), Docker + настоящий MTProto: в `bindings.json` скопирован невалидный JSON,
+  хаб перезапущен. Он сохранил файл нетронутым и выдал ровно один `telegram registry: ERROR invalid JSON …`;
+  сокет и poller остались живы. Валидный backup восстановлен, хаб перезапущен, все пять тестовых pane
+  вновь подписались. Подсценарии (б–г) на тот момент ещё не были пройдены.
+- 2026-08-15 — LM51(г), Docker + настоящий MTProto: к рабочему реестру добавлен ключ
+  `not-a-binding-key`. После рестарта хаб написал один `ERROR ignored malformed binding entries`,
+  но socket/poller и все пять валидных pane продолжили работу. Строка отфильтровывается
+  `validBindings`, не доходя до `keyToTarget`; исходный реестр восстановлен. Подсценарии (б–в)
+  ещё не пройдены.
+- 2026-08-15 — LM51(б–в), Docker + настоящий MTProto: для тестовой привязки подменён `dir`
+  на несуществующий, её tmux убит, хаб перезапущен. До фикса создавался пустой tmux-shell;
+  после фикса хаб пишет `spawn refused: binding directory does not exist` и orphan tmux не создаёт.
+  Затем добавлены лишние nested/null поля: реестр валиден, `ERROR` нет, все пять pane подписались.
+  Исходный реестр восстановлен после каждого прогона.
+- 2026-08-15 — LM49, Docker + настоящий MTProto: в pane привязки запущен `claude` без
+  `TELEGRAM_BINDING_KEYS`, затем из Telegram выполнен `/new`. Хаб залогировал `spawn refused`,
+  а Telegram получил явный отказ (msg689); снимок pane не содержит launch-команду. Исправление
+  защищает оба адаптера по foreground command; shell-pane остаётся допустимым местом запуска.
+- 2026-08-15 — LM7, Docker + настоящий MTProto: поверх живого Claude binding в топике 464
+  поставлены маркеры `hookBranch`, `pinned` и неизвестное расширение, после чего из Telegram
+  выполнен `/bind claude <та же папка>`. Бот ответил `Rebound` с прежним id беседы; проверка
+  реестра подтвердила сохранение `sessionId`, `cmdline` и всех маркеров. Исходный реестр без
+  тестовых маркеров восстановлен, hub снова подписался на все pane.
+- 2026-08-16 — LM2/LM3, Docker + настоящий MTProto: в новом trusted topic `755` нажата
+  «✏️ Own folder». Ответ `/tmp/ttc-e2e-missing-folder` дал Telegram-ошибку
+  `Doesn't look like a folder … Send it again.`; затем в том же ожидающем выборе
+  `/home/user/projects/sandbox` создал binding и tmux `sandbox---1004355407865-755`.
+  В контейнере зафиксированы `startup prompt auto-acked` и `subscribe` для этой папки.
+- 2026-08-16 — LM5, Docker + настоящий MTProto: `/status`, отправленный сразу после создания
+  trusted topic, больше не снимает выбор режима. После `/status` нажатие `Default folder`
+  успешно вернуло `📁 Default folder` и подняло `sandbox---1004355407865-748`. Причина была в
+  безусловном `pendingTopics.delete`/`disarmMode` для каждой ops-команды; очистка теперь
+  выполняется только для `/bind`, `/unbind` и `/delete`.
+- 2026-08-16 — LM53, Docker + настоящий MTProto: два параллельных `/new` в topic `764` сначала
+  обнаружили гонку: второй видел ещё неподключённый Claude и получал ошибку foreign-pane. После
+  фикса launch-guard держится до `subscribe` стаба (или 30-секундного safety timeout). Повтор:
+  в журнале `spawn skipped: already starting -1004355407865/764`, Telegram `duplicate launch was
+  skipped`, ровно одна tmux-сессия `sandbox---1004355407865-764` и один Claude/stub.
+- 2026-08-16 — LM4/LM35, Docker + настоящий MTProto: текст
+  `TTC_QUEUE_MARKER_781: answer only queued-ok` отправлен до выбора режима в topic `781`.
+  До рестарта хаба `hub-state.json` содержал и `pendingModes`, и `queuedMessages`; после рестарта
+  прежняя inline-клавиатура принялась, запуск создал `sandbox---1004355407865-781`, а журнал
+  записал `deliver … (1 session)` и `стаб подтвердил доставку`. Marker исчез из durable queue,
+  sessionId был выучен.
+- 2026-08-16 — LM31, Docker + настоящий MTProto + Bot API: тестовый topic `764` удалён через
+  `deleteForumTopic` при выключенном hub, затем выполнен `tmux kill-server`. Первый прогон
+  воспроизвёл P0: hub воскресил удалённый binding и tmux. Фикс добавил обработку thread-gone в
+  boot-revive notification path; повторный полный reboot дал `topic gone: … auto-unbind + cleanup`,
+  ключ `-1004355407865/764` исчез из `bindings.json`, tmux-сессия не осталась.
+- 2026-08-16 — LM10, Docker + настоящий MTProto: новый topic `852` вручную привязан к пустой
+  `/home/user/projects/ttc-e2e-empty-resume`, затем получил `/resume`. До фикса этот путь строил
+  `--continue` и Claude сразу завершался с `No conversation found`; теперь при `recent.length=0`
+  запускается `new`. Telegram подтвердил создание tmux, в pane — свежий интерактивный prompt,
+  ошибки `No conversation found` нет.
+- 2026-08-16 — LM21, Docker + настоящий MTProto: в topic `852` создана реальная беседа
+  (`sessionId e4e5fcfc…`), затем убита только её tmux-сессия. `/restart` не потребовал ручного
+  `/resume`: hub автоматически создал `ttc-e2e-empty-resume---1004355407865-852`, auto-acked
+  стартовый prompt и вернул интерактивную сессию с прежней беседой.
+- 2026-08-16 — LM22, Docker + настоящий MTProto: `/stop` в живой сессии topic `852` завершил
+  Claude, оставив tmux в shell (`bash`), и выдал `Session stopped. What next?` с кнопками
+  `New session` и конкретной прошлой беседы. Новая 💀-плашка в этом topic не появилась.
+- 2026-08-16 — LM25, Docker + настоящий MTProto: `/unbind` в topic `852` удалил ровно его ключ
+  и tmux. Telegram-отчёт перечислил `#852 «TTC LM10 empty resume»`, папку, полный session id и
+  закрытую tmux-сессию; проверка контейнера показала `binding_852=0` и отсутствие `-852` в tmux.
+- 2026-08-16 — LM28, Docker + настоящий MTProto: `/delete` в уже отвязанном test topic `852`
+  удалил topic из Telegram (`list_topics` больше его не содержит) и прислал в General отчёт
+  `No binding in topic #852 … Topic #852 deleted.`
+- 2026-08-16 — LM32, Docker + настоящий MTProto: hub перезапущен при живой сессии topic `781`.
+  До/после совпали `sessionId 0fa508aa…`, tmux pane `%9` и PID `561242`; в новом логе только
+  `subscribe`, без `boot-revive` или второго launch.
+- 2026-08-16 — LM33, Docker + настоящий MTProto: после `tmux kill-server` и boot-revive
+  сверены все active bindings, а не один pane: `expected: 9`, `live: 9`, `missing: []`.
+  В числе восстановленных — Claude и Codex bindings.
+- 2026-08-16 — LM34, Docker + настоящий MTProto: restart сразу после нового launch в topic
+  `894` воспроизвёл потерю in-memory capture. Исправление durable-сохраняет baseline rollout ids
+  до ввода launch и продолжает capture после `subscribe`; marker пережил restart. После первого
+  хода binding получил `sessionId 738d6421…`, marker был очищен, поэтому следующий revive имеет
+  конкретную беседу, а не деградирует в `--continue`.
+- 2026-08-17 — LM18, Docker + настоящий MTProto (Codex): `/new` в topic `515` при живой
+  Codex-сессии больше не отказывается. Он завершает текущий PID и запускает чистую сессию в том
+  же tmux-pane. В первом прогоне найден и исправлен побочный `/exit` в уже вернувшемся shell;
+  повторный прогон: новый Codex prompt, `stop` старого PID + `subscribe` нового PID, без shell-error.
+- 2026-08-17 — LM20, Docker + настоящий MTProto (Codex): после записи нового `sessionId
+  01a00f3b…` `/restart` остановил PID `10056`, переподключил тот же pane `%3`, сохранил binding id
+  и оставил в Codex TUI предыдущий ход. Значит restart продолжает нужную беседу, а не запускает новую.
+- 2026-08-17 — LM13, Docker + настоящий MTProto (Codex): `/resume does-not-exist` вернул
+  понятный отказ без остановки живого pane; `/resume 01a00` честно сообщил о трёх совпадениях;
+  полный id `01a00f3b-f712-7363-98c2-af23b7aea4d6` остановил прежний PID, запустил точный
+  `codex resume <id>` и сохранил тот же `sessionId` в binding.
+- 2026-08-17 — LM11, Docker + настоящий MTProto (Codex): первый прогон обнаружил, что live
+  `/resume` набирает в Codex `/resume`, хотя TUI 0.147 не показывает встраиваемый history-picker;
+  parse завершался ошибкой, оставляя черновик в pane. В adapter contract добавлен
+  `liveResumePicker`: только Claude=true. Повтор: `/resume` в topic `515` показал Telegram menu
+  из трёх реальных rollout-ов; tap по текущему id корректно остановил PID и поднял его снова без
+  черновика/неожиданной отправки текста.
+- 2026-08-17 — LM28 (binding), Docker + настоящий MTProto (Codex): созданная `/fork` ветка
+  topic `977` с живым binding, отдельным tmux и session id была удалена командой `/delete` из
+  самого topic. После прогона `binding_977=0`, tmux `…-977` отсутствует, и topic удалён; это
+  дополняет прежний прогон LM28 без binding.
+- 2026-08-17 — LM41/LM26, Docker + настоящий MTProto: отдельный git fixture с initial commit
+  создал кириллический worktree topic `984` на ASCII-ветке `TTS-worktree-prodat-BTC`. `/unbind`
+  удалил его binding, tmux и linked worktree, сохранив main checkout на `master`.
+- 2026-08-17 — LM43, Docker + настоящий MTProto: hook create в topic `993` вернул отдельный
+  worktree и записал `hookBranch`; `/unbind` вызвал matching hook delete. Маркеры create/delete
+  есть, binding/worktree удалены, main fixture не затронут.
+- 2026-08-17 — LM44, Docker + настоящий MTProto: hook `create: true` в topic `1002` завершился
+  успешно, но не напечатал путь. Telegram показал понятное `hook create printed no path`; binding
+  и tmux не созданы, topic не завис. Это negative-path без побочных worktree-артефактов.
+- 2026-08-17 — LM42, Docker + настоящий MTProto: topic `1008` выбрал worktree для отдельной
+  `/tmp/ttc-no-git-dir`. Telegram выдал диагностику `git worktree add failed: … not a git
+  repository`; `binding=0`, tmux не создан — невалидная база не оставляет полуживой topic.
+- 2026-08-17 — LM15/LM38, Docker + настоящий MTProto (Codex): два live binding на одной папке
+  получили разные ids. Первый прогон выявил тихий риск захвата id соседнего topic; исправление
+  отклоняет `/resume <id B>` до stop и называет topic-владельца. Повтор: topic 515 получил этот
+  отказ, его Codex PID остался жив. `/delete` созданного B (`1014`) удалил только B binding/tmux;
+  A (`515`) и его pane остались.
+- 2026-08-17 — LM14/LM33 повтор, Docker + настоящий MTProto: в test container выполнен
+  `tmux kill-server`; явный `/resume 01a00f3b…` в topic `515` создал tmux и интерактивный Codex
+  с тем же id. Затем restart Docker-hub boot-revive поднял все оставшиеся 10 valid binding’ов:
+  `bindings=11`, `tmux=11`, один hub, без spawn-refused/topic-gone ошибок.
+- 2026-08-17 — LM27, Docker + настоящий MTProto (Codex): `/delete` живого B-binding `1014`
+  удалил B/tmux, в то время как shared-folder A (`515`) и его Codex PID продолжили работу.
+  В A не появилась ложная 💀-плашка.
+- 2026-08-17 — LM52, Docker + настоящий MTProto: отдельный topic `1066` был привязан к
+  `/tmp/ttc-lm52-dir`; каталог перемещён в обратимую test-trash, tmux убит. `/resume` дал
+  `binding directory does not exist`, а hub залогировал spawn refused — orphan tmux не создан.
+  Папка возвращена, test binding/topic очищены.
+- 2026-08-17 — LM36, Docker + настоящий MTProto (Codex): `/stop` в topic `515`, затем restart
+  Docker-hub через секунду. Telegram показал только штатные `Stopping` → `Session stopped`; 💀
+  не появилась. Кнопка подняла сохранённую Codex-беседу обратно.
+- 2026-08-17 — LM37, Docker + настоящий MTProto (Codex): topic `515` и временный `1014`
+  одновременно были привязаны к `/home/user/projects/ttc-e2e-codex`; tmux names различались,
+  session ids `01a00f3b…` и `01a00f51…` тоже. Жизни не смешались до целевого cleanup B.
+- 2026-08-17 — LM19/LM40 + LM16 race, Docker + настоящий MTProto (Codex): одновременные
+  `/new` в topics `515`/`1100` общей папки сначала воспроизвели дефект: второй hook сообщил
+  старый session ID первого процесса. Исправление отменяет stale auto-topic после ручного
+  `/bind`, очищает старый id до fresh launch и для Codex сопоставляет id только с rollout,
+  содержащим конкретный входящий Telegram marker. Повтор дал два distinct id
+  `01a00f66-fbb7…` и `01a00f66-e9c3…`, оба `agent=codex`, оба tmux pane живы.
+  После этого `/restart` topic `1100` запустил точный `codex resume 01a00f66-e9c3…` и сохранил
+  этот же id в binding, то есть независимость сохраняется и на restart-хвосте.

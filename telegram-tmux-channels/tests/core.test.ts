@@ -1,9 +1,9 @@
 import { describe, expect, test } from 'bun:test'
-import { mkdtempSync, mkdirSync } from 'fs'
+import { mkdtempSync, mkdirSync, rmSync } from 'fs'
 import { tmpdir, homedir } from 'os'
 import { join } from 'path'
 import { messageKey, keyToTarget, targetFor } from '../src/bindings'
-import { keysForDir, resolveProjectDir, type BindingEntry } from '../src/registry'
+import { keysForDir, sessionOwner, setSessionId, resolveProjectDir, parseBindSpec, validBindings, type BindingEntry } from '../src/registry'
 import { makeLineDecoder, encode } from '../src/protocol'
 import { Router } from '../src/router'
 import { chunk, planAttachments, CAPTION_LIMIT } from '../src/chunk'
@@ -19,10 +19,11 @@ import {
   paneDigest,
   isHeadlessArgv,
   isIdleToUnload,
+  isExitConfirm,
   tmuxSessionName,
 } from '../src/tmux-ops'
-import { resolveSkillCommand, mangleCmd as mangleSkillCmd } from '../src/skills'
-import { isClaudeArgv, claudePidsInDir, cmdlineOf, findClaudeAncestor } from '../src/proc'
+import { discoverProjectSkills, resolveSkillCommand, skillInvocation, mangleCmd as mangleSkillCmd } from '../src/skills'
+import { isClaudeArgv, claudePidsInDir, agentPidsInDir, cmdlineOf, envOf, findClaudeAncestor } from '../src/proc'
 import {
   isExcludedTopic, slugFromTopicName, mergeGroupConfig,
   type TrustedGroupConfig, type TrustedGroupMode,
@@ -56,6 +57,11 @@ describe('bindings', () => {
 })
 
 describe('registry', () => {
+  test('parseBindSpec: legacy is Claude; explicit adapter keeps paths with spaces', () => {
+    expect(parseBindSpec('my-project')).toEqual({ agent: 'claude', path: 'my-project' })
+    expect(parseBindSpec('codex /work/my project')).toEqual({ agent: 'codex', path: '/work/my project' })
+    expect(parseBindSpec('CLAUDE ~/x')).toEqual({ agent: 'claude', path: '~/x' })
+  })
   test('keysForDir: all keys for a dir', () => {
     const reg: Record<string, BindingEntry> = {
       '-1/2': { dir: '/a' },
@@ -64,6 +70,25 @@ describe('registry', () => {
     }
     expect(keysForDir(reg, '/a').sort()).toEqual(['-1/2', 'dm:9'])
     expect(keysForDir(reg, '/c')).toEqual([])
+  })
+
+  test('sessionOwner: a shared folder still gives each session a single topic owner', () => {
+    const reg = {
+      '-1/10': { dir: '/shared', sessionId: 'one' },
+      '-1/11': { dir: '/shared', sessionId: 'two' },
+      '-1/12': { dir: '/other', sessionId: 'one' },
+    }
+    expect(sessionOwner(reg, '/shared', 'one')).toBe('-1/10')
+    expect(sessionOwner(reg, '/shared', 'one', '-1/10')).toBeUndefined()
+    expect(sessionOwner(reg, '/shared', 'missing')).toBeUndefined()
+  })
+  test('setSessionId: fresh registry update preserves a sibling hook update (LM16)', () => {
+    const fresh = {
+      '-1/10': { dir: '/shared', sessionId: 'old-a' },
+      '-1/11': { dir: '/shared', sessionId: 'new-b-from-hook' },
+    }
+    expect(setSessionId(fresh, '-1/10', 'resume-a')?.sessionId).toBe('resume-a')
+    expect(fresh['-1/11']?.sessionId).toBe('new-b-from-hook')
   })
   // инвариант teardownBinding: свой ключ удалён ДО проверки, иначе биндинг находит сам себя
   // и папка не чистится никогда; форк же делит dir с родителем — его сносить нельзя.
@@ -80,6 +105,44 @@ describe('registry', () => {
     expect(resolveProjectDir('myapp', root)).toBe(join(root, 'myapp'))
     expect(resolveProjectDir(join(root, 'myapp'), root)).toBe(join(root, 'myapp'))
     expect(() => resolveProjectDir('no-such', root)).toThrow('not a directory')
+  })
+  test('validBindings isolates malformed hand-edited rows without dropping valid ones', () => {
+    const got = validBindings({
+      '-1/2': { dir: '/ok', extraFutureField: true },
+      'not-a-key': { dir: '/bad' },
+      '-1/3': { dir: '' },
+      '-1/4': { dir: '/x', agent: 'other' },
+    })
+    expect(got.bindings['-1/2']?.dir).toBe('/ok')
+    expect((got.bindings['-1/2'] as Record<string, unknown>).extraFutureField).toBe(true)
+    expect(got.rejected).toHaveLength(3)
+  })
+})
+
+describe('agent skill discovery', () => {
+  test('uses Codex-supported .agents roots and Claude roots without cross-leaking', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tmux-channels-skills-'))
+    const add = (root: string, name: string) => {
+      mkdirSync(join(dir, root, name), { recursive: true })
+      writeFileSync(join(dir, root, name, 'SKILL.md'), `---\nname: ${name}\ndescription: ${name} desc\n---\n`)
+    }
+    try {
+      add('.claude/skills', 'claude-only')
+      add('.codex/skills', 'not-a-codex-cli-root')
+      add('.agents/skills', 'shared')
+      expect(discoverProjectSkills(dir, 'claude').map(s => s.name)).toEqual(['claude-only', 'shared'])
+      expect(discoverProjectSkills(dir, 'codex').map(s => s.name)).toEqual(['shared'])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('agent skill invocation', () => {
+  test('uses Claude slash syntax and a compatible explicit Codex instruction', () => {
+    expect(skillInvocation('claude', 'deep-research', ['topic'])).toBe('/deep-research topic')
+    expect(skillInvocation('codex', 'deep-research', ['topic'])).toContain('skill named "deep-research"')
+    expect(skillInvocation('codex', 'deep-research', ['topic'])).toContain('handle: topic')
   })
 })
 
@@ -174,6 +237,12 @@ describe('chunk', () => {
 })
 
 describe('tmux-ops', () => {
+  test('isExitConfirm recognizes both Claude background-task dialog wordings', () => {
+    expect(isExitConfirm('1. Exit anyway\n2. Stay')).toBe(true)
+    expect(isExitConfirm('Background work is running\n1. Exit and stop tasks\n2. Stay')).toBe(true)
+    expect(isExitConfirm('Would you like to run the following command?')).toBe(false)
+  })
+
   test('parseOpsCommand: commands, @botname, args, garbage', () => {
     expect(parseOpsCommand('/compact')).toEqual({ cmd: 'compact' })
     expect(parseOpsCommand('/clear')).toEqual({ cmd: 'clear' })
@@ -462,11 +531,16 @@ describe('tmux-ops', () => {
   test('claudePidsInDir: array, empty for a nonexistent dir', () => {
     expect(claudePidsInDir('/nonexistent-dir-xyz-42')).toEqual([])
   })
+  test('agentPidsInDir: adapter predicate scopes process discovery', () => {
+    expect(agentPidsInDir('/definitely/not/a/real/dir', () => true)).toEqual([])
+    expect(agentPidsInDir(process.cwd(), () => false)).toEqual([])
+  })
   test('proc introspection works on this host (self)', () => {
     // the current process reads via cmdlineOf without throwing
     const argv = cmdlineOf(process.pid)
     expect(Array.isArray(argv)).toBe(true)
     expect(argv.length).toBeGreaterThan(0)
+    expect(envOf(process.pid, 'PATH')).toBeTruthy()
     // tree walk: either null or a valid claude ancestor (never throws)
     const anc = findClaudeAncestor(process.pid)
     if (anc) expect(isClaudeArgv(anc.cmdline)).toBe(true)
@@ -496,17 +570,17 @@ describe('trusted-groups', () => {
     expect(slugFromTopicName('Почини баг с логином')).toBe('Pochini-bag-s-loginom')
   })
   test('mergeGroupConfig: group overrides win, falls back to defaults, dir optional', () => {
-    const defaults: { modes: TrustedGroupMode[]; cmdline: string[]; dir: string } = {
-      modes: ['folder', 'worktree'], cmdline: ['claude'], dir: '/default',
+    const defaults: { modes: TrustedGroupMode[]; cmdline: string[]; dir: string; agent: 'codex' } = {
+      modes: ['folder', 'worktree'], cmdline: ['claude'], dir: '/default', agent: 'codex',
     }
     expect(mergeGroupConfig(defaults, { dir: '/g' })).toEqual({
-      dir: '/g', modes: ['folder', 'worktree'], cmdline: ['claude'], hook: undefined, exclude: undefined,
+      dir: '/g', modes: ['folder', 'worktree'], cmdline: ['claude'], agent: 'codex', hook: undefined, exclude: undefined,
     })
     expect(mergeGroupConfig(defaults, { modes: ['worktree'], hook: { create: '/h.py' } })).toEqual({
-      dir: '/default', modes: ['worktree'], cmdline: ['claude'], hook: { create: '/h.py' }, exclude: undefined,
+      dir: '/default', modes: ['worktree'], cmdline: ['claude'], agent: 'codex', hook: { create: '/h.py' }, exclude: undefined,
     })
     expect(mergeGroupConfig(undefined, {})).toEqual({
-      dir: undefined, modes: ['folder'], cmdline: undefined, hook: undefined, exclude: undefined,
+      dir: undefined, modes: ['folder'], cmdline: undefined, agent: undefined, hook: undefined, exclude: undefined,
     })
   })
 })

@@ -19,7 +19,7 @@ export type DeliveryDeps = {
   /** Видел ли транскрипт сессии это входящее после момента `since`. */
   sawIncoming(dir: string, since: number, needle: string): boolean
   /** Отправить payload в сессию ещё раз (в бою — запись в сокеты стаба). */
-  resend(): void
+  resend(): void | Promise<void>
   /** Сказать пользователю, что сообщение не дошло. */
   warn(): Promise<void>
   log(s: string): void
@@ -56,7 +56,7 @@ export async function watchDelivery(
     return 'landed'
   }
   d.log(`delivery: ${key} — ${ack === 'failed' ? 'стаб не смог отдать' : 'сообщения нет в транскрипте'}, переотправляю`)
-  d.resend()
+  await d.resend()
   // Считаем от ПЕРВОЙ отправки, а не от повторной: запись, появившаяся между попытками,
   // — это доставка, а не потеря. Окно от момента переотправки её отбрасывало (запись
   // оказывалась «слишком старой») и рождало ложную тревогу поверх дошедшего сообщения.

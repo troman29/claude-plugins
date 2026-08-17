@@ -1,6 +1,7 @@
 // Cross-platform process introspection: Linux — /proc, macOS — ps/lsof.
 // All functions are synchronous (the stub calls them at startup, before the event loop).
 import { readFileSync, readlinkSync, readdirSync } from 'fs'
+import type { AgentKind } from './agents/types'
 
 const isLinux = process.platform === 'linux'
 
@@ -43,6 +44,20 @@ export function cwdOf(pid: number): string | undefined {
     const out = Bun.spawnSync(['lsof', '-a', '-d', 'cwd', '-p', String(pid), '-Fn']).stdout.toString()
     const line = out.split('\n').find(l => l.startsWith('n'))
     return line ? line.slice(1) : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** Read one inherited environment value. Codex sanitises MCP subprocess environments, so its
+ * session stub falls back to the interactive Codex parent's environment. */
+export function envOf(pid: number, key: string): string | undefined {
+  if (!isLinux) {
+    return undefined
+  }
+  try {
+    const prefix = `${key}=`
+    return readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0').find(v => v.startsWith(prefix))?.slice(prefix.length)
   } catch {
     return undefined
   }
@@ -91,8 +106,37 @@ export function claudePidsInDir(dir: string): number[] {
   return claudePids().filter(pid => cwdOf(pid) === dir)
 }
 
+/** Supported-agent processes in a directory, selected by the adapter's argv recognizer. */
+export function agentPidsInDir(dir: string, matches: (argv: string[]) => boolean): number[] {
+  if (!isLinux) {
+    const out = Bun.spawnSync(['ps', '-axo', 'pid=']).stdout.toString()
+    return out.split('\n').map(Number).filter(Boolean).filter(pid => {
+      try { return matches(cmdlineOf(pid)) && cwdOf(pid) === dir } catch { return false }
+    })
+  }
+  let entries: string[]
+  try { entries = readdirSync('/proc') } catch { return [] }
+  return entries.filter(v => /^\d+$/.test(v)).map(Number).filter(pid => {
+    try { return matches(cmdlineOf(pid)) && cwdOf(pid) === dir } catch { return false }
+  })
+}
+
 /** Walk up the process tree from the stub to the claude process. */
 export function findClaudeAncestor(startPid: number): { pid: number; cmdline: string[] } | undefined {
+  const found = findAgentAncestor(startPid)
+  return found?.agent === 'claude' ? { pid: found.pid, cmdline: found.cmdline } : undefined
+}
+
+const CODEX_BIN_RE = /(?:^|[\\/])codex(?:\.exe)?$/
+
+export function isCodexArgv(argv: string[]): boolean {
+  return argv.some(a => a === 'codex' || CODEX_BIN_RE.test(a))
+}
+
+/** Walk from an MCP child to either supported interactive agent process. */
+export function findAgentAncestor(
+  startPid: number,
+): { agent: AgentKind; pid: number; cmdline: string[] } | undefined {
   let pid = startPid
   for (let hops = 0; hops < 10 && pid > 1; hops++) {
     let cmdline: string[]
@@ -101,9 +145,8 @@ export function findClaudeAncestor(startPid: number): { pid: number; cmdline: st
     } catch {
       return undefined
     }
-    if (isClaudeArgv(cmdline)) {
-      return { pid, cmdline }
-    }
+    if (isClaudeArgv(cmdline)) return { agent: 'claude', pid, cmdline }
+    if (isCodexArgv(cmdline)) return { agent: 'codex', pid, cmdline }
     const parent = parentPid(pid)
     if (!parent || parent === pid) {
       return undefined

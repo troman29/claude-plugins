@@ -36,4 +36,27 @@ describe('HubStateRepository picker persistence', () => {
     expect(r.pendingEntries()).toEqual([['k', { dir: '/x', at: 5 }]]) // old data still there
     expect(r.pickerEntries()).toEqual([]) // missing bucket defaults to empty
   })
+
+  test('pending mode and first queued message survive a restart', () => {
+    const dir = tmp()
+    const a = new HubStateRepository(() => {}, dir)
+    a.setPendingMode('g/7', { cfg: { modes: ['folder'], dir: '/project' }, topicName: 'New work', chatId: '-100', threadId: 7 })
+    a.setQueued('g/7', [{ text: 'first task', chatId: '-100', threadId: 7, senderId: '9', msgId: 11, at: 12 }])
+    a.flush()
+    const b = new HubStateRepository(() => {}, dir)
+    expect(Object.fromEntries(b.pendingModeEntries())['g/7']?.topicName).toBe('New work')
+    expect(Object.fromEntries(b.queuedEntries())['g/7']?.[0]?.text).toBe('first task')
+  })
+
+  test('fresh-launch capture baseline survives a restart and can be cleared', () => {
+    const dir = tmp()
+    const a = new HubStateRepository(() => {}, dir)
+    a.setLaunchCapture('g/8', { beforeIds: ['old-a', 'old-b'], at: 42 })
+    a.flush()
+    const b = new HubStateRepository(() => {}, dir)
+    expect(Object.fromEntries(b.launchCaptureEntries())['g/8']).toEqual({ beforeIds: ['old-a', 'old-b'], at: 42 })
+    b.delLaunchCapture('g/8')
+    b.flush()
+    expect(new HubStateRepository(() => {}, dir).launchCaptureEntries()).toEqual([])
+  })
 })

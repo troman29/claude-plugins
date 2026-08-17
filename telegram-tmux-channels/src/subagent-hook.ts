@@ -1,154 +1,47 @@
 #!/usr/bin/env bun
-// Claude Code hook target for both the subagent-status and task-list status messages.
-// Runs as a short-lived process (spawned fresh per event, unlike the long-lived MCP
-// stub) — reads the hook JSON off stdin, connects to hub.sock, sends one line, exits.
-// Never blocks Claude Code: hard timeout, all failures swallowed.
-//
-// Real hook payload field names (verified empirically — NOT what the docs' prose implies):
-//   PreToolUse (tool_name Agent/Task): prompt_id, tool_input.description
-//   SubagentStart: prompt_id, agent_id, agent_type (no description — must correlate via prompt_id)
-//   SubagentStop: agent_id
-//   Stop: turn end; background_tasks[] = {id, type, status, description, command} still running
-//   PostToolUse(TaskCreate): tool_input.subject, tool_response.task.id
-//   PostToolUse(TaskUpdate): tool_input.taskId, tool_response.statusChange.to
+// Short-lived Claude/Codex lifecycle hook. It normalizes each agent's hook payload into the
+// shared hub protocol, writes one NDJSON message to hub.sock, and never blocks the agent.
 import { SOCK_PATH } from './paths'
-import { encode, type StubToHub } from './protocol'
+import { encode } from './protocol'
+import { normalizeHookMessage, type HookMode } from './hook-normalize'
+import { envOf, findAgentAncestor } from './proc'
 
-const mode = process.argv[2] // 'describe' | 'start' | 'stop' | 'turnend' | 'task-create' | 'task-update'
-const bindingKeys = (process.env.TELEGRAM_BINDING_KEYS ?? '')
-  .split(',')
-  .map(s => s.trim())
-  .filter(Boolean)
-const VALID_MODES = new Set(['describe', 'start', 'stop', 'turnend', 'task-create', 'task-update', 'skill', 'todo', 'bg'])
+const mode = process.argv[2] as HookMode | undefined
+const VALID_MODES = new Set<HookMode>([
+  'describe', 'start', 'stop', 'turnend', 'task-create', 'task-update',
+  'skill', 'todo', 'bg', 'codex-plan', 'codex-skill', 'compaction-start', 'compaction-done',
+])
+
+function inheritedBindingKeys(): string[] {
+  // Codex sanitises command-hook children exactly as it sanitises MCP children.  The durable
+  // interactive parent retains the launch binding, so recover it there (Claude keeps passing it).
+  const agent = findAgentAncestor(process.pid)
+  return (process.env.TELEGRAM_BINDING_KEYS ?? (agent ? envOf(agent.pid, 'TELEGRAM_BINDING_KEYS') : '') ?? '')
+    .split(',').map(s => s.trim()).filter(Boolean)
+}
 
 async function main(): Promise<void> {
-  if (bindingKeys.length === 0 || !mode || !VALID_MODES.has(mode)) {
-    return
-  }
+  const bindingKeys = inheritedBindingKeys()
+  if (!bindingKeys.length || !mode || !VALID_MODES.has(mode)) return
+
   let raw = ''
-  for await (const chunk of Bun.stdin.stream()) {
-    raw += Buffer.from(chunk).toString()
-  }
-  let data: Record<string, unknown> = {}
-  try {
-    data = JSON.parse(raw)
-  } catch {
-    return
-  }
+  for await (const chunk of Bun.stdin.stream()) raw += Buffer.from(chunk).toString()
+  let data: Record<string, unknown>
+  try { data = JSON.parse(raw) } catch { return }
 
-  let msg: StubToHub
-  if (mode === 'turnend') {
-    // background_tasks = the shells still alive at Stop; finished ones are simply gone from it.
-    // Agents get their own SubagentStop, so keep only shells here or they'd be counted twice.
-    const bg = (Array.isArray(data.background_tasks) ? (data.background_tasks as Record<string, unknown>[]) : [])
-      .filter(b => b.type === 'shell')
-      .map(b => ({ command: String(b.command ?? ''), ...(b.description ? { description: String(b.description) } : {}) }))
-      .filter(b => b.command)
-    msg = { op: 'subagent', action: 'turnend', bindingKeys, bg }
-  } else if (mode === 'task-create') {
-    const toolInput = data.tool_input as Record<string, unknown> | undefined
-    const toolResponse = data.tool_response as Record<string, unknown> | undefined
-    const task = toolResponse?.task as Record<string, unknown> | undefined
-    const taskId = String(task?.id ?? '')
-    const subject = String(toolInput?.subject ?? '')
-    if (!taskId || !subject) {
-      return
-    }
-    msg = { op: 'task', action: 'create', bindingKeys, taskId, subject }
-  } else if (mode === 'task-update') {
-    const toolInput = data.tool_input as Record<string, unknown> | undefined
-    const toolResponse = data.tool_response as Record<string, unknown> | undefined
-    const statusChange = toolResponse?.statusChange as Record<string, unknown> | undefined
-    const taskId = String(toolInput?.taskId ?? '')
-    const status = String(statusChange?.to ?? toolInput?.status ?? '')
-    if (!taskId || !status) {
-      return
-    }
-    msg = { op: 'task', action: 'update', bindingKeys, taskId, status }
-  } else if (mode === 'skill') {
-    const toolInput = data.tool_input as Record<string, unknown> | undefined
-    const skill = String(toolInput?.skill ?? '')
-    if (!skill) {
-      return
-    }
-    const args = toolInput?.args ? String(toolInput.args) : undefined
-    msg = { op: 'skill', bindingKeys, skill, ...(args ? { args } : {}) }
-  } else if (mode === 'todo') {
-    const toolInput = data.tool_input as Record<string, unknown> | undefined
-    const raw = Array.isArray(toolInput?.todos) ? (toolInput.todos as Record<string, unknown>[]) : []
-    const todos = raw
-      .map(t => ({ content: String(t.content ?? ''), status: String(t.status ?? 'pending') }))
-      .filter(t => t.content)
-    if (!todos.length) {
-      return
-    }
-    msg = { op: 'todo', bindingKeys, todos }
-  } else if (mode === 'bg') {
-    // The Bash hook fires for EVERY command; only backgrounded ones are worth a status line.
-    const toolInput = data.tool_input as Record<string, unknown> | undefined
-    if (toolInput?.run_in_background !== true) {
-      return
-    }
-    const command = String(toolInput?.command ?? '')
-    if (!command) {
-      return
-    }
-    const description = toolInput?.description ? String(toolInput.description) : undefined
-    msg = { op: 'bg', bindingKeys, command, ...(description ? { description } : {}) }
-  } else if (mode === 'describe') {
-    const promptId = String(data.prompt_id ?? '')
-    const toolInput = data.tool_input as Record<string, unknown> | undefined
-    const description = String(toolInput?.description ?? '')
-    if (!promptId || !description) {
-      return
-    }
-    msg = { op: 'subagent', action: 'describe', bindingKeys, promptId, description }
-  } else if (mode === 'start') {
-    const agentId = String(data.agent_id ?? '')
-    if (!agentId) {
-      return
-    }
-    msg = {
-      op: 'subagent',
-      action: 'start',
-      bindingKeys,
-      promptId: String(data.prompt_id ?? ''),
-      agentId,
-      agentType: String(data.agent_type ?? 'agent'),
-    }
-  } else {
-    const agentId = String(data.agent_id ?? '')
-    if (!agentId) {
-      return
-    }
-    msg = { op: 'subagent', action: 'stop', bindingKeys, agentId }
-  }
-
-  // Ride the current session id along on every hook event. `/clear` and an in-TUI `/resume`
-  // switch the conversation without any spawn the hub could learn from, so this is the only
-  // signal that keeps bindings.json pointing at the live session (see hub `syncSessionId`).
-  const sessionId = String(data.session_id ?? '')
-  if (sessionId) {
-    msg = { ...msg, sessionId }
-  }
+  const msg = normalizeHookMessage(mode, data, bindingKeys)
+  if (!msg) return
 
   await new Promise<void>(resolve => {
     let done = false
     const finish = () => {
-      if (!done) {
-        done = true
-        resolve()
-      }
+      if (!done) { done = true; resolve() }
     }
     setTimeout(finish, 2000)
     Bun.connect<undefined>({
       unix: SOCK_PATH,
       socket: {
-        open(sock) {
-          sock.write(encode(msg))
-          sock.end()
-          finish()
-        },
+        open(sock) { sock.write(encode(msg)); sock.end(); finish() },
         data() {},
         close: finish,
         error: finish,

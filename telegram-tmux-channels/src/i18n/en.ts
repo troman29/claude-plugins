@@ -47,11 +47,16 @@ export const en = {
   notInTmuxSlash: '⚠️ Session is not in tmux — can\'t type the slash command.',
   tmuxCreated: (name: string, path: string) => `🪟 tmux <code>${name}</code> created in ${path}.`,
   tmuxExists: (name: string) => `🪟 tmux <code>${name}</code> already exists — typing the launch into its active pane.`,
+  tmuxForeignAgent: (command: string) => `⚠️ An unconnected <code>${command}</code> is already active in this tmux pane; refusing to type a launch into it.`,
+  spawnInProgress: '⏳ This session is already starting; the duplicate launch was skipped.',
   modeResume: '🚀 <b>Resuming</b>',
   modeRestart: '🚀 <b>Restarting fresh</b>',
   modeNew: '🆕 <b>Starting a session</b>',
   modeFork: '🌱 <b>Forking the conversation</b>',
   spawnFailed: (mode: string, err: string) => `⚠️ <b>${mode} failed</b>: ${err}`,
+  bindingDirectoryMissing: (path: string) =>
+    `⚠️ <b>The bound folder no longer exists</b>: ${path}\nRebind this chat with <code>/bind &lt;folder&gt;</code>.`,
+  adminOnly: (command: string) => `🔒 <code>/${command}</code> is available to the hub admin only.`,
   sessionSpawnFail: (err: string) => `⚠️ <b>Couldn't bring the session up</b>: ${err}`,
 
   // ── pickers ──
@@ -60,11 +65,13 @@ export const en = {
   pickerClosedRestart: '❓ <i>Picker closed (restart)</i>',
   pickerClosedNoRevive: '❓ <i>Picker closed (session did not recover)</i>',
   sendAnswerMsg: '✍️ <b>Send the answer</b> as a message.',
+  pkCustomSavedSubmit: 'Custom option saved. Press Submit to send the full selection.',
 
   // ── notifiers (agents / compaction / workflow / tasks / skills / errors) ──
   agentsHeader: '🤖 <b>Agents</b>',
   compaction: (bar: string, pct: string, elapsed: string) =>
     `🗜 <b>Compaction</b> ${bar} ${pct}%${elapsed ? ` <i>(${elapsed})</i>` : ''}`,
+  compactionStarted: (trigger: string) => `🗜 <b>Compaction</b>${trigger ? ` <i>(${trigger})</i>` : ''}`,
   compactionDone: '✅ <b>Compaction done.</b>',
   workflow: (name: string, done: number, total: number) =>
     `${done >= total ? '✅' : '🤖'} <b>Workflow</b> <code>${name}</code> — ${done}/${total} agents`,
@@ -133,6 +140,8 @@ export const en = {
   noBindingPickFolder: '👋 Nothing is bound here yet. Pick a folder to work in — or send <code>/bind &lt;path&gt;</code>.',
   bindUsage: (projects: string) => `Usage: <code>/bind &lt;folder&gt;</code>\n\nA name in ${projects} or an absolute path.`,
   bound: (key: string, path: string) => `🔗 <b>Bound</b>\n\n<code>${key}</code> → ${path}\n\nHow do we start?`,
+  rebound: (key: string, from: string, to: string, sessionId?: string) =>
+    `🔗 <b>Rebound</b>\n\n<code>${key}</code>\n${from} → ${to}${sessionId ? `\n\n💬 Session <code>${sessionId}</code> preserved.` : ''}\n\nHow do we start?`,
   bindFail: (err: string) => `⚠️ <b>Couldn't bind</b>: ${err}`,
   nothingBoundHere: 'Nothing is bound here.',
   nothingBoundBindFirst: 'Nothing is bound here. <code>/bind &lt;folder&gt;</code> first.',
@@ -158,7 +167,9 @@ export const en = {
   noBindingInTopic: (tid: number, title: string) =>
     `🔓 <i>No binding in topic <code>#${tid}</code>${title ? ` «${title}»` : ''}.</i>`,
   topicDeletedShort: (tid: number) => `🗑 Topic <code>#${tid}</code> deleted.`,
-  topicDeleteFail: (err: string) => `⚠️ Topic not deleted (does the bot have can_delete_messages?): ${err}`,
+  topicDeleteFail: (err: string) =>
+    `⚠️ Topic not deleted (does the bot have can_delete_messages?): ${err}\n` +
+    'The topic is still open; its next message will offer setup again.',
   deleteKeptOnCleanupFail:
     '🛑 <b>Topic kept, binding restored</b> — the cleanup above failed, and deleting the topic now would leave the worktree and its stand behind with nobody watching. Fix the cause and run <code>/delete</code> again.',
 
@@ -183,6 +194,8 @@ export const en = {
   noSessionNamed: (want: string, dir: string) =>
     `⚠️ No session <code>${want}</code> in ${dir}.\n\n<code>/resume</code> with no argument lists them.`,
   prefixAmbiguous: (want: string, count: number) => `⚠️ Prefix <code>${want}</code> matches ${count} sessions — narrow it down.`,
+  sessionOwnedByTopic: (id: string, topic: string) =>
+    `⚠️ Session <code>${id}</code> is already bound to ${topic}. Resume it there instead of forking its history.`,
   couldntStopCurrentScreen: '⚠️ Couldn\'t stop the current session — check <code>/screen</code>.',
   sessionListFail: '⚠️ Session list didn\'t open (agent busy?). Try later, check /screen, or /stop then /resume.',
   switchSessionHdr: (total: string) => `⏪ <b>Switch session</b> <i>(${total}, no restart)</i>`,
@@ -247,12 +260,19 @@ export const en = {
   statusStandUp: (url: string) => `🖥 stand: 🟢 up${url ? ` → ${url}` : ''}`,
   statusStandDown: '🖥 stand: ⚪️ down → <code>/stand_up</code>',
   statusAccess: (ids: string) => `👥 access: <code>${ids}</code>`,
+  statusContextUsed: (pct: number) => `Context: ${pct}% used`,
+  statusQuota: (label: string, pct: number, reset: string) => `${label}: ${pct}% left${reset ? ` (resets ${reset})` : ''}`,
+  statusQuotaStale: '⚠️ Codex reports that limits may be stale.',
+  statusQuotaUnavailable: 'ℹ️ Live Codex limits were not refreshed: the pane is busy or has a local draft.',
 
   // ── new-topic mode prompt ──
   ownDirLabel: '✏️ Own folder',
   sendFolderPromptBind: (projects: string) => `📁 Send the folder for this topic — like <code>/bind</code>: a name in ${projects} or an absolute path.`,
   sendFolderPromptShort: (projects: string) => `📁 Send a folder — like <code>/bind</code>: a name in ${projects} or an absolute path.`,
   branchNote: (branch: string) => `, branch <code>${branch}</code>`,
+  branchRenamed: (wanted: string, used: string) =>
+    `🔀 Branch <code>${wanted}</code> already exists (an older topic of the same name) — ` +
+    `working in <code>${used}</code>, cut fresh from the base.`,
   preparingSession: (mode: string, branchNote: string) => `⏳ Preparing the session (<code>${mode}</code>${branchNote})…`,
   notAFolder: (err: string) => `⚠️ <b>Doesn't look like a folder</b>: ${err}\n\nSend it again.`,
   modeIntroFolder: '📁 <b>Default folder</b> — work right in the base.',

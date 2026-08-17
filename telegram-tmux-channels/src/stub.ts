@@ -13,7 +13,7 @@ import type { Socket } from 'bun'
 
 import { SOCK_PATH, STATE_DIR } from './paths'
 import { encode, makeLineDecoder, type StubToHub, type HubToStub, type RpcMethod, type SessionInfo } from './protocol'
-import { findClaudeAncestor, cwdOf } from './proc'
+import { findAgentAncestor, cwdOf, envOf } from './proc'
 
 const log = (s: string) => process.stderr.write(`telegram stub: ${s}\n`)
 
@@ -52,13 +52,17 @@ function maybeSpawnHub(): void {
 }
 
 const session: SessionInfo = (() => {
-  const pane = process.env.TMUX_PANE
-  const claude = findClaudeAncestor(process.pid)
-  const cwd = (claude ? cwdOf(claude.pid) : undefined) ?? process.cwd()
-  const bindingKeys = process.env.TELEGRAM_BINDING_KEYS?.split(',').map(s => s.trim()).filter(Boolean)
+  const agent = findAgentAncestor(process.pid)
+  // Claude forwards both values to its channel process. Codex 0.147 starts MCP children
+  // with a sanitised environment, but keeps them on the interactive parent; recover there.
+  const inherited = (key: string) => process.env[key] ?? (agent ? envOf(agent.pid, key) : undefined)
+  const pane = inherited('TMUX_PANE')
+  const cwd = (agent ? cwdOf(agent.pid) : undefined) ?? process.cwd()
+  const bindingKeys = inherited('TELEGRAM_BINDING_KEYS')?.split(',').map(s => s.trim()).filter(Boolean)
   return {
+    agent: agent?.agent ?? 'claude',
     ...(pane ? { pane } : {}),
-    ...(claude ? { pid: claude.pid, cmdline: claude.cmdline } : {}),
+    ...(agent ? { pid: agent.pid, cmdline: agent.cmdline } : {}),
     cwd,
     ...(bindingKeys?.length ? { bindingKeys } : {}),
   }

@@ -51,6 +51,15 @@
 - Смотреть: `git worktree list`, папка.
 
 ## Лог прогона
+- **2026-08-17 (Docker+MTProto) — TG2/TG5 ✅ (plain worktree):** в отдельном Docker-only git
+  repo с initial commit включены `folder`+`worktree`; topic `984` «ТТС worktree продать BTC»
+  получил выбор режима. Tap `🌿 Worktree` создал binding на
+  `/tmp/ttc-worktree-repo--TTS-worktree-prodat-BTC`, branch `TTS-worktree-prodat-BTC` и tmux.
+  `/unbind` удалил только linked worktree; main repo `/tmp/ttc-worktree-repo` на `master` остался.
+- **2026-08-17 (Docker+MTProto) — TG5 hook.create/delete ✅:** в той же isolated fixture topic
+  `993` выбрал worktree с group hook. `create` создал marker и вернул
+  `/tmp/ttc-hook-wt-TTC-hook-E2E`; binding сохранил именно `hookBranch: TTC-hook-E2E`.
+  `/unbind` вызвал `delete`: есть delete-marker, worktree и binding исчезли, main остался.
 - **2026-07-20 (проход 1)** — в контейнер положил `trusted-groups.json` на тест-группу
   (`dir=/home/user/projects/sandbox`, modes folder+worktree, `exclude.nameContains:["noauto"]`).
   - **TG1 ✅ ПОЛНЫЙ:** создал форум-топик «продать BTC» (id 129) → хаб сам предложил режим
@@ -60,5 +69,4 @@
     (ключи остались только `/3` и `/129`). Исключение работает.
   - **TG2:** транслит покрыт настоящим юнитом (`продать BTC`→`prodat-BTC`); e2e-проявление —
     только в worktree-режиме (в folder-режиме имя tmux берётся из ключа, не из имени топика).
-- **TODO:** TG2 e2e + TG5 (worktree+хук — нужен git-репо и рабочий `hook.create`), TG4 (сообщение
-  до выбора режима придерживается и досылается).
+- **TODO:** TG4 (сообщение до выбора режима придерживается и досылается).
