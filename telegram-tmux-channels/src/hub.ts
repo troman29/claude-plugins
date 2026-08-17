@@ -1408,6 +1408,14 @@ async function forwardFallbackReply(key: string): Promise<void> {
   if (!pending) {
     return
   }
+  // Codex шлёт Stop не только в конце разговора: успевает «подумать вслух», получить Stop и лишь
+  // потом вызвать `reply`. Досыл на таком промежуточном Stop приезжает раньше настоящего ответа —
+  // пользователь видит и черновую мысль, и ответ (2026-08-17). Пейн ещё работает — значит ход не
+  // кончился: выходим, НЕ снимая метку, следующий Stop вернётся сюда.
+  if (keyIsWorking(key, pending.dir)) {
+    log(`reply-fallback: ${key} — пейн ещё работает, жду настоящего конца хода`)
+    return
+  }
   disarmPending(key) // one shot per inbound, whatever the transcript holds
   if (!fallbackGate.shouldForward(key)) {
     log(`reply-fallback: ${key} — агент в этом ходе уже отвечал, не досылаю`)
@@ -3276,7 +3284,11 @@ function deliveryDeps(key: string, dir: string, payload: HubToStub, id: string, 
   return {
     clock: { now: () => Date.now(), sleep: ms => new Promise(r => setTimeout(r, ms)) },
     awaitAck: () => adapter.capabilities.nativeInboundTransport ? awaitAck(id) : Promise.resolve('silent'),
-    sawIncoming: adapter.transcriptSawIncoming,
+    // Ответ агента — сам по себе доказательство доставки, причём более надёжное, чем поиск по
+    // транскрипту: у Codex запись хода коррелируется не всегда, сторож не находил сообщение и
+    // ПЕРЕОТПРАВЛЯЛ его — агент отвечал дважды (2026-08-17).
+    sawIncoming: (d, since, needle) =>
+      !fallbackGate.shouldForward(key) || adapter.transcriptSawIncoming(d, since, needle),
     resend: async () => {
       if (adapter.capabilities.nativeInboundTransport) {
         for (const conn of connsForBinding(key, dir)) send(conn, payload)
