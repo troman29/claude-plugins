@@ -97,6 +97,16 @@ plugin installation, register the stub once using its absolute path:
 codex mcp add telegram -- bun run /absolute/path/to/telegram-tmux-channels/src/stub.ts
 ```
 
+Codex reads hooks from its own config layer, not from the plugin, so materialise them once:
+
+```bash
+python3 scripts/install-codex-hooks.py     # writes ~/.codex/hooks.json with absolute paths
+```
+
+Skip it and Codex never fires `Stop`; the hub then never learns the turn ended, so the agent's
+answer stays in the terminal and Telegram sees nothing at all. On the next start Codex asks to
+review the new hooks — answer **Trust all and continue**, otherwise they don't run.
+
 Review and trust the plugin hooks, then check the MCP server with `/mcp` in Codex. Bind a topic
 explicitly to Codex:
 
