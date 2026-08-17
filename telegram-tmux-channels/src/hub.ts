@@ -43,7 +43,7 @@ import {
 } from './trusted-groups'
 import { t, getLang, setLang, type Lang } from './i18n'
 import { resolveModeDir, gitBranch, runHookDelete, removePlainWorktree, runStandCommand, worktreeHook, isLinkedWorktree } from './dir-resolve'
-import { PROJECT_CONFIG_FILE, parseStandLinks, standLogTail } from './project-config'
+import { PROJECT_CONFIG_FILE, parseStandLinks, standLogTail, worktreeBases } from './project-config'
 import { watchDelivery as watchDeliveryCore, type DeliveryDeps } from './delivery'
 import { FallbackGate } from './fallback-gate'
 import { topic as inTopic } from './chat'
@@ -2665,7 +2665,7 @@ async function onTopicGone(key: string): Promise<void> {
 }
 
 // new forum topic in a trusted group → auto-bind + auto-start, no /bind needed
-type PendingTopic = { cfg: TrustedGroupConfig; mode: TrustedGroupMode; topicName: string; say: (html: string) => void }
+type PendingTopic = { cfg: TrustedGroupConfig; mode: TrustedGroupMode; topicName: string; say: (html: string) => void; base?: string }
 const pendingTopics = new Map<string, PendingTopic>() // waiting for a "which folder?" answer
 // mode picker sent, waiting for a button tap — before dir resolution starts
 type PendingModeChoice = { cfg: TrustedGroupConfig; topicName: string; say: (html: string) => void }
@@ -2737,13 +2737,14 @@ function beginTopicSession(
   mode: TrustedGroupMode,
   topicName: string,
   say: (html: string) => void,
+  base?: string,
 ): void {
   if (!cfg.dir) {
     say(t().sendFolderPromptBind(codePath(PROJECTS_DIR)))
-    pendingTopics.set(key, { cfg, mode, topicName, say })
+    pendingTopics.set(key, { cfg, mode, topicName, say, ...(base ? { base } : {}) })
     return
   }
-  void runAutoTopic(key, cfg, cfg.dir, mode, slugFromTopicName(topicName), say)
+  void runAutoTopic(key, cfg, cfg.dir, mode, slugFromTopicName(topicName), say, base)
 }
 
 async function runAutoTopic(
@@ -2753,6 +2754,7 @@ async function runAutoTopic(
   mode: TrustedGroupMode,
   branch: string,
   say: (html: string) => void,
+  base?: string,
 ): Promise<void> {
   const branchNote = mode === 'folder' ? '' : t().branchNote(escHtml(branch))
   say(t().preparingSession(escHtml(mode), branchNote))
@@ -2760,7 +2762,7 @@ async function runAutoTopic(
   try {
     // hook comes back resolved (project config wins over the group's) — flag the binding from THAT,
     // not from `cfg.hook`, so teardown runs the same hook creation used.
-    const { dir: resolvedDir, hook: usedHook, branch: usedBranch } = await resolveModeDir(mode, dir, cfg.hook, branch)
+    const { dir: resolvedDir, hook: usedHook, branch: usedBranch } = await resolveModeDir(mode, dir, cfg.hook, branch, base ?? worktreeBases(dir)[0])
     if (usedBranch !== branch) {
       // Имя было занято прошлым топиком — говорим вслух, иначе человек ищет ветку под старым
       // именем и правит не то (а именно так и уехал PR на месячную базу).
@@ -2803,7 +2805,14 @@ const ownDirLabel = () => t().ownDirLabel
 
 function modeKeyboard(key: string, cfg: TrustedGroupConfig): InlineKeyboard {
   const kb = new InlineKeyboard()
+  const bases = cfg.dir ? worktreeBases(cfg.dir) : []
   for (const m of cfg.modes) {
+    // Несколько баз — размножаем саму кнопку «worktree», отдельного пикера не заводим:
+    // выбор режима и выбор базы — один вопрос, один тап.
+    if (m === 'worktree' && bases.length > 1) {
+      bases.forEach((b, i) => kb.text(t().modeWorktreeFrom(b), `topicmode:${key}:worktree:${i}`).row())
+      continue
+    }
     kb.text(modeLabel(m), `topicmode:${key}:${m}`).row()
   }
   return kb.text(ownDirLabel(), `topicdir:${key}`).row()
@@ -2963,7 +2972,7 @@ async function handleInbound(inbound: Inbound): Promise<void> {
       return
     }
     pendingTopics.delete(key)
-    await runAutoTopic(key, pendingTopic.cfg, dir, pendingTopic.mode, slugFromTopicName(pendingTopic.topicName), pendingTopic.say)
+    await runAutoTopic(key, pendingTopic.cfg, dir, pendingTopic.mode, slugFromTopicName(pendingTopic.topicName), pendingTopic.say, pendingTopic.base)
     return
   }
 
@@ -4269,9 +4278,9 @@ bot.on('callback_query:data', async ctx => {
     }
     return
   }
-  const tm = /^topicmode:(.+):(folder|worktree)$/.exec(ctx.callbackQuery.data)
+  const tm = /^topicmode:(.+):(folder|worktree)(?::(\d+))?$/.exec(ctx.callbackQuery.data)
   if (tm) {
-    const [, key, modeStr] = tm
+    const [, key, modeStr, baseIdx] = tm
     const mode = modeStr as TrustedGroupMode
     const pending = pendingModeChoice.get(key)
     if (!pending) {
@@ -4285,7 +4294,10 @@ bot.on('callback_query:data', async ctx => {
     disarmMode(key)
     await ctx.answerCallbackQuery({ text: modeLabel(mode) }).catch(() => {})
     await ctx.editMessageText(t().modeChosen(modeLabel(mode))).catch(() => {})
-    beginTopicSession(key, pending.cfg, mode, pending.topicName, pending.say)
+    const base = baseIdx !== undefined && pending.cfg.dir
+      ? worktreeBases(pending.cfg.dir)[Number(baseIdx)]
+      : undefined
+    beginTopicSession(key, pending.cfg, mode, pending.topicName, pending.say, base)
     return
   }
   const td = /^topicdir:(.+)$/.exec(ctx.callbackQuery.data)

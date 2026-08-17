@@ -3,7 +3,7 @@
 // by the hook, torn down by plain `git worktree remove` → wt.py rm never ran → claude-mem memory of
 // every such worktree stayed stranded under `<repo>/<slug>`.
 import { describe, expect, test } from 'bun:test'
-import { mkdtempSync, mkdirSync, writeFileSync } from 'fs'
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { resolveModeDir, worktreeHook, freeBranchName, worktreeDirFor } from '../src/dir-resolve'
@@ -80,6 +80,32 @@ describe('имя ветки при совпадении топиков', () => {
     const dir = repo()
     mkdirSync(worktreeDirFor(dir, 'feat-x'), { recursive: true })
     expect(await freeBranchName(dir, 'feat-x')).toBe('feat-x-2')
+  })
+
+  test('база: ветка режется от указанной, а основная папка остаётся где была', async () => {
+    const dir = repo()
+    git(dir, 'branch', 'dev')                      // база, от которой режем
+    git(dir, 'checkout', '-q', '-b', 'чужая-работа') // папка занята другой веткой
+    writeFileSync(join(dir, 'dirty.txt'), 'не трогать') // и она грязная
+    git(dir, 'commit', '-qam', 'коммит в dev-ветке', '--allow-empty')
+    const res = await resolveModeDir('worktree', dir, undefined, 'feat-y', 'dev')
+    expect(git(res.dir, 'rev-parse', 'HEAD').stdout.toString().trim())
+      .toBe(git(dir, 'rev-parse', 'dev').stdout.toString().trim()) // срезано от dev
+    expect(git(dir, 'branch', '--show-current').stdout.toString().trim()).toBe('чужая-работа')
+    expect(existsSync(join(dir, 'dirty.txt'))).toBe(true)
+  })
+
+  test('база: без апстрима — иначе push из ворктри ушёл бы в чужую ветку', async () => {
+    const dir = repo()
+    git(dir, 'branch', 'dev')
+    const res = await resolveModeDir('worktree', dir, undefined, 'feat-z', 'dev')
+    const up = git(res.dir, 'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}')
+    expect(up.exitCode).not.toBe(0) // апстрима нет — так и задумано
+  })
+
+  test('база: несуществующее имя — падаем внятно, а не режем от чего попало', async () => {
+    const dir = repo()
+    expect(resolveModeDir('worktree', dir, undefined, 'feat-q', 'нет-такой')).rejects.toThrow(/base branch/)
   })
 
   test('resolveModeDir отдаёт РЕАЛЬНО созданную ветку, а не запрошенную', async () => {

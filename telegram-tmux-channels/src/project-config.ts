@@ -5,7 +5,8 @@
 //
 // {
 //   "stand": { "up": "…", "down": "…", "status": "…" },   // status: exit 0 = up
-//   "worktree": { "create": "…", "delete": "…" }          // create prints the path on its last line
+//   "worktree": { "create": "…", "delete": "…",           // create prints the path on its last line
+//                 "base": "dev" | ["dev", "master"] }     // откуда резать ветку; несколько — кнопками
 // }
 import { readFileSync } from 'fs'
 import { join } from 'path'
@@ -16,7 +17,15 @@ export const PROJECT_CONFIG_FILE = '.tmux-channels.json'
 export type StandConfig = { up?: string; down?: string; status?: string }
 export type ProjectConfig = {
   stand?: StandConfig
-  worktree?: { create: string; delete?: string }
+  // create необязателен: база может быть задана и без хука — обычному `git worktree add` она
+  // нужна ровно так же.
+  worktree?: { create?: string; delete?: string; base?: string | string[] }
+}
+
+/** Базы для ворктри проекта, нормализованные в список (строка → список из одной). */
+export function worktreeBases(dir: string): string[] {
+  const b = loadProjectConfig(dir)?.worktree?.base
+  return (typeof b === 'string' ? [b] : (b ?? [])).map(s => s.trim()).filter(Boolean)
 }
 
 export function loadProjectConfig(dir: string): ProjectConfig | undefined {

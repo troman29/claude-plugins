@@ -49,11 +49,34 @@ export async function freeBranchName(baseDir: string, branch: string, limit = 50
   throw new Error(`no free branch name for "${branch}" after ${limit} tries`)
 }
 
-export async function resolveWorktreeDir(baseDir: string, branch: string): Promise<string> {
+/** Точка отсчёта для новой ветки: свежий `origin/<base>`, иначе локальная `<base>`, иначе HEAD.
+ *
+ * Основную папку НЕ трогаем: ни checkout, ни pull. Она бывает занята работой и грязной, а
+ * `git worktree add` умеет резать от произвольной точки — переключать рабочую копию, чтобы
+ * получить свежую базу, незачем.
+ */
+export async function resolveStartPoint(baseDir: string, base: string | undefined): Promise<string> {
+  await run(['git', '-C', baseDir, 'fetch', 'origin', '--prune']) // сеть может лежать — не критично
+  const wanted = base?.trim() || (await gitBranch(baseDir))
+  for (const ref of wanted ? [`origin/${wanted}`, wanted] : []) {
+    if ((await run(['git', '-C', baseDir, 'rev-parse', '--verify', '--quiet', ref])).ok) {
+      return ref
+    }
+  }
+  if (base) {
+    throw new Error(`base branch "${base}" not found (neither origin/${base} nor local)`)
+  }
+  return 'HEAD'
+}
+
+export async function resolveWorktreeDir(baseDir: string, branch: string, base?: string): Promise<string> {
   const dir = worktreeDirFor(baseDir, branch)
+  const start = await resolveStartPoint(baseDir, base)
   // Всегда НОВАЯ ветка: имя сюда приходит уже свободным (freeBranchName), а вставать на
   // существующую — это и есть тот самый баг с чужой историей.
-  const res = await run(['git', '-C', baseDir, 'worktree', 'add', '-b', branch, dir])
+  // `--no-track`: иначе апстримом станет origin/dev, и `git push` из ворктри упрётся в
+  // несовпадение имён вместо того, чтобы завести свою удалённую ветку.
+  const res = await run(['git', '-C', baseDir, 'worktree', 'add', '-b', branch, '--no-track', dir, start])
   if (!res.ok) {
     throw new Error(`git worktree add failed: ${(res.err || res.out).trim()}`)
   }
@@ -64,17 +87,23 @@ function fillTemplate(template: string, branch: string, dir: string): string {
   return template.replaceAll('{branch}', branch).replaceAll('{dir}', dir)
 }
 
-async function runHookCommand(template: string, branch: string, groupDir: string) {
+async function runHookCommand(template: string, branch: string, groupDir: string, base?: string) {
   const cmd = fillTemplate(template, branch, groupDir)
   return run(['sh', '-c', cmd], {
     cwd: groupDir,
     stdin: 'ignore', // forces non-interactive defaults (isatty()===false) — no hang on a prompt
-    env: { ...process.env, TELEGRAM_TOPIC_BRANCH: branch, TELEGRAM_GROUP_DIR: groupDir },
+    env: {
+      ...process.env,
+      TELEGRAM_TOPIC_BRANCH: branch,
+      TELEGRAM_GROUP_DIR: groupDir,
+      // чтобы скрипт резал от той же базы, что и мы, а не от своего представления о ней
+      ...(base ? { TELEGRAM_BASE_BRANCH: base } : {}),
+    },
   })
 }
 
-export async function resolveHookDir(hook: HookConfig, branch: string, groupDir: string): Promise<string> {
-  const res = await runHookCommand(hook.create, branch, groupDir)
+export async function resolveHookDir(hook: HookConfig, branch: string, groupDir: string, base?: string): Promise<string> {
+  const res = await runHookCommand(hook.create, branch, groupDir, base)
   if (!res.ok) {
     throw new Error(`hook create failed: ${(res.err || res.out).trim()}`)
   }
@@ -125,7 +154,10 @@ export async function removePlainWorktree(dir: string): Promise<boolean> {
 // delete disagree: a group without `hook` but a project WITH one created via the project hook and
 // then tore down with a plain `git worktree remove`, silently skipping the hook's cleanup.
 export function worktreeHook(baseDir: string, groupHook: HookConfig | undefined): HookConfig | undefined {
-  return loadProjectConfig(baseDir)?.worktree ?? groupHook
+  // `create` теперь необязателен (в секции может лежать одна `base`) — без него это не хук,
+  // и подменять им групповой нельзя: иначе ворктри резал бы «никак».
+  const w = loadProjectConfig(baseDir)?.worktree
+  return w?.create ? { create: w.create, ...(w.delete ? { delete: w.delete } : {}) } : groupHook
 }
 
 // Returns the resolved dir AND the hook that produced it, so the caller records teardown state from
@@ -135,6 +167,7 @@ export async function resolveModeDir(
   baseDir: string,
   hook: HookConfig | undefined,
   branch: string,
+  base?: string,
 ): Promise<{ dir: string; hook: HookConfig | undefined; branch: string }> {
   if (mode === 'folder') {
     return { dir: baseDir, hook: undefined, branch }
@@ -146,7 +179,7 @@ export async function resolveModeDir(
   // that also provisions a per-branch DB) — no hook, no customization needed, just git.
   const h = worktreeHook(baseDir, hook)
   return {
-    dir: h ? await resolveHookDir(h, free, baseDir) : await resolveWorktreeDir(baseDir, free),
+    dir: h ? await resolveHookDir(h, free, baseDir, base) : await resolveWorktreeDir(baseDir, free, base),
     hook: h,
     branch: free,
   }

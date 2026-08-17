@@ -260,6 +260,7 @@ export const ru: Strings = {
   sendFolderPromptBind: projects => `📁 Пришли папку для этого топика — как в <code>/bind</code>: имя в ${projects} или абсолютный путь.`,
   sendFolderPromptShort: projects => `📁 Пришли папку — как в <code>/bind</code>: имя в ${projects} или абсолютный путь.`,
   branchNote: branch => `, ветка <code>${branch}</code>`,
+  modeWorktreeFrom: base => `🌿 worktree от ${base}`,
   branchRenamed: (wanted, used) =>
     `🔀 Ветка <code>${wanted}</code> уже есть (топик с таким именем был раньше) — ` +
     `работаю в <code>${used}</code>, срезанной от свежей базы.`,

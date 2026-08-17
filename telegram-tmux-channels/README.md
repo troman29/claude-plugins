@@ -177,8 +177,26 @@ before they become branch and tmux-session names.
 
 Name the new topic like one you closed months ago and the branch name collides. The bot never
 reuses the old branch — it takes the next free name (`name-2`, `name-3`, …), cuts it fresh from
-the current base, and says so in the topic. Reusing would silently stack today's work on a
-month-old state, which is exactly how a PR ends up 700 commits behind.
+the base, and says so in the topic. Reusing would silently stack today's work on a month-old
+state, which is exactly how a PR ends up 700 commits behind.
+
+**Where the branch is cut from** is the project's business, so it lives in its
+`.tmux-channels.json`:
+
+```jsonc
+"worktree": { "base": "dev" }              // one base — used silently
+"worktree": { "base": ["dev", "master"] }  // several — the mode picker offers one button per base
+```
+
+With several bases the picker shows `🌿 worktree from dev` / `🌿 worktree from master` instead of
+a single worktree button — same one tap, no extra question. Unset, the base is the branch the
+main checkout happens to be on.
+
+The bot fetches first and cuts from `origin/<base>`, so the new branch starts from the *remote*
+state, not from whatever is stale on disk. **The main checkout is never touched** — no `checkout`,
+no `pull`: it can stay on another branch with uncommitted work and nothing happens to it. The new
+branch is created with `--no-track`, so `git push -u` later creates its own remote branch instead
+of arguing with `origin/dev`. Hooks get the choice as `TELEGRAM_BASE_BRANCH`.
 
 ## Per-project config
 
