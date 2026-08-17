@@ -97,18 +97,19 @@ plugin installation, register the stub once using its absolute path:
 codex mcp add telegram -- bun run /absolute/path/to/telegram-tmux-channels/src/stub.ts
 ```
 
-Codex reads hooks from its own config layer, not from the plugin, so materialise them once:
+Install it as a Codex plugin — the manifest carries both the MCP server and the lifecycle hooks:
 
 ```bash
-python3 scripts/install-codex-hooks.py     # writes ~/.codex/hooks.json with absolute paths
+codex plugin marketplace add <path-or-url of this marketplace>
+codex plugin add telegram-tmux-channels@<marketplace>
 ```
 
-Skip it and Codex never fires `Stop`; the hub then never learns the turn ended, so the agent's
-answer stays in the terminal and Telegram sees nothing at all. On the next start Codex asks to
-review the new hooks — answer **Trust all and continue**, otherwise they don't run.
+First start asks to review the new hooks — answer **Trust all and continue**. Without the `Stop`
+hook the hub never learns a turn ended, so the agent's answer stays in the terminal and Telegram
+stays silent; without trust the hooks simply don't run.
 
-Review and trust the plugin hooks, then check the MCP server with `/mcp` in Codex. Bind a topic
-explicitly to Codex:
+Check the result with `/mcp`: the `telegram` server should list `reply`, `react`, `edit_message`
+and `download_attachment`. Bind a topic explicitly to Codex:
 
 ```text
 /bind codex myproject
@@ -116,6 +117,22 @@ explicitly to Codex:
 
 Legacy `/bind myproject` continues to select Claude Code. The choice is persisted per topic, so
 session lifecycle commands and idle revive keep using the selected agent.
+
+<details>
+<summary><b>Developing the plugin itself</b> — keep Codex on the live checkout</summary>
+
+`codex plugin add` copies the plugin into `~/.codex/plugins/cache/<marketplace>/<name>/<version>`,
+so edits in your checkout do nothing until you reinstall — and the hub (running from the checkout)
+would talk to a stub from an older snapshot. Point that cache entry back at the source once:
+
+```bash
+P=~/.codex/plugins/cache/<marketplace>/telegram-tmux-channels/<version>
+rm -rf "$P" && ln -s /path/to/telegram-tmux-channels "$P"
+```
+
+Codex follows the symlink: hooks and MCP then run from the same files the hub does.
+
+</details>
 
 ### Docker integration test
 

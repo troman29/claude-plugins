@@ -1,0 +1,12 @@
+{
+  "name": "troman29",
+  "interface": { "displayName": "troman29 plugins" },
+  "plugins": [
+    {
+      "name": "telegram-tmux-channels",
+      "source": { "source": "local", "path": "./telegram-tmux-channels" },
+      "policy": { "installation": "AVAILABLE" },
+      "category": "Productivity"
+    }
+  ]
+}

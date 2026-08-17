@@ -13,6 +13,9 @@
     "claude-code"
   ],
   "mcpServers": "./.mcp.json",
+  "hooks": [
+    "./hooks/hooks.json"
+  ],
   "interface": {
     "displayName": "Telegram tmux channels",
     "shortDescription": "Control Codex and Claude Code sessions from Telegram.",
