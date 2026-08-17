@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'fs'
 import { join } from 'path'
-import { parsePicker, checkedIndexes, pickerCursorIndex, parseResumeList, paneReady, isStartupTrustPrompt, isCodexStartupTrustScreen } from '../src/picker'
+import { parsePicker, checkedIndexes, pickerCursorIndex, parseResumeList, paneReady, isStartupTrustPrompt, isCodexStartupTrustScreen, isCodexHooksTrustScreen } from '../src/picker'
 
 const fx = (name: string) => readFileSync(join(import.meta.dir, 'fixtures', name), 'utf8')
 
@@ -133,5 +133,42 @@ describe('parseResumeList', () => {
   test('plain screen without a list → undefined', () => {
     expect(parseResumeList(fx('model-single.txt'))).toBeUndefined()
     expect(parseResumeList('')).toBeUndefined()
+  })
+})
+
+// Второй стартовый гейт Codex (2026-08-17): установка плагина сменила источник хуков, сессия
+// встала на «Hooks need review», хаб нажал Enter (= «Review hooks») и топик остался без сессии.
+describe('экран доверия хукам Codex', () => {
+  const screen = [
+    '  Hooks need review',
+    '  13 hooks are new or changed.',
+    '  Hooks can run outside the sandbox after you trust them.',
+    '',
+    '› 1. Review hooks',
+    '  2. Trust all and continue',
+    "  3. Continue without trusting (hooks won't run)",
+    '',
+    '  Press enter to confirm or esc to go back',
+  ].join('\n')
+
+  test('узнаём настоящий экран', () => {
+    expect(isCodexHooksTrustScreen(screen)).toBe(true)
+  })
+
+  test('экран доверия КАТАЛОГУ — не он (там свой обработчик и голый Enter)', () => {
+    const dir = [
+      '  Do you trust the contents of this directory?',
+      '› 1. Yes, continue',
+      '  2. No, quit',
+      '  Press enter to continue',
+    ].join('\n')
+    expect(isCodexHooksTrustScreen(dir)).toBe(false)
+    expect(isCodexStartupTrustScreen(dir)).toBe(true)
+  })
+
+  test('проза про хуки сама по себе не гейт', () => {
+    expect(isCodexHooksTrustScreen('обсуждаем hooks need review в переписке')).toBe(false)
+    // есть заголовок, но нет пункта доверия — не жмём вслепую
+    expect(isCodexHooksTrustScreen('Hooks need review\n› 1. Review hooks\nPress enter to confirm')).toBe(false)
   })
 })

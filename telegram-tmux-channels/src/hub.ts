@@ -35,7 +35,7 @@ import { emptyStatus, hasLiveWork, renderBg, renderStatus, statusIsEmpty, syncBg
 import { discoverGlobalSkills, discoverProjectSkills, mangleCmd, resolveSkillCommand, skillInvocation, tgDescription, type Skill } from './skills'
 import { agentPidsInDir, cmdlineOf } from './proc'
 import { rmQuiet } from './util'
-import { parsePicker, checkedIndexes, pickerCursorIndex, parseResumeList, fnv1a, hasPickerFooter, isStartupTrustPrompt, isCodexStartupTrustScreen, type Picker, type ResumeRow } from './picker'
+import { parsePicker, checkedIndexes, pickerCursorIndex, parseResumeList, fnv1a, hasPickerFooter, isStartupTrustPrompt, isCodexStartupTrustScreen, isCodexHooksTrustScreen, type Picker, type ResumeRow } from './picker'
 import { buildKeyboard, parseCallback } from './picker-drive'
 import {
   loadTrustedGroups, isExcludedTopic, slugFromTopicName, modeLabel,
@@ -846,6 +846,19 @@ async function ackStartupPrompt(pane: string, picker: Picker): Promise<void> {
   await sendKeys(pane, 'Enter').catch(() => {})
 }
 
+async function ackCodexHooksTrustScreen(pane: string, text: string): Promise<void> {
+  const hash = fnv1a(text)
+  const prev = autoAcked.get(pane)
+  if (prev && prev.hash === hash && Date.now() - prev.at < AUTO_ACK_RETRY_MS) {
+    return
+  }
+  autoAcked.set(pane, { hash, at: Date.now() })
+  log(`startup prompt auto-acked on ${pane}: Codex hooks trust`)
+  // Именно «2», а не Enter: курсор стоит на «Review hooks», и Enter уводит в разбор.
+  await sendKeys(pane, '2').catch(() => {})
+  await sendKeys(pane, 'Enter').catch(() => {})
+}
+
 async function ackCodexStartupTrustScreen(pane: string, text: string): Promise<void> {
   const hash = fnv1a(text)
   const prev = autoAcked.get(pane)
@@ -875,6 +888,10 @@ async function ackStartupPromptsOnBoundPanes(): Promise<void> {
     const text = await captureTimeout(target).catch(() => '')
     if (text && isCodexStartupTrustScreen(text)) {
       await ackCodexStartupTrustScreen(target, text)
+      continue
+    }
+    if (text && isCodexHooksTrustScreen(text)) {
+      await ackCodexHooksTrustScreen(target, text)
       continue
     }
     const picker = text ? parsePicker(text) : undefined

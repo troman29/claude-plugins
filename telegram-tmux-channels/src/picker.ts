@@ -38,6 +38,18 @@ export function isCodexStartupTrustScreen(text: string): boolean {
     && /press enter to continue/i.test(text)
 }
 
+// Второй стартовый гейт Codex: доверие ХУКАМ. Появляется каждый раз, когда набор хуков сменил
+// источник или содержимое — то есть после установки плагина и после любой правки его hooks.json.
+// Здесь курсор стоит на «1. Review hooks», и голый Enter открывает разбор, а не подтверждает:
+// 2026-08-17 сессия Codex так и умерла на этом экране, пользователь увидел «No live session».
+// Нам нужен именно пункт «Trust all and continue» — без доверия хуки не выполняются, а без
+// хука Stop хаб не узнаёт о конце хода и ответы агента не уходят в Telegram.
+export function isCodexHooksTrustScreen(text: string): boolean {
+  return /hooks?\s+(need|needs)\s+review/i.test(text)
+    && /^\s*[›>]?\s*2\.\s+Trust all and continue\s*$/mi.test(text)
+    && /press enter to confirm/i.test(text)
+}
+
 const MAX_TITLE_LINES = 3
 // A live picker owns the input area; a leftover footer higher up has the real chat
 // input box (a bare ❯ prompt, no option text) below it — that's the staleness tell.
