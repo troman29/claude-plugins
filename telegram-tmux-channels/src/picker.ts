@@ -50,6 +50,18 @@ export function isCodexHooksTrustScreen(text: string): boolean {
     && /press enter to confirm/i.test(text)
 }
 
+// Codex спрашивает разрешение на КАЖДЫЙ вызов MCP-тула отдельно (это не тот гейт, что
+// `--ask-for-approval`, тот про команды). Первым под раздачу попадает наш собственный `reply`:
+// пользователь вместо ответа получает «❓ Allow the telegram MCP server to run tool…», а ответ
+// висит в терминале. Для СВОЕГО сервера отвечаем «Always allow» — он наш, и без него канал
+// не работает вовсе. Чужие серверы не трогаем: там вопрос по делу.
+export function isCodexOwnToolApproval(text: string, server = 'telegram'): boolean {
+  const re = new RegExp(`Allow the ${server} MCP server to run tool`, 'i')
+  return re.test(text)
+    && /^\s*[›>]?\s*3\.\s+Always allow\b/mi.test(text)
+    && /enter to submit/i.test(text)
+}
+
 const MAX_TITLE_LINES = 3
 // A live picker owns the input area; a leftover footer higher up has the real chat
 // input box (a bare ❯ prompt, no option text) below it — that's the staleness tell.

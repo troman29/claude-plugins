@@ -64,12 +64,15 @@ describe('Codex CLI adapter', () => {
     expect(isCodexHeadlessArgv(['codex', '--no-alt-screen'])).toBe(false)
   })
 
+  // Запуск всегда несёт `--ask-for-approval never`: за терминалом никого нет, а первым же
+  // вопросом на одобрение становится наш собственный `reply` (см. отдельный describe ниже).
   test('builds deterministic new, resume and fork launches', () => {
-    expect(buildCodexLaunch(['codex', '--no-alt-screen'], 'new')).toBe('codex --no-alt-screen')
-    expect(buildCodexLaunch(['codex', '--no-alt-screen'], 'resume', 'abc')).toBe('codex --no-alt-screen resume abc')
-    expect(buildCodexLaunch(['codex'], 'resume')).toBe('codex resume --last')
-    expect(buildCodexLaunch(['codex'], 'fork', 'abc')).toBe('codex fork abc')
-    expect(buildCodexLaunch(['codex', 'resume', 'old'], 'fork', 'new')).toBe('codex fork new')
+    const A = '--ask-for-approval never'
+    expect(buildCodexLaunch(['codex', '--no-alt-screen'], 'new')).toBe(`codex ${A} --no-alt-screen`)
+    expect(buildCodexLaunch(['codex', '--no-alt-screen'], 'resume', 'abc')).toBe(`codex ${A} --no-alt-screen resume abc`)
+    expect(buildCodexLaunch(['codex'], 'resume')).toBe(`codex ${A} resume --last`)
+    expect(buildCodexLaunch(['codex'], 'fork', 'abc')).toBe(`codex ${A} fork abc`)
+    expect(buildCodexLaunch(['codex', 'resume', 'old'], 'fork', 'new')).toBe(`codex ${A} fork new`)
   })
 
   test('recognises real 0.147 idle/working panes and errors', () => {
@@ -197,4 +200,31 @@ describe('чему верить от живой сессии (mayLearn)', () => 
     expect(mayLearn(false, 'claude', undefined)).toEqual({ argv: true, agent: false })
     expect(mayLearn(false, 'codex', undefined)).toEqual({ argv: false, agent: false })
   })
+})
+
+// 2026-08-17: Codex спрашивал одобрение на вызов нашего же `reply`, и ответ агента уезжал
+// в пикер вместо чата. За терминалом никого нет — одобрять некому.
+describe('запуск Codex без запросов одобрения', () => {
+  test('флаг добавляется к обычному старту', () => {
+    expect(buildCodexLaunch(undefined, 'new')).toBe('codex --ask-for-approval never')
+  })
+
+  test('и к resume, перед подкомандой', () => {
+    expect(buildCodexLaunch(['codex'], 'resume', 'abc')).toBe('codex --ask-for-approval never resume abc')
+  })
+
+  test('чужой выбор не перетираем', () => {
+    expect(buildCodexLaunch(['codex', '--ask-for-approval', 'on-request'], 'new'))
+      .toBe('codex --ask-for-approval on-request')
+  })
+})
+
+// Регрессия 2026-08-17: после добавления флага перед подкомандой сохранённый argv стал
+// `codex --ask-for-approval never resume <id>`, а strip искал подкоманду строго на позиции 1 —
+// и к запуску прилипал второй `resume <id>`. Codex падал сразу после старта.
+test('перезапуск не дублирует resume, если перед ним есть флаги', () => {
+  const saved = ['codex', '--ask-for-approval', 'never', 'resume', '01a0-old']
+  expect(buildCodexLaunch(saved, 'resume', '01a0-new'))
+    .toBe('codex --ask-for-approval never resume 01a0-new')
+  expect(buildCodexLaunch(saved, 'new')).toBe('codex --ask-for-approval never')
 })

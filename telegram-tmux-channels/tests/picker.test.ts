@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'fs'
 import { join } from 'path'
-import { parsePicker, checkedIndexes, pickerCursorIndex, parseResumeList, paneReady, isStartupTrustPrompt, isCodexStartupTrustScreen, isCodexHooksTrustScreen } from '../src/picker'
+import { parsePicker, checkedIndexes, pickerCursorIndex, parseResumeList, paneReady, isStartupTrustPrompt, isCodexStartupTrustScreen, isCodexHooksTrustScreen, isCodexOwnToolApproval } from '../src/picker'
 
 const fx = (name: string) => readFileSync(join(import.meta.dir, 'fixtures', name), 'utf8')
 
@@ -170,5 +170,32 @@ describe('экран доверия хукам Codex', () => {
     expect(isCodexHooksTrustScreen('обсуждаем hooks need review в переписке')).toBe(false)
     // есть заголовок, но нет пункта доверия — не жмём вслепую
     expect(isCodexHooksTrustScreen('Hooks need review\n› 1. Review hooks\nPress enter to confirm')).toBe(false)
+  })
+})
+
+// 2026-08-17: Codex спрашивает разрешение на каждый вызов MCP-тула. Первым — наш `reply`,
+// поэтому вместо ответа в чат прилетало «❓ Allow the telegram MCP server to run tool…».
+describe('разрешение на свой MCP-тул', () => {
+  const ask = [
+    '  Allow the telegram MCP server to run tool "reply"?',
+    '  chat_id: -1004355407865',
+    '  text: пришло',
+    '  › 1. Allow                   Run the tool and continue.',
+    '    2. Allow for this session  Run the tool and remember this choice for this session.',
+    '    3. Always allow            Run the tool and remember this choice for future tool calls.',
+    '    4. Cancel                  Cancel this tool call',
+    '  enter to submit | esc to cancel',
+  ].join('\n')
+
+  test('свой сервер узнаём', () => {
+    expect(isCodexOwnToolApproval(ask)).toBe(true)
+  })
+
+  test('чужой MCP-сервер не трогаем — там вопрос по делу', () => {
+    expect(isCodexOwnToolApproval(ask.replace('telegram MCP', 'payments MCP'))).toBe(false)
+  })
+
+  test('без пункта «Always allow» не жмём вслепую', () => {
+    expect(isCodexOwnToolApproval(ask.split('\n').filter(l => !l.includes('3. Always allow')).join('\n'))).toBe(false)
   })
 })

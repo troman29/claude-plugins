@@ -35,7 +35,7 @@ import { emptyStatus, hasLiveWork, renderBg, renderStatus, statusIsEmpty, syncBg
 import { discoverGlobalSkills, discoverProjectSkills, mangleCmd, resolveSkillCommand, skillInvocation, tgDescription, type Skill } from './skills'
 import { agentPidsInDir, cmdlineOf } from './proc'
 import { rmQuiet } from './util'
-import { parsePicker, checkedIndexes, pickerCursorIndex, parseResumeList, fnv1a, hasPickerFooter, isStartupTrustPrompt, isCodexStartupTrustScreen, isCodexHooksTrustScreen, type Picker, type ResumeRow } from './picker'
+import { parsePicker, checkedIndexes, pickerCursorIndex, parseResumeList, fnv1a, hasPickerFooter, isStartupTrustPrompt, isCodexStartupTrustScreen, isCodexHooksTrustScreen, isCodexOwnToolApproval, type Picker, type ResumeRow } from './picker'
 import { buildKeyboard, parseCallback } from './picker-drive'
 import {
   loadTrustedGroups, isExcludedTopic, slugFromTopicName, modeLabel,
@@ -846,6 +846,18 @@ async function ackStartupPrompt(pane: string, picker: Picker): Promise<void> {
   await sendKeys(pane, 'Enter').catch(() => {})
 }
 
+async function ackCodexOwnToolApproval(pane: string, text: string): Promise<void> {
+  const hash = fnv1a(text)
+  const prev = autoAcked.get(pane)
+  if (prev && prev.hash === hash && Date.now() - prev.at < AUTO_ACK_RETRY_MS) {
+    return
+  }
+  autoAcked.set(pane, { hash, at: Date.now() })
+  log(`tool approval auto-acked on ${pane}: own telegram MCP tool`)
+  await sendKeys(pane, '3').catch(() => {}) // Always allow — больше в этой сессии не спросит
+  await sendKeys(pane, 'Enter').catch(() => {})
+}
+
 async function ackCodexHooksTrustScreen(pane: string, text: string): Promise<void> {
   const hash = fnv1a(text)
   const prev = autoAcked.get(pane)
@@ -916,6 +928,12 @@ async function resolvePickerMessage(ap: ActivePicker, answer: string): Promise<v
 }
 
 async function detectPicker(pane: string, session: SessionInfo, text: string): Promise<void> {
+  // Разрешение на наш собственный telegram-тул отвечаем сами и в чат не выносим: без него
+  // агент не может ответить вовсе, а пользователь получал бы вопрос на каждую реплику.
+  if (isCodexOwnToolApproval(text)) {
+    await ackCodexOwnToolApproval(pane, text)
+    return
+  }
   const picker = parsePicker(text)
   const existing = activePickers.get(pane)
   if (!picker || isAutoAckPrompt(picker)) {
@@ -3183,10 +3201,17 @@ async function handleInbound(inbound: Inbound): Promise<void> {
 //     потеря больше не тихая.
 let nextDeliveryId = 1
 
+// Текст, который печатается прямо в пейн (агенты без нативного входящего канала — Codex).
+// Инструкция про reply здесь не для красоты: у Codex тул есть, но подсказки MCP-сервера до него
+// не доходят, и он отвечает в терминал. Хаб тогда досылает ответ сам, и КАЖДАЯ реплика
+// приезжает с плашкой «↩️ auto-forward» — досыл превращается из страховки в норму.
+const REPLY_HINT = 'Answer via the telegram `reply` tool (chat_id/thread_id from the tag above); '
+  + 'terminal output alone never reaches the user.'
+
 function fallbackInboundText(content: string, meta: Record<string, string>): string {
   const details = Object.entries(meta).map(([key, value]) => `${key}=${JSON.stringify(value)}`).join(' ')
   return details
-    ? `[Telegram message; ${details}]\n${content}`
+    ? `[Telegram message; ${details}]\n${REPLY_HINT}\n${content}`
     : content
 }
 

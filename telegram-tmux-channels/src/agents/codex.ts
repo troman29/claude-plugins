@@ -14,11 +14,25 @@ export function isCodexHeadlessArgv(argv: string[]): boolean {
   return i >= 0 && argv.slice(i + 1).some(a => a === 'exec' || a === 'review')
 }
 
+// Из сохранённого argv убираем прошлую подкоманду жизненного цикла вместе с её id: она относится
+// к ТОМУ запуску, а новый режим добавит свою. Ищем её по всему хвосту, а не на позиции 1: перед
+// ней теперь стоят флаги (`--ask-for-approval never`), и проверка индекса давала `resume … resume …`
+// — codex такое не принимает, сессия падала сразу после старта.
 function stripLifecycle(argv: string[]): string[] {
   const i = argv.findIndex(a => isCodexArgv([a]))
   const base = i >= 0 ? argv.slice(i) : ['codex']
-  if (base[1] === 'resume' || base[1] === 'fork') return [base[0]!]
-  return base
+  const life = base.findIndex((a, idx) => idx > 0 && (a === 'resume' || a === 'fork'))
+  return life > 0 ? base.slice(0, life) : base
+}
+
+// Сессией из Telegram управляет человек в чате, а не за терминалом: спросить «разрешить вызов
+// тула?» некому. Первым же таким вопросом становится наш собственный `reply` — и ответ агента
+// вместо чата уезжает в пикер. У Claude ту же роль играет `--permission-mode bypassPermissions`,
+// который мы прописываем в запуске; здесь эквивалент — не спрашивать одобрений.
+const NO_APPROVALS = ['--ask-for-approval', 'never']
+
+function withNoApprovals(base: string[]): string[] {
+  return base.includes('--ask-for-approval') ? base : [base[0]!, ...NO_APPROVALS, ...base.slice(1)]
 }
 
 export function buildCodexLaunch(
@@ -26,7 +40,7 @@ export function buildCodexLaunch(
   mode: LaunchMode,
   sessionId?: string,
 ): string {
-  const base = stripLifecycle(saved?.length ? saved : ['codex'])
+  const base = withNoApprovals(stripLifecycle(saved?.length ? saved : ['codex']))
   if (mode === 'new') return shellQuote(base)
   const command = mode === 'fork' ? 'fork' : 'resume'
   return shellQuote([...base, command, ...(sessionId ? [sessionId] : ['--last'])])
