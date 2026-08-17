@@ -270,7 +270,7 @@ export const en = {
   sendFolderPromptBind: (projects: string) => `📁 Send the folder for this topic — like <code>/bind</code>: a name in ${projects} or an absolute path.`,
   sendFolderPromptShort: (projects: string) => `📁 Send a folder — like <code>/bind</code>: a name in ${projects} or an absolute path.`,
   branchNote: (branch: string) => `, branch <code>${branch}</code>`,
-  harnessToggle: (name: string) => `🤖 Harness: ${name} — tap to switch`,
+  harnessToggle: (name: string) => `🔄 ${name}`,
   modeWorktreeFrom: (base: string) => `🌿 worktree from ${base}`,
   branchRenamed: (wanted: string, used: string) =>
     `🔀 Branch <code>${wanted}</code> already exists (an older topic of the same name) — ` +

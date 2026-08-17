@@ -180,7 +180,7 @@ and the same message grows a toggle on top:
 ```
 
 ```
-[ 🤖 Harness: Claude Code — tap to switch ]   ← flips in place, no new message
+[ 🔄 Claude Code ]      ← tap flips it in place, no new message
 [ 📁 Default folder ]
 [ ✏️ Own folder ]
 ```
