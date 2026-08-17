@@ -64,10 +64,10 @@ describe('Codex CLI adapter', () => {
     expect(isCodexHeadlessArgv(['codex', '--no-alt-screen'])).toBe(false)
   })
 
-  // Запуск всегда несёт `--ask-for-approval never`: за терминалом никого нет, а первым же
-  // вопросом на одобрение становится наш собственный `reply` (см. отдельный describe ниже).
+  // Запуск всегда несёт `--ask-for-approval never` и полный доступ: за терминалом никого нет,
+  // а первым же вопросом на одобрение становится наш собственный `reply` (см. describe ниже).
   test('builds deterministic new, resume and fork launches', () => {
-    const A = '--ask-for-approval never'
+    const A = '--ask-for-approval never --sandbox danger-full-access'
     expect(buildCodexLaunch(['codex', '--no-alt-screen'], 'new')).toBe(`codex ${A} --no-alt-screen`)
     expect(buildCodexLaunch(['codex', '--no-alt-screen'], 'resume', 'abc')).toBe(`codex ${A} --no-alt-screen resume abc`)
     expect(buildCodexLaunch(['codex'], 'resume')).toBe(`codex ${A} resume --last`)
@@ -206,16 +206,20 @@ describe('чему верить от живой сессии (mayLearn)', () => 
 // в пикер вместо чата. За терминалом никого нет — одобрять некому.
 describe('запуск Codex без запросов одобрения', () => {
   test('флаг добавляется к обычному старту', () => {
-    expect(buildCodexLaunch(undefined, 'new')).toBe('codex --ask-for-approval never')
+    expect(buildCodexLaunch(undefined, 'new'))
+      .toBe('codex --ask-for-approval never --sandbox danger-full-access')
   })
 
   test('и к resume, перед подкомандой', () => {
-    expect(buildCodexLaunch(['codex'], 'resume', 'abc')).toBe('codex --ask-for-approval never resume abc')
+    expect(buildCodexLaunch(['codex'], 'resume', 'abc'))
+      .toBe('codex --ask-for-approval never --sandbox danger-full-access resume abc')
   })
 
   test('чужой выбор не перетираем', () => {
     expect(buildCodexLaunch(['codex', '--ask-for-approval', 'on-request'], 'new'))
-      .toBe('codex --ask-for-approval on-request')
+      .toBe('codex --sandbox danger-full-access --ask-for-approval on-request')
+    expect(buildCodexLaunch(['codex', '-s', 'read-only'], 'new'))
+      .toBe('codex --ask-for-approval never -s read-only')
   })
 })
 
@@ -223,8 +227,8 @@ describe('запуск Codex без запросов одобрения', () => 
 // `codex --ask-for-approval never resume <id>`, а strip искал подкоманду строго на позиции 1 —
 // и к запуску прилипал второй `resume <id>`. Codex падал сразу после старта.
 test('перезапуск не дублирует resume, если перед ним есть флаги', () => {
-  const saved = ['codex', '--ask-for-approval', 'never', 'resume', '01a0-old']
+  const saved = ['codex', '--ask-for-approval', 'never', '--sandbox', 'danger-full-access', 'resume', '01a0-old']
   expect(buildCodexLaunch(saved, 'resume', '01a0-new'))
-    .toBe('codex --ask-for-approval never resume 01a0-new')
-  expect(buildCodexLaunch(saved, 'new')).toBe('codex --ask-for-approval never')
+    .toBe('codex --ask-for-approval never --sandbox danger-full-access resume 01a0-new')
+  expect(buildCodexLaunch(saved, 'new')).toBe('codex --ask-for-approval never --sandbox danger-full-access')
 })

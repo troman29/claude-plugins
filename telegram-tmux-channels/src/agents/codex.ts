@@ -30,9 +30,19 @@ function stripLifecycle(argv: string[]): string[] {
 // вместо чата уезжает в пикер. У Claude ту же роль играет `--permission-mode bypassPermissions`,
 // который мы прописываем в запуске; здесь эквивалент — не спрашивать одобрений.
 const NO_APPROVALS = ['--ask-for-approval', 'never']
+// Дефолтная песочница Codex (`workspace-write`) даёт запись только в рабочий каталог и глушит
+// сеть, а поднять права он умеет лишь спросив — то есть при `never` не умеет вовсе. Получается
+// агент, который не может ни склонировать репозиторий, ни поставить пакет. У Claude в том же
+// запуске стоит `--permission-mode bypassPermissions`; это его эквивалент.
+const FULL_ACCESS = ['--sandbox', 'danger-full-access']
+const SANDBOX_FLAGS = ['--sandbox', '-s', '--dangerously-bypass-approvals-and-sandbox']
 
-function withNoApprovals(base: string[]): string[] {
-  return base.includes('--ask-for-approval') ? base : [base[0]!, ...NO_APPROVALS, ...base.slice(1)]
+function withDefaults(base: string[]): string[] {
+  const flags = [
+    ...(base.includes('--ask-for-approval') ? [] : NO_APPROVALS),
+    ...(base.some(a => SANDBOX_FLAGS.includes(a)) ? [] : FULL_ACCESS),
+  ]
+  return flags.length ? [base[0]!, ...flags, ...base.slice(1)] : base
 }
 
 export function buildCodexLaunch(
@@ -40,7 +50,7 @@ export function buildCodexLaunch(
   mode: LaunchMode,
   sessionId?: string,
 ): string {
-  const base = withNoApprovals(stripLifecycle(saved?.length ? saved : ['codex']))
+  const base = withDefaults(stripLifecycle(saved?.length ? saved : ['codex']))
   if (mode === 'new') return shellQuote(base)
   const command = mode === 'fork' ? 'fork' : 'resume'
   return shellQuote([...base, command, ...(sessionId ? [sessionId] : ['--last'])])

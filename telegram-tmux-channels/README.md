@@ -118,6 +118,11 @@ and `download_attachment`. Bind a topic explicitly to Codex:
 Legacy `/bind myproject` continues to select Claude Code. The choice is persisted per topic, so
 session lifecycle commands and idle revive keep using the selected agent.
 
+The hub launches Codex with `--ask-for-approval never --sandbox danger-full-access`, the
+counterpart of `--permission-mode bypassPermissions` it uses for Claude: nobody sits at the
+terminal to approve an escalation, and the default `workspace-write` sandbox has no network. Pass
+your own `--sandbox`/`-s` in the launch command to keep Codex confined.
+
 <details>
 <summary><b>Developing the plugin itself</b> — keep Codex on the live checkout</summary>
 
