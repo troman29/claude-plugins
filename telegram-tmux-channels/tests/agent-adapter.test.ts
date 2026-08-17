@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdirSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { agentAdapter, claudeAdapter, codexAdapter } from '../src/agents'
+import { agentAdapter, mayLearn, claudeAdapter, codexAdapter } from '../src/agents'
 import {
   buildCodexLaunch, codexRollouts, codexSessionMtimes, codexTranscriptSawIncoming,
   codexSessionForIncoming, lastCodexAssistantText, recentCodexSessions,
@@ -172,5 +172,29 @@ describe('харнесс и cmdline группы', () => {
 
   test('свой cmdline агент забирает', () => {
     expect(agentAdapter('codex').isProcessArgv(['codex', '--yolo'])).toBe(true)
+  })
+})
+
+// Баг 2026-08-17: пробная codex-сессия, поднятая руками в папке claude-топика, переписала
+// биндингу агента. Доставка ушла на кодексовый путь (печатать в пейн) и встала: сообщения
+// из Telegram в сессию больше не попадали.
+describe('чему верить от живой сессии (mayLearn)', () => {
+  test('своя сессия хаба уточняет и argv, и агента', () => {
+    expect(mayLearn(true, 'codex', 'claude')).toEqual({ argv: true, agent: true })
+    expect(mayLearn(true, 'claude', 'claude')).toEqual({ argv: true, agent: false })
+  })
+
+  test('чужой процесс того же харнесса — только argv', () => {
+    expect(mayLearn(false, 'claude', 'claude')).toEqual({ argv: true, agent: false })
+  })
+
+  test('чужой процесс ДРУГОГО харнесса — ничего (тот самый зонд)', () => {
+    expect(mayLearn(false, 'codex', 'claude')).toEqual({ argv: false, agent: false })
+    expect(mayLearn(false, 'claude', 'codex')).toEqual({ argv: false, agent: false })
+  })
+
+  test('пустой agent в биндинге читается как claude', () => {
+    expect(mayLearn(false, 'claude', undefined)).toEqual({ argv: true, agent: false })
+    expect(mayLearn(false, 'codex', undefined)).toEqual({ argv: false, agent: false })
   })
 })

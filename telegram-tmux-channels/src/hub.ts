@@ -49,7 +49,7 @@ import { FallbackGate } from './fallback-gate'
 import { topic as inTopic } from './chat'
 import { HubStateRepository, type PersistedPicker, type PersistedInbound, type PersistedLaunchCapture } from './state-repo'
 import { recordChat, recordTopic, topicTitle, chatLabel } from './known-chats'
-import { agentAdapter, type AgentAdapter, type AgentKind, type AgentStatusPanel } from './agents'
+import { agentAdapter, mayLearn, type AgentAdapter, type AgentKind, type AgentStatusPanel } from './agents'
 
 const log = (s: string) => process.stderr.write(`telegram hub: ${s}\n`)
 
@@ -2123,17 +2123,26 @@ function learnCmdline(session: SessionInfo): void {
   }
   const reg = loadBindings()
   let changed = false
-  const keys = session.bindingKeys?.length ? session.bindingKeys : keysForDir(reg, session.cwd)
+  // Сессия, поднятая ХАБОМ, несёт ключи биндингов — она и есть их сессия. Всё остальное в той же
+  // папке — посторонний процесс: запустили руками, зонд, соседний топик. Раньше такой сессии
+  // отдавали все биндинги каталога, и она переписывала им argv И АГЕНТА: 2026-08-17 пробный codex
+  // в ~/projects/homelab пометил давно живой claude-топик как codex, после чего хаб перестал
+  // доставлять туда сообщения (у codex нет нативного входящего канала — ушёл печатать в пейн).
+  const owned = !!session.bindingKeys?.length
+  const keys = owned ? session.bindingKeys! : keysForDir(reg, session.cwd)
+  const kind = session.agent ?? 'claude'
   for (const k of keys) {
     if (!reg[k]) {
       continue // stale bindingKeys — the binding was removed after this session launched
     }
-    if (JSON.stringify(reg[k].cmdline) !== JSON.stringify(session.cmdline)) {
+    // Чужой сессии верим только про СВОЙ харнесс и только про argv: агента меняет тот, кто
+    // биндинг создавал (пикер, /bind), а не случайный процесс, оказавшийся в той же папке.
+    const may = mayLearn(owned, kind, reg[k].agent)
+    if (may.argv && JSON.stringify(reg[k].cmdline) !== JSON.stringify(session.cmdline)) {
       reg[k].cmdline = session.cmdline
       changed = true
     }
-    const kind = session.agent ?? 'claude'
-    if ((reg[k].agent ?? 'claude') !== kind || (kind === 'codex' && reg[k].agent !== 'codex')) {
+    if (may.agent) {
       reg[k].agent = kind
       changed = true
     }
