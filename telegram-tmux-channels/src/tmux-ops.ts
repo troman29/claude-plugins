@@ -444,18 +444,45 @@ export function alive(pid: number): boolean {
 // "Exit anyway?" confirm that appears when background shells are alive, wait
 // for the pid to die, escalate to Ctrl-C ×2. Measured: idle exit ~0.6s; busy
 // exit hangs forever on the confirm unless answered — hence the pane polling.
+// Сессия живёт в своём transient-scope (см. memoryCapPrefix). У scope нет главного процесса:
+// он держится, пока внутри есть ХОТЬ КТО-ТО, — поэтому браузер или dev-сервер, поднятый агентом,
+// переживает саму сессию и держит её cgroup (замер 2026-08-18: 460 МБ chrome в scope, где агента
+// уже нет). PID 1 в родителях тут ни при чём: владение на Linux задаёт cgroup, а не родитель.
+export function transientScopeOf(cgroupText: string): string | undefined {
+  const scope = /\/(run-p\d+[^/\s]*\.scope)\s*$/m.exec(cgroupText.trim())?.[1]
+  return scope // только наши `systemd-run --scope`; session-*.scope Ромы трогать нельзя
+}
+
+function scopeOfPid(pid: number): string | undefined {
+  try {
+    return transientScopeOf(require('fs').readFileSync(`/proc/${pid}/cgroup`, 'utf8'))
+  } catch {
+    return undefined
+  }
+}
+
+async function stopScope(scope: string, log: (s: string) => void): Promise<void> {
+  log(`stop: гашу scope ${scope} — вместе со всем, что сессия оставила после себя`)
+  const proc = Bun.spawn(['systemctl', '--user', 'stop', scope], { stdout: 'ignore', stderr: 'ignore' })
+  await proc.exited
+}
+
 export async function stopSession(
   pane: string,
   pid: number,
   log: (s: string) => void,
 ): Promise<boolean> {
   log(`stop: pane=${pane} pid=${pid}`)
+  const scope = scopeOfPid(pid) // читаем ДО убийства: у мёртвого pid cgroup уже не спросишь
   await sendKeys(pane, 'C-c')
   await sleep(1500)
   // Codex exits on Ctrl-C when it is idle.  Do not type Claude's `/exit` into
   // the shell that has already replaced it: apart from a noisy error, that can
   // race the next launch in the same tmux pane.
   if (!alive(pid)) {
+    if (scope) {
+      await stopScope(scope, log)
+    }
     return true
   }
   await typeLine(pane, '/exit')
@@ -487,7 +514,13 @@ export async function stopSession(
     await sendKeys(pane, 'C-c')
     await sleep(6000)
   }
-  return !alive(pid)
+  if (alive(pid)) {
+    return false
+  }
+  if (scope) {
+    await stopScope(scope, log)
+  }
+  return true
 }
 
 export async function restartSession(

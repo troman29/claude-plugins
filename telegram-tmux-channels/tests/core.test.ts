@@ -21,6 +21,7 @@ import {
   isIdleToUnload,
   isExitConfirm,
   tmuxSessionName,
+  transientScopeOf,
 } from '../src/tmux-ops'
 import { discoverProjectSkills, resolveSkillCommand, skillInvocation, mangleCmd as mangleSkillCmd } from '../src/skills'
 import { isClaudeArgv, claudePidsInDir, agentPidsInDir, cmdlineOf, envOf, findClaudeAncestor } from '../src/proc'
@@ -665,5 +666,22 @@ describe('md-html', () => {
   test('mdToHtml: bold inside link, bullet star not italic', () => {
     expect(mdToHtml('[**t**](u)')).toBe('<a href="u"><b>t</b></a>')
     expect(mdToHtml('* item')).toBe('• item')
+  })
+})
+
+// 2026-08-18: у transient-scope нет главного процесса — он держится, пока внутри есть хоть кто-то.
+// Браузер, поднятый агентом, пережил сессию и сутки держал её cgroup на 460 МБ. Гасим scope сами,
+// но ТОЛЬКО свой: `session-*.scope` — это логин-сессия Ромы, её остановка выкинет его из системы.
+describe('scope сессии', () => {
+  test('узнаём свой transient-scope', () => {
+    const cg = '0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-p252476-i17009825.scope'
+    expect(transientScopeOf(cg)).toBe('run-p252476-i17009825.scope')
+  })
+
+  test('чужие cgroup не трогаем', () => {
+    expect(transientScopeOf('0::/user.slice/user-1000.slice/session-3.scope')).toBeUndefined()
+    expect(transientScopeOf('0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-ghostty.scope')).toBeUndefined()
+    expect(transientScopeOf('0::/system.slice/docker-abc.scope')).toBeUndefined()
+    expect(transientScopeOf('')).toBeUndefined()
   })
 })
