@@ -304,6 +304,7 @@ export const ru: Strings = {
   branchNote: branch => `, ветка <code>${branch}</code>`,
   harnessToggle: name => `🔄 ${name}`,
   modeWorktreeFrom: base => `🌿 worktree от ${base}`,
+  modeWorktreePlainFrom: base => `🌿 worktree от ${base} · без хука проекта`,
   branchRenamed: (wanted, used) =>
     `🔀 Ветка <code>${wanted}</code> уже есть (топик с таким именем был раньше) — ` +
     `работаю в <code>${used}</code>, срезанной от свежей базы.`,
@@ -323,6 +324,7 @@ export const ru: Strings = {
   // ── mode labels (trusted-groups) ──
   modeLabelFolder: '📁 Папка по умолчанию',
   modeLabelWorktree: '🌿 Worktree (своя git-ветка)',
+  modeLabelWorktreePlain: '🌿 Worktree · без хука проекта',
 
   // ── picker keyboard (picker-drive) ──
   pkCustom: '✍️ Свой вариант',

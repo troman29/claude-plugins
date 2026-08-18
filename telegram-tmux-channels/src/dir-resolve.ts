@@ -177,7 +177,8 @@ export async function resolveModeDir(
   const free = await freeBranchName(baseDir, branch)
   // worktree mode: a configured hook replaces plain `git worktree add` (e.g. a wrapper
   // that also provisions a per-branch DB) — no hook, no customization needed, just git.
-  const h = worktreeHook(baseDir, hook)
+  // worktree-plain deliberately skips it: the user asked for the cheap variant.
+  const h = mode === 'worktree-plain' ? undefined : worktreeHook(baseDir, hook)
   return {
     dir: h ? await resolveHookDir(h, free, baseDir, base) : await resolveWorktreeDir(baseDir, free, base),
     hook: h,

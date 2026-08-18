@@ -3072,8 +3072,14 @@ async function runAutoTopic(
 const ownDirLabel = () => t().ownDirLabel
 
 /** Харнессы, между которыми переключает кнопка. Пусто/один — переключателя нет. */
+// Оба CLI ставятся глобально, поэтому и переключатель глобальный: группа перечисляет `agents`
+// только чтобы СУЗИТЬ выбор. Без этого топики в группах без такой строки молча оставались
+// одноагентными, хотя второй агент стоит на той же машине.
+const installedHarnesses = (['claude', 'codex'] as const).filter(kind => !!Bun.which(kind))
+
 function harnessChoices(cfg: TrustedGroupConfig): AgentKind[] {
-  return (cfg.agents ?? []).length > 1 ? cfg.agents! : []
+  const choices = cfg.agents ?? installedHarnesses
+  return choices.length > 1 ? [...choices] : []
 }
 
 function modeKeyboard(key: string, cfg: TrustedGroupConfig, agent?: AgentKind): InlineKeyboard {
@@ -3086,11 +3092,24 @@ function modeKeyboard(key: string, cfg: TrustedGroupConfig, agent?: AgentKind): 
     const current = agent ?? cfg.agent ?? choices[0]!
     kb.text(t().harnessToggle(agentAdapter(current).displayName), `topicharness:${key}`).row()
   }
+  // Хук проекта поднимает окружение (стенд, БД, слот) — это минуты и ресурсы, а топик часто
+  // нужен только под код. Поэтому там, где хук есть, рядом стоит и голый вариант.
+  const hooked = cfg.dir ? !!worktreeHook(cfg.dir, cfg.hook)?.create : false
+  const worktreeModes: TrustedGroupMode[] = hooked ? ['worktree', 'worktree-plain'] : ['worktree']
   for (const m of cfg.modes) {
-    // Несколько баз — размножаем саму кнопку «worktree», отдельного пикера не заводим:
-    // выбор режима и выбор базы — один вопрос, один тап.
-    if (m === 'worktree' && bases.length > 1) {
-      bases.forEach((b, i) => kb.text(t().modeWorktreeFrom(b), `topicmode:${key}:worktree:${i}`).row())
+    if (m === 'worktree') {
+      for (const wm of worktreeModes) {
+        // Несколько баз — размножаем саму кнопку «worktree», отдельного пикера не заводим:
+        // выбор режима и выбор базы — один вопрос, один тап.
+        if (bases.length > 1) {
+          bases.forEach((b, i) => kb.text(
+            wm === 'worktree' ? t().modeWorktreeFrom(b) : t().modeWorktreePlainFrom(b),
+            `topicmode:${key}:${wm}:${i}`,
+          ).row())
+          continue
+        }
+        kb.text(modeLabel(wm), `topicmode:${key}:${wm}`).row()
+      }
       continue
     }
     kb.text(modeLabel(m), `topicmode:${key}:${m}`).row()
@@ -3098,7 +3117,7 @@ function modeKeyboard(key: string, cfg: TrustedGroupConfig, agent?: AgentKind): 
   return kb.text(ownDirLabel(), `topicdir:${key}`).row()
 }
 
-const modeExplain = (m: TrustedGroupMode): string => (m === 'worktree' ? t().modeIntroWorktree : t().modeIntroFolder)
+const modeExplain = (m: TrustedGroupMode): string => (m === 'folder' ? t().modeIntroFolder : t().modeIntroWorktree)
 
 // button labels alone can't fit a path — spell out what each mode actually does here
 function modePromptText(cfg: TrustedGroupConfig, intro: string): string {
@@ -4734,7 +4753,7 @@ bot.on('callback_query:data', async ctx => {
     await ctx.editMessageReplyMarkup({ reply_markup: modeKeyboard(key!, pending.cfg, next) }).catch(() => {})
     return
   }
-  const tm = /^topicmode:(.+):(folder|worktree)(?::(\d+))?$/.exec(ctx.callbackQuery.data)
+  const tm = /^topicmode:(.+):(folder|worktree-plain|worktree)(?::(\d+))?$/.exec(ctx.callbackQuery.data)
   if (tm) {
     const [, key, modeStr, baseIdx] = tm
     const mode = modeStr as TrustedGroupMode

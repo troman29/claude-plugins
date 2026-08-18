@@ -51,7 +51,7 @@ const schemas = {
     turnAt: z.number().finite(), draftId: z.number().int().positive(), text: z.string(), updatedAt: z.number().finite(),
   })),
   'pending-topic': envelope('pending-topic', z.object({
-    cfg: trustedGroupConfig, mode: z.enum(['folder', 'worktree']), topicName: z.string(),
+    cfg: trustedGroupConfig, mode: z.enum(['folder', 'worktree', 'worktree-plain']), topicName: z.string(),
     chatId: z.string().min(1), threadId: z.number().int(), base: z.string().optional(), agent: z.enum(['claude', 'codex']).optional(),
   })),
 } as const

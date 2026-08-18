@@ -103,6 +103,17 @@ describe('имя ветки при совпадении топиков', () => {
     expect(up.exitCode).not.toBe(0) // апстрима нет — так и задумано
   })
 
+  // Кнопка «без хука проекта»: хук поднимает стенд/БД/слот, а топик часто нужен только под код.
+  test('worktree-plain режет голым git, даже когда у проекта есть create-хук', async () => {
+    const dir = repo()
+    writeFileSync(join(dir, '.tmux-channels.json'),
+      JSON.stringify({ worktree: { create: 'echo /tmp/made-by-project-hook', delete: 'true' } }))
+    const res = await resolveModeDir('worktree-plain', dir, undefined, 'feat-plain')
+    expect(res.dir).toBe(worktreeDirFor(dir, 'feat-plain'))
+    expect(res.hook).toBeUndefined() // иначе снос погонит хук по несуществующему стенду
+    expect(git(res.dir, 'branch', '--show-current').stdout.toString().trim()).toBe('feat-plain')
+  })
+
   test('база: несуществующее имя — падаем внятно, а не режем от чего попало', async () => {
     const dir = repo()
     expect(resolveModeDir('worktree', dir, undefined, 'feat-q', 'нет-такой')).rejects.toThrow(/base branch/)

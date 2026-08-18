@@ -215,11 +215,12 @@ working session automatically — no `/bind` needed. Two modes:
   `git worktree add`.
 
 A new topic always asks first — mode buttons, plus **✏️ own folder** for a one-off path — so
-nothing starts in the wrong directory behind your back. List more than one harness for the group
-and the same message grows a toggle on top:
+nothing starts in the wrong directory behind your back. Every harness installed on the machine is
+offered, so the same message grows a toggle on top whenever both CLIs are present. List `agents`
+only to narrow that down:
 
 ```jsonc
-"agents": ["claude", "codex"]   // in trusted-groups.json, per group or in defaults
+"agents": ["claude"]   // in trusted-groups.json, per group or in defaults — pins one harness
 ```
 
 ```
@@ -229,7 +230,7 @@ and the same message grows a toggle on top:
 ```
 
 Tapping the harness rewrites that one button; tapping a mode then starts the session with
-whatever harness is showing. One harness (or none listed) — no extra row, as before. A group
+whatever harness is showing. Only one harness installed (or pinned) — no extra row. A group
 `cmdline` is carried into the binding only when it belongs to the chosen harness, so a Codex
 topic can't inherit a `claude …` command line. Cyrillic topic names are transliterated
 before they become branch and tmux-session names.
@@ -320,6 +321,9 @@ How it's run:
   to a half-built worktree.
 - `delete` runs on `/unbind` and `/delete`. Skip it and the bot falls back to
   `git worktree remove` — which will leave your database behind, so define it if you created one.
+- Where a `create` hook exists the picker also offers **🌿 Worktree · no project hook** — a plain
+  `git worktree add`, no database, no stand. A topic opened just to read code or write a patch
+  shouldn't pay for an environment; that topic is torn down with plain `git worktree remove` too.
 - A project's own `.tmux-channels.json` wins over the group-level hook in `trusted-groups.json`:
   one group can hold several repos, each with its own way of making a branch.
 

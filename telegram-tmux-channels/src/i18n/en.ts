@@ -314,6 +314,7 @@ export const en = {
   branchNote: (branch: string) => `, branch <code>${branch}</code>`,
   harnessToggle: (name: string) => `🔄 ${name}`,
   modeWorktreeFrom: (base: string) => `🌿 worktree from ${base}`,
+  modeWorktreePlainFrom: (base: string) => `🌿 worktree from ${base} · no project hook`,
   branchRenamed: (wanted: string, used: string) =>
     `🔀 Branch <code>${wanted}</code> already exists (an older topic of the same name) — ` +
     `working in <code>${used}</code>, cut fresh from the base.`,
@@ -333,6 +334,7 @@ export const en = {
   // ── mode labels (trusted-groups) ──
   modeLabelFolder: '📁 Default folder',
   modeLabelWorktree: '🌿 Worktree (own git branch)',
+  modeLabelWorktreePlain: '🌿 Worktree · no project hook',
 
   // ── picker keyboard (picker-drive) ──
   pkCustom: '✍️ Custom option',

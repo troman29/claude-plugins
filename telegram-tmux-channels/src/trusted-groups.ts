@@ -8,7 +8,10 @@ import type { AgentKind } from './agents/types'
 
 export const TRUSTED_GROUPS_FILE = join(STATE_DIR, 'trusted-groups.json')
 
-export type TrustedGroupMode = 'folder' | 'worktree'
+// worktree-plain — тот же ворктри, но БЕЗ create-хука проекта: голый `git worktree add`.
+// В конфиг его не пишут, он появляется кнопкой там, где хук есть: у хука бывает цена (стенд,
+// БД, слот), а топик часто нужен только под код.
+export type TrustedGroupMode = 'folder' | 'worktree' | 'worktree-plain'
 
 // optional worktree-mode customization: shell command templates ({branch}/{dir}
 // substituted, run via `sh -c`) that replace `git worktree add`/`remove` — e.g. a
@@ -27,6 +30,9 @@ export type TrustedGroupConfig = {
 }
 
 export function modeLabel(mode: TrustedGroupMode): string {
+  if (mode === 'worktree-plain') {
+    return t().modeLabelWorktreePlain
+  }
   return mode === 'worktree' ? t().modeLabelWorktree : t().modeLabelFolder
 }
 

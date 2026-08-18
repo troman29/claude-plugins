@@ -117,11 +117,14 @@ def buttons(mcp, chat, msg_id=None):
 
 
 def pick_mode(opts, case):
-    """Индекс кнопки режима. worktree в пикере подписан по базе («🌿 worktree от dev»)."""
-    if case == 'worktree':
-        i = next((i for i, t in enumerate(opts) if 'worktree' in t.lower()), None)
+    """Индекс кнопки режима. worktree в пикере подписан по базе («🌿 worktree от dev»),
+    а там, где у проекта есть create-хук, рядом стоит вариант без него."""
+    if case.startswith('worktree'):
+        plain = case == 'worktree-plain'
+        i = next((i for i, t in enumerate(opts)
+                  if 'worktree' in t.lower() and ('hook' in t.lower() or 'хук' in t.lower()) == plain), None)
         if i is None:
-            raise AssertionError(f'в пикере нет ворктри-режима: {opts}')
+            raise AssertionError(f'в пикере нет режима {case}: {opts}')
         return i
     return next(i for i, t in enumerate(opts) if 'Default folder' in t)
 
@@ -203,7 +206,7 @@ def main():
     ap.add_argument('--chat', required=True)
     ap.add_argument('--agent', action='append', choices=['claude', 'codex'], required=True)
     ap.add_argument('--timeout', type=int, default=180, help='сколько ждать ответа, с')
-    ap.add_argument('--case', action='append', choices=['folder', 'worktree', 'revive'],
+    ap.add_argument('--case', action='append', choices=['folder', 'worktree', 'worktree-plain', 'revive'],
                     help='клетки матрицы; по умолчанию folder')
     args = ap.parse_args()
 
