@@ -22,7 +22,7 @@ if (!target || !out) {
 rmSync(join(PROFILE, 'SingletonLock'), { force: true }) // остался от прошлого запуска — chrome иначе не стартует
 const chrome = Bun.spawn([
   'google-chrome', '--headless=new', `--user-data-dir=${PROFILE}`,
-  '--window-size=900,1500', `--remote-debugging-port=${PORT}`, 'about:blank',
+  `--window-size=${process.env.TG_WIDTH || 900},${process.env.TG_HEIGHT || 1500}`, `--remote-debugging-port=${PORT}`, 'about:blank',
 ], { stdout: 'ignore', stderr: 'ignore' })
 
 async function cdp(path: string): Promise<any> {
