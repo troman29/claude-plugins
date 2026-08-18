@@ -11,6 +11,7 @@ import { join } from 'path'
 import type { Picker } from './picker'
 import type { TrustedGroupConfig } from './trusted-groups'
 import type { PersistedInteraction } from './interaction-registry'
+import type { ReplyContext } from './reply-context'
 
 type PendingAnswer = { dir: string; at: number }
 // An open TUI picker mirrored to Telegram buttons. Keyed by tmux pane. `key` (the binding) lets us
@@ -30,7 +31,7 @@ export type HubState = {
 }
 
 export type PersistedPendingMode = { cfg: TrustedGroupConfig; topicName: string; chatId: string; threadId: number; agent?: 'claude' | 'codex' }
-export type PersistedInbound = { text: string; chatId: string; threadId?: number; senderId: string; username?: string; msgId?: number; at: number; literal?: boolean }
+export type PersistedInbound = { text: string; chatId: string; threadId?: number; senderId: string; username?: string; msgId?: number; at: number; literal?: boolean; reply?: ReplyContext }
 // A fresh launch has no session id yet. Preserve the pre-launch rollout ids so
 // a hub restart can continue the exact capture instead of guessing the newest
 // conversation in a shared directory.

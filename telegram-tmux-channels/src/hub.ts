@@ -56,6 +56,7 @@ import { EditablePost } from './editable-post'
 import { AnswerStream } from './answer-stream'
 import { literalSendText } from './literal-send'
 import { screenPollMs, uniqueByPane } from './screen-poll'
+import { replyContext, type ReplyContext } from './reply-context'
 
 const log = (s: string) => process.stderr.write(`telegram hub: ${s}\n`)
 
@@ -3165,14 +3166,16 @@ type Inbound = {
   downloadImage?: () => Promise<string | undefined>
   attachment?: AttachmentMeta
   literal?: boolean
+  reply?: ReplyContext
 }
 
 function persistInbound(inbound: Inbound): PersistedInbound {
   const msg = inbound.ctx.message
+  const reply = inbound.reply ?? replyContext(msg?.reply_to_message)
   return {
     text: inbound.text, chatId: String(inbound.ctx.chat!.id), threadId: msg?.message_thread_id,
     senderId: String(inbound.ctx.from!.id), username: inbound.ctx.from?.username,
-    msgId: msg?.message_id, at: Date.now(), literal: inbound.literal,
+    msgId: msg?.message_id, at: Date.now(), literal: inbound.literal, reply,
   }
 }
 
@@ -3184,7 +3187,7 @@ function reviveInbound(value: PersistedInbound): Inbound {
     chat: { id: Number(value.chatId), type: 'supergroup' },
     message: value.msgId == null ? undefined : { message_id: value.msgId, message_thread_id: value.threadId, date: Math.floor(value.at / 1000) },
   } as unknown as Context
-  return { ctx, text: value.text, literal: value.literal }
+  return { ctx, text: value.text, literal: value.literal, reply: value.reply }
 }
 
 for (const [key, values] of stateRepo.queuedEntries()) queuedMessages.set(key, values.map(reviveInbound))
@@ -3203,6 +3206,7 @@ async function handleInbound(inbound: Inbound): Promise<void> {
   const chat_id = String(chat.id)
   const msgId = ctx.message?.message_id
   const replyTo = ctx.message?.reply_to_message
+  const reply = inbound.reply ?? replyContext(replyTo)
   // MTProto can omit `message_thread_id` on a reply to the forum-topic's
   // creation service message.  That reply still belongs to this topic; use the
   // root message id only in that unambiguous service-message shape.
@@ -3428,6 +3432,13 @@ async function handleInbound(inbound: Inbound): Promise<void> {
     user_id: senderId,
     ts: new Date((ctx.message?.date ?? 0) * 1000).toISOString(),
     ...(threadId != null ? { topic_id: String(threadId) } : {}),
+    ...(reply
+      ? {
+          reply_to_message_id: String(reply.messageId),
+          ...(reply.user ? { reply_to_user: reply.user } : {}),
+          reply_to_text: reply.text,
+        }
+      : {}),
     ...(imagePath ? { image_path: imagePath } : {}),
     ...(attachment
       ? {
