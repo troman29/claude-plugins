@@ -54,6 +54,7 @@ import { renderDoctor, type DoctorCheck } from './doctor'
 import { InteractionRegistry } from './interaction-registry'
 import { EditablePost } from './editable-post'
 import { AnswerStream } from './answer-stream'
+import { literalSendText } from './literal-send'
 
 const log = (s: string) => process.stderr.write(`telegram hub: ${s}\n`)
 
@@ -1267,7 +1268,7 @@ function paneBelongsToKey(pane: string, key: string): boolean {
 const OPS_NAMES = new Set([
   'status', 'doctor', 'resume', 'screen', 'last', 'new', 'fork', 'skills', 'stand_up', 'stand_down',
   'pin', 'unpin', 'reload', 'compact', 'clear', 'esc', 'enter', 'model', 'stop',
-  'restart', 'bind', 'unbind', 'delete', 'allow', 'lang',
+  'restart', 'bind', 'unbind', 'delete', 'allow', 'lang', 'send',
 ])
 function opsCommands(): { command: string; description: string }[] {
   const L = t()
@@ -1290,6 +1291,7 @@ function opsCommands(): { command: string; description: string }[] {
     { command: 'esc', description: L.cmd_esc },
     { command: 'enter', description: L.cmd_enter },
     { command: 'queue', description: L.cmd_queue },
+    { command: 'send', description: L.cmd_send },
     { command: 'model', description: L.cmd_model },
     { command: 'stop', description: L.cmd_stop },
     { command: 'restart', description: L.cmd_restart },
@@ -3135,6 +3137,7 @@ type Inbound = {
   text: string
   downloadImage?: () => Promise<string | undefined>
   attachment?: AttachmentMeta
+  literal?: boolean
 }
 
 function persistInbound(inbound: Inbound): PersistedInbound {
@@ -3142,7 +3145,7 @@ function persistInbound(inbound: Inbound): PersistedInbound {
   return {
     text: inbound.text, chatId: String(inbound.ctx.chat!.id), threadId: msg?.message_thread_id,
     senderId: String(inbound.ctx.from!.id), username: inbound.ctx.from?.username,
-    msgId: msg?.message_id, at: Date.now(),
+    msgId: msg?.message_id, at: Date.now(), literal: inbound.literal,
   }
 }
 
@@ -3154,7 +3157,7 @@ function reviveInbound(value: PersistedInbound): Inbound {
     chat: { id: Number(value.chatId), type: 'supergroup' },
     message: value.msgId == null ? undefined : { message_id: value.msgId, message_thread_id: value.threadId, date: Math.floor(value.at / 1000) },
   } as unknown as Context
-  return { ctx, text: value.text }
+  return { ctx, text: value.text, literal: value.literal }
 }
 
 for (const [key, values] of stateRepo.queuedEntries()) queuedMessages.set(key, values.map(reviveInbound))
@@ -3194,8 +3197,17 @@ async function handleInbound(inbound: Inbound): Promise<void> {
       .catch(() => {})
 
   // explicit commands always win — never swallowed by an auto-topic prompt waiting for text
-  const ops = parseOpsCommand(text)
+  const ops = inbound.literal ? undefined : parseOpsCommand(text)
   if (ops && (!ops.bot || ops.bot.toLowerCase() === botUsername.toLowerCase())) {
+    if (ops.cmd === 'send') {
+      const body = literalSendText(ops.arg, replyTo?.text, replyTo?.caption)
+      if (!body) {
+        say(t().sendUsage)
+        return
+      }
+      await handleInbound({ ...inbound, text: body, literal: true })
+      return
+    }
     // `/queue` живёт здесь, а не в handleOps: ему нужен сам inbound (картинки, вложения,
     // message_id), чтобы позже проиграть доставку обычным путём. Текст команды при этом
     // снимается — иначе на выдаче из очереди сообщение снова опознается как команда.
@@ -3359,7 +3371,7 @@ async function handleInbound(inbound: Inbound): Promise<void> {
   // the "@botname" Telegram appends in groups (Claude Code would read "@…" as a file
   // mention → Enter opens the picker instead of submitting), then map a mangled global
   // skill (/deep_research) back to its real hyphenated name. Skip when media rides along.
-  if (text.trim().startsWith('/') && !attachment && !downloadImage) {
+  if (!inbound.literal && text.trim().startsWith('/') && !attachment && !downloadImage) {
     const [head, ...rest] = text.trim().split(/\s+/)
     const name = head!.slice(1).replace(/@\w+$/, '').toLowerCase() // drop leading "/" and "@bot"
     // глобальные И проектные скиллы: /add_model → /add-model (Telegram не даёт дефис)

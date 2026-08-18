@@ -20,6 +20,8 @@ export const en = {
   cmd_esc: 'Interrupt the current turn',
   cmd_enter: 'Send Enter (submit the input line)',
   cmd_queue: 'Queue a message instead of interrupting the running turn',
+  cmd_send: 'Send text literally, bypassing hub slash commands',
+  sendUsage: 'Usage: <code>/send text</code>, or reply to a message with <code>/send</code>.',
   queueUsage:
     '📥 <b>/queue &lt;text&gt;</b> (or <code>/q</code>) — hold the text until the current turn ends, ' +
     'instead of cutting into it. With the session idle it goes straight through.',

@@ -267,6 +267,11 @@ describe('tmux-ops', () => {
     expect(parseOpsCommand('/stand_up')).toEqual({ cmd: 'stand_up' })
     expect(parseOpsCommand('compact')).toBeUndefined()
     expect(parseOpsCommand('/unknown x')).toBeUndefined()
+    expect(parseOpsCommand('/send /compact')).toEqual({ cmd: 'send', arg: '/compact' })
+    expect(parseOpsCommand('/send@some_bot /doctor\nпроверь БД')).toEqual({
+      cmd: 'send', bot: 'some_bot', arg: '/doctor\nпроверь БД',
+    })
+    expect(parseOpsCommand('/send')).toEqual({ cmd: 'send' })
   })
 
   test('parseOpsCommand: /queue и его алиас /q', () => {

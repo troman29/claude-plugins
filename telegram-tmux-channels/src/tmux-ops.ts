@@ -4,7 +4,7 @@
 export type OpsCommand =
   | 'compact' | 'clear' | 'esc' | 'enter' | 'restart' | 'resume' | 'new' | 'fork' | 'status' | 'doctor'
   | 'bind' | 'unbind' | 'allow' | 'model' | 'stop' | 'screen' | 'last' | 'delete' | 'skills' | 'reload'
-  | 'stand_up' | 'stand_down' | 'pin' | 'unpin' | 'lang' | 'queue'
+  | 'stand_up' | 'stand_down' | 'pin' | 'unpin' | 'lang' | 'queue' | 'send'
 
 // `/q` — короткий алиас `/queue`: команда набирается на бегу, посреди чужого хода.
 const OPS_ALIASES: Record<string, OpsCommand> = { q: 'queue' }
@@ -19,7 +19,7 @@ export function parseOpsCommand(
     // Отдельным разбором, потому что аргумент `/queue` — текст задачи, и он бывает
     // многострочным. Остальные команды принимают короткое слово: разреши им перевод строки —
     // и обычное письмо, начатое с «/new», перестанет быть письмом.
-    /^\/(queue|q)(?:@(\w+))?(?:\s+(\S[\s\S]*?))?\s*$/.exec(text.trim())
+    /^\/(queue|q|send)(?:@(\w+))?(?:\s+(\S[\s\S]*?))?\s*$/.exec(text.trim())
   if (!m) {
     return undefined
   }
