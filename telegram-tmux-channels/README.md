@@ -350,6 +350,7 @@ Environment, in `~/.claude/channels/telegram/.env`:
 | `TELEGRAM_CODEX_APPROVALS` | off | `1` keeps Codex sandboxed and asks for approvals in the topic instead of running with full access |
 | `TELEGRAM_IDLE_UNLOAD_MINUTES` | `0` | Idle minutes before a session is stopped; `0` disables |
 | `TELEGRAM_MEMORY_MAX` | — | Per-session memory cap (`6G`) via `systemd-run --scope`, so a runaway session dies alone instead of OOM-ing the host. Linux/systemd only |
+| `TELEGRAM_MEMORY_SLICE` | — | systemd slice for those scopes (`tgc-agents`). Give it a `MemoryHigh=` and the sessions share one budget instead of N × the per-session cap |
 | `TELEGRAM_CONTEXT_WARN_PCT` | `80` | Warn under a reply once the context window is this full; `0` disables |
 | `TELEGRAM_HUB_AUTOSPAWN` | `1` | `0` if you run the hub as a service instead |
 | `TELEGRAM_SCREEN_POLL_MS` | `300` | Pane detector interval (100–5000 ms); typing itself remains throttled |

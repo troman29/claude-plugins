@@ -219,14 +219,28 @@ export const RESUME_PROMPT_OFF = 'CLAUDE_CODE_RESUME_THRESHOLD_MINUTES=999999999
 // Сессия (или её же bash-команда с жирным выводом) может раздуться на гигабайты и утащить
 // в OOM весь хост — вместе с чужими сессиями. TELEGRAM_MEMORY_MAX="6G" запирает сессию с её
 // потомками в свой cgroup: упирается в потолок и умирает только виновник. Выключено по
-// умолчанию — systemd-run есть только под systemd (на macOS его нет).
+// умолчанию — systemd-run есть только под систему с systemd (на macOS его нет).
+//
+// Потолок на КАЖДУЮ сессию — это не бюджет: семь сессий по 6G имеют право на 42G там, где есть 20.
+// TELEGRAM_MEMORY_SLICE кладёт их в общий slice, которому хозяин машины задаёт `MemoryHigh` —
+// тогда сессии теснят друг друга и отдают страницы, а не выталкивают в своп соседей по машине.
+//
+// Своп сессиям НЕ запрещаем. `MemorySwapMax=0` выглядел защитой от трэшинга, а на деле делал
+// их память неизымаемой: ядро оставляло спящую сессию в RAM и выдавливало на диск hermes,
+// стенды и сам хаб (замер 2026-08-18: 8 ГБ свопа при живых сессиях в RAM).
 export const memoryCapPrefix = (key?: string): string => {
   const cap = process.env.TELEGRAM_MEMORY_MAX?.trim()
   if (!cap) {
     return ''
   }
-  const unit = key ? ` --unit=${shellQuote([scopeUnitName(key)])}` : ''
-  return `systemd-run --user --scope --quiet${unit} -p MemoryMax=${shellQuote([cap])} -p MemorySwapMax=0 `
+  const slice = process.env.TELEGRAM_MEMORY_SLICE?.trim()
+  const parts = [
+    'systemd-run', '--user', '--scope', '--quiet',
+    ...(key ? [`--unit=${scopeUnitName(key)}`] : []),
+    ...(slice ? [`--slice=${slice}`] : []),
+    '-p', `MemoryMax=${cap}`,
+  ]
+  return `${shellQuote(parts)} `
 }
 
 // Имя scope'а — наша метка владения. Без него cgroup сессии не отличить от чужих transient-scope

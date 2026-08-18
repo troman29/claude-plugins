@@ -24,6 +24,7 @@ import {
   transientScopeOf,
   scopeUnitName,
   deadScopes,
+  memoryCapPrefix,
 } from '../src/tmux-ops'
 import { discoverProjectSkills, resolveSkillCommand, skillInvocation, mangleCmd as mangleSkillCmd } from '../src/skills'
 import { isClaudeArgv, claudePidsInDir, agentPidsInDir, cmdlineOf, envOf, findClaudeAncestor } from '../src/proc'
@@ -708,5 +709,40 @@ describe('уборка брошенных scope', () => {
 
   test('пустой scope тоже наш мусор', () => {
     expect(deadScopes([{ name: 'tgc-empty.scope', commands: [] }])).toEqual(['tgc-empty.scope'])
+  })
+})
+
+// Потолок на сессию — не бюджет: семеро по 6G имеют право на 42G там, где есть 20. Общий slice
+// заставляет их тесниться друг о друга. И своп сессиям больше не запрещаем: `MemorySwapMax=0`
+// делал их память неизымаемой, и на диск уезжали соседи по машине, а не спящая сессия.
+describe('запуск сессии под лимитом', () => {
+  const withEnv = (env: Record<string, string | undefined>, fn: () => void) => {
+    const saved = { ...process.env }
+    Object.assign(process.env, env)
+    try {
+      fn()
+    } finally {
+      process.env = saved
+    }
+  }
+
+  test('без TELEGRAM_MEMORY_MAX префикса нет вовсе', () => {
+    withEnv({ TELEGRAM_MEMORY_MAX: undefined, TELEGRAM_MEMORY_SLICE: undefined }, () => {
+      expect(memoryCapPrefix('-100/7')).toBe('')
+    })
+  })
+
+  test('кап есть, slice не задан — запуск в своём scope', () => {
+    withEnv({ TELEGRAM_MEMORY_MAX: '6G', TELEGRAM_MEMORY_SLICE: undefined }, () => {
+      expect(memoryCapPrefix('-100/7')).toBe('systemd-run --user --scope --quiet --unit=tgc-100-7.scope -p MemoryMax=6G ')
+    })
+  })
+
+  test('со slice сессии делят общий бюджет, своп не запрещаем', () => {
+    withEnv({ TELEGRAM_MEMORY_MAX: '6G', TELEGRAM_MEMORY_SLICE: 'tgc-agents' }, () => {
+      const cmd = memoryCapPrefix('-100/7')
+      expect(cmd).toContain('--slice=tgc-agents')
+      expect(cmd).not.toContain('MemorySwapMax')
+    })
   })
 })
