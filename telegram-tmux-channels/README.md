@@ -352,6 +352,7 @@ Environment, in `~/.claude/channels/telegram/.env`:
 | `TELEGRAM_MEMORY_MAX` | — | Per-session memory cap (`6G`) via `systemd-run --scope`, so a runaway session dies alone instead of OOM-ing the host. Linux/systemd only |
 | `TELEGRAM_CONTEXT_WARN_PCT` | `80` | Warn under a reply once the context window is this full; `0` disables |
 | `TELEGRAM_HUB_AUTOSPAWN` | `1` | `0` if you run the hub as a service instead |
+| `TELEGRAM_SCREEN_POLL_MS` | `300` | Pane detector interval (100–5000 ms); typing itself remains throttled |
 | `TELEGRAM_DEBUG_LOG` | `0` | `1` records all hub traffic to `screenlog.jsonl` (off by default — the plugin logs nobody's messages) |
 | `OPENAI_API_KEY` | — | Enables voice; without it voice is silently off |
 | `STT_OPENAI_MODEL` | `gpt-4o-transcribe` | Transcription model |

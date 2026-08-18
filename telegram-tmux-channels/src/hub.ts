@@ -55,6 +55,7 @@ import { InteractionRegistry } from './interaction-registry'
 import { EditablePost } from './editable-post'
 import { AnswerStream } from './answer-stream'
 import { literalSendText } from './literal-send'
+import { screenPollMs, uniqueByPane } from './screen-poll'
 
 const log = (s: string) => process.stderr.write(`telegram hub: ${s}\n`)
 
@@ -298,7 +299,7 @@ function claimPollerSlot(): void {
 const SPAWN_LOCK = join(STATE_DIR, 'hub.spawnlock')
 const MAX_409_ATTEMPTS = 8
 const MAX_BACKOFF_MS = 15_000
-const SCREEN_POLL_MS = 1500
+const SCREEN_POLL_MS = screenPollMs(process.env.TELEGRAM_SCREEN_POLL_MS)
 const CUSTOM_TIMEOUT_MS = 120_000
 
 // Заглушка вместо токена — чтобы модуль импортировался в тесте. Сам объект в сеть не ходит:
@@ -1953,7 +1954,9 @@ const captureTimeout = (pane: string): Promise<string> =>
 // so a hung send can't wedge it forever.
 let detectorsRunning = false
 async function pollScreens(): Promise<void> {
-  const sessions = router.all().map(c => router.get(c)).filter((s): s is SessionInfo & { pane: string } => !!s?.pane && !!s.cwd)
+  const sessions = uniqueByPane(
+    router.all().map(c => router.get(c)).filter((s): s is SessionInfo & { pane: string } => !!s?.pane && !!s.cwd),
+  )
   const seen = new Set<string>()
   // PASS 1 — parallel capture + typing keep-alive (cheap, fire-and-forget)
   const captured = await Promise.all(
