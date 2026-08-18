@@ -220,11 +220,31 @@ export const RESUME_PROMPT_OFF = 'CLAUDE_CODE_RESUME_THRESHOLD_MINUTES=999999999
 // в OOM весь хост — вместе с чужими сессиями. TELEGRAM_MEMORY_MAX="6G" запирает сессию с её
 // потомками в свой cgroup: упирается в потолок и умирает только виновник. Выключено по
 // умолчанию — systemd-run есть только под systemd (на macOS его нет).
-export const memoryCapPrefix = (): string => {
+export const memoryCapPrefix = (key?: string): string => {
   const cap = process.env.TELEGRAM_MEMORY_MAX?.trim()
-  return cap
-    ? `systemd-run --user --scope --quiet -p MemoryMax=${shellQuote([cap])} -p MemorySwapMax=0 `
-    : ''
+  if (!cap) {
+    return ''
+  }
+  const unit = key ? ` --unit=${shellQuote([scopeUnitName(key)])}` : ''
+  return `systemd-run --user --scope --quiet${unit} -p MemoryMax=${shellQuote([cap])} -p MemorySwapMax=0 `
+}
+
+// Имя scope'а — наша метка владения. Без него cgroup сессии не отличить от чужих transient-scope
+// (под ними ходят и ручные задачи хозяина машины), и подчистить брошенное можно только гадая.
+// С меткой уборка тривиальна и безопасна: `tgc-*` — наши, всё остальное не трогаем.
+export function scopeUnitName(key: string): string {
+  return `tgc-${key.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '')}.scope`
+}
+
+/** Имена НАШИХ scope'ов, внутри которых уже нет живого агента (чистая функция). */
+export function deadScopes(scopes: { name: string; commands: string[] }[]): string[] {
+  return scopes
+    .filter(s => s.name.startsWith('tgc-') && !s.commands.some(cmd => isAgentCommand(cmd)))
+    .map(s => s.name)
+}
+
+function isAgentCommand(cmd: string): boolean {
+  return /(^|\/)(claude|codex)(\s|$)/.test(cmd)
 }
 
 const CHANNEL_FLAGS = new Set(['--channels', '--dangerously-load-development-channels'])
@@ -444,6 +464,49 @@ export function alive(pid: number): boolean {
 // "Exit anyway?" confirm that appears when background shells are alive, wait
 // for the pid to die, escalate to Ctrl-C ×2. Measured: idle exit ~0.6s; busy
 // exit hangs forever on the confirm unless answered — hence the pane polling.
+async function stopScope(scope: string, log: (s: string) => void): Promise<void> {
+  log(`stop: гашу scope ${scope} — вместе со всем, что сессия оставила после себя`)
+  const proc = Bun.spawn(['systemctl', '--user', 'stop', scope], { stdout: 'ignore', stderr: 'ignore' })
+  await proc.exited
+}
+
+async function scopeCommands(unit: string): Promise<string[]> {
+  const show = Bun.spawn(['systemctl', '--user', 'show', unit, '-p', 'ControlGroup', '--value'],
+    { stdout: 'pipe', stderr: 'ignore' })
+  const path = (await new Response(show.stdout).text()).trim()
+  if (!path) {
+    return []
+  }
+  const out: string[] = []
+  try {
+    const { readFileSync } = require('fs')
+    for (const pid of readFileSync(`/sys/fs/cgroup${path}/cgroup.procs`, 'utf8').split('\n')) {
+      if (!pid.trim()) {
+        continue
+      }
+      try {
+        out.push(readFileSync(`/proc/${pid.trim()}/cmdline`, 'utf8').replace(/\0/g, ' ').trim())
+      } catch {} // процесс успел уйти между чтениями — на решение это не влияет
+    }
+  } catch {} // cgroup исчез — считаем scope пустым, его и погасим
+  return out
+}
+
+/** Погасить НАШИ scope'ы, где агента уже нет: сессия умерла, а её браузер/сервер держит cgroup. */
+export async function reapDeadScopes(log: (s: string) => void): Promise<string[]> {
+  const list = Bun.spawn(['systemctl', '--user', 'list-units', '--plain', '--no-legend', '--all', 'tgc-*.scope'],
+    { stdout: 'pipe', stderr: 'ignore' })
+  const names = (await new Response(list.stdout).text())
+    .split('\n').map(l => l.trim().split(/\s+/)[0]).filter(n => n?.endsWith('.scope')) as string[]
+  const scopes = await Promise.all(names.map(async name => ({ name, commands: await scopeCommands(name) })))
+  const dead = deadScopes(scopes)
+  for (const name of dead) {
+    log(`scope-reaper: ${name} — агента внутри нет, гашу вместе с остатками`)
+    await stopScope(name, log)
+  }
+  return dead
+}
+
 // Сессия живёт в своём transient-scope (см. memoryCapPrefix). У scope нет главного процесса:
 // он держится, пока внутри есть ХОТЬ КТО-ТО, — поэтому браузер или dev-сервер, поднятый агентом,
 // переживает саму сессию и держит её cgroup (замер 2026-08-18: 460 МБ chrome в scope, где агента
@@ -459,12 +522,6 @@ function scopeOfPid(pid: number): string | undefined {
   } catch {
     return undefined
   }
-}
-
-async function stopScope(scope: string, log: (s: string) => void): Promise<void> {
-  log(`stop: гашу scope ${scope} — вместе со всем, что сессия оставила после себя`)
-  const proc = Bun.spawn(['systemctl', '--user', 'stop', scope], { stdout: 'ignore', stderr: 'ignore' })
-  await proc.exited
 }
 
 export async function stopSession(

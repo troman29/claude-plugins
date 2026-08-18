@@ -22,6 +22,8 @@ import {
   isExitConfirm,
   tmuxSessionName,
   transientScopeOf,
+  scopeUnitName,
+  deadScopes,
 } from '../src/tmux-ops'
 import { discoverProjectSkills, resolveSkillCommand, skillInvocation, mangleCmd as mangleSkillCmd } from '../src/skills'
 import { isClaudeArgv, claudePidsInDir, agentPidsInDir, cmdlineOf, envOf, findClaudeAncestor } from '../src/proc'
@@ -683,5 +685,28 @@ describe('scope сессии', () => {
     expect(transientScopeOf('0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-ghostty.scope')).toBeUndefined()
     expect(transientScopeOf('0::/system.slice/docker-abc.scope')).toBeUndefined()
     expect(transientScopeOf('')).toBeUndefined()
+  })
+})
+
+// Метка владения: без неё cgroup сессии не отличить от ручных `systemd-run --scope` хозяина
+// машины (под ними идут озвучки vot), и уборка превращается в угадайку.
+describe('уборка брошенных scope', () => {
+  test('имя scope выводится из ключа биндинга и годится для systemd', () => {
+    expect(scopeUnitName('-1004495746357/1839')).toBe('tgc-1004495746357-1839.scope')
+    expect(scopeUnitName('dm:7')).toBe('tgc-dm-7.scope')
+  })
+
+  test('гасим только свои и только без агента внутри', () => {
+    const scopes = [
+      { name: 'tgc-a.scope', commands: ['/opt/google/chrome/chrome --headless', 'node vite'] },
+      { name: 'tgc-b.scope', commands: ['/home/user/.local/bin/claude --permission-mode bypassPermissions'] },
+      { name: 'tgc-c.scope', commands: ['/home/user/.local/bin/codex --sandbox danger-full-access'] },
+      { name: 'run-p252476.scope', commands: [] }, // чужой transient — не наш, не трогаем
+    ]
+    expect(deadScopes(scopes)).toEqual(['tgc-a.scope'])
+  })
+
+  test('пустой scope тоже наш мусор', () => {
+    expect(deadScopes([{ name: 'tgc-empty.scope', commands: [] }])).toEqual(['tgc-empty.scope'])
   })
 })

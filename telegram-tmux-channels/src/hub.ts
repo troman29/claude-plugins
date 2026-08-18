@@ -28,6 +28,7 @@ import {
   paneCurrentCommand,
   type LaunchMode,
   memoryCapPrefix,
+  reapDeadScopes,
   capturePane, capturePaneAnsi, type OpsCommand,
 } from './tmux-ops'
 import { ansiToImage } from './ansi-image'
@@ -2038,6 +2039,15 @@ async function pollScreens(): Promise<void> {
 }
 const startScreenPoll = (): void => void setInterval(() => void pollScreens(), SCREEN_POLL_MS)
 
+// Явного гашения scope при остановке сессии мало: агент умирает и от OOM, и вместе с tmux
+// (`/unbind`), и при падении хаба — тогда его браузер и dev-серверы держат cgroup дальше.
+// Поэтому сверка: раз в пять минут гасим НАШИ scope'ы, где живого агента уже нет.
+const SCOPE_REAP_MS = 5 * 60_000
+const startScopeReaper = (): void => {
+  void reapDeadScopes(log)
+  setInterval(() => void reapDeadScopes(log), SCOPE_REAP_MS)
+}
+
 // Stop a quiet, unpinned, past-threshold session; the next inbound message revives it.
 async function maybeIdleUnload(s: SessionInfo & { pane: string }, working: boolean): Promise<void> {
   const keys = s.bindingKeys ?? []
@@ -2709,7 +2719,8 @@ async function spawnSession(
         : t().tmuxExists(escHtml(name)),
     )
     const envPrefix = adapter.launchEnvPrefix([key])
-    await typeLine(`=${name}:`, `cd ${shellQuote([binding.dir])} && ${envPrefix} ${memoryCapPrefix()}${launch}`)
+    await reapDeadScopes(log) // тёзка мог остаться от прошлой сессии — systemd-run на занятое имя не встанет
+    await typeLine(`=${name}:`, `cd ${shellQuote([binding.dir])} && ${envPrefix} ${memoryCapPrefix(key)}${launch}`)
     launchIssued = true
     // A broken launch must not wedge future retries forever. Successful launches
     // clear this sooner, from the stub's subscribe handshake above.
@@ -4982,6 +4993,7 @@ export async function start(): Promise<void> {
   claimPollerSlot()
   listenForStubs()
   startScreenPoll()
+  startScopeReaper()
   await pollForever()
 }
 
