@@ -35,6 +35,7 @@ export const claudeAdapter: AgentAdapter = {
   recentSessions,
   transcriptSize: newestJsonlSize,
   lastAssistantText,
+  assistantDraftText: () => '',
   transcriptSawIncoming,
   sessionForIncoming: () => undefined,
   parseCompaction,

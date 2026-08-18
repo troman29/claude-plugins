@@ -53,6 +53,7 @@ import { agentAdapter, mayLearn, type AgentAdapter, type AgentKind, type AgentSt
 import { renderDoctor, type DoctorCheck } from './doctor'
 import { InteractionRegistry } from './interaction-registry'
 import { EditablePost } from './editable-post'
+import { AnswerStream } from './answer-stream'
 
 const log = (s: string) => process.stderr.write(`telegram hub: ${s}\n`)
 
@@ -367,17 +368,27 @@ async function handleRpc(
 ): Promise<string> {
   switch (method) {
     case 'reply': {
-      const r = await doReply(conn, params)
+      const keys = ownKeys(conn)
+      const active = keys.find(key => answerStream.has(key))
+      let result = ''
+      if (active) {
+        await answerStream.finalize(active, async () => { result = await doReply(conn, params) })
+        for (const key of keys) if (key !== active) answerStream.discard(key)
+      } else {
+        result = await doReply(conn, params)
+      }
       clearPendingAnswer(conn) // agent answered — turnend won't auto-forward
-      return r
+      return result
     }
     case 'react': {
       const r = await doReact(conn, params)
+      for (const key of ownKeys(conn)) answerStream.discard(key)
       clearPendingAnswer(conn)
       return r
     }
     case 'edit_message': {
       const r = await doEdit(conn, params)
+      for (const key of ownKeys(conn)) answerStream.discard(key)
       clearPendingAnswer(conn)
       return r
     }
@@ -1038,6 +1049,27 @@ const interactions = new InteractionRegistry(
   stateRepo.interactionSnapshot(),
   snapshot => stateRepo.replaceInteractions(snapshot),
 )
+const answerStream = new AnswerStream({
+  load: key => {
+    const value = interactions.get('answer-stream', key)
+    return value ? { key, ...value } : undefined
+  },
+  save: ({ key, ...data }) => interactions.set({
+    kind: 'answer-stream', key, updatedAt: data.updatedAt,
+    expiresAt: data.updatedAt + 5 * 60_000, data,
+  }),
+  clear: key => interactions.delete('answer-stream', key),
+  publishDraft: async value => {
+    const payload = {
+      chat_id: value.chatId,
+      draft_id: value.draftId,
+      text: value.text.slice(0, MAX_CHUNK_LIMIT),
+      ...(value.threadId != null ? { message_thread_id: value.threadId } : {}),
+    }
+    // grammY's installed Bot API typings predate 9.5, but its raw proxy forwards new methods.
+    await (bot.api.raw as unknown as { sendMessageDraft(p: typeof payload): Promise<unknown> }).sendMessageDraft(payload)
+  },
+})
 for (const [pane, value] of interactions.entries('custom-answer')) awaitingCustom.set(pane, value)
 function armCustom(pane: string, value: { chatId: string; threadId?: number; bindingKey: string; at: number; multi: boolean }): void {
   awaitingCustom.set(pane, value)
@@ -1132,7 +1164,11 @@ const lastFallback = new Map<string, string>() // key -> last auto-forwarded tex
 const launchCaptures = new Map<string, PersistedLaunchCapture>(stateRepo.launchCaptureEntries())
 for (const [k, v] of stateRepo.pendingEntries()) pendingAnswer.set(k, v)
 for (const [k, v] of stateRepo.fallbackEntries()) lastFallback.set(k, v)
-function armPending(key: string, v: { dir: string; at: number }): void { pendingAnswer.set(key, v); stateRepo.setPending(key, v) }
+function armPending(key: string, v: { dir: string; at: number }): void {
+  answerStream.begin(key)
+  pendingAnswer.set(key, v)
+  stateRepo.setPending(key, v)
+}
 function disarmPending(key: string): void { pendingAnswer.delete(key); stateRepo.delPending(key) }
 // Пускать ли досылку (см. src/fallback-gate.ts). Живёт в пределах хода и рестарт хаба не
 // переживает — тогда просто вернётся прежнее поведение, лишняя досылка вместо потерянной.
@@ -1481,9 +1517,14 @@ async function forwardFallbackReply(key: string): Promise<void> {
   // marker so it's visibly distinct from a normal reply — a fallback means the agent
   // forgot to call reply, which is itself a signal worth seeing.
   // rich Markdown understands the label's HTML too, so one path renders both halves
-  await sendMarkdown(target.chat_id, `${t().autoForwardLabel}\n\n${body}`, threadOpt).catch(e =>
-    log(`reply-fallback send failed key=${key}: ${e}`),
-  )
+  const sendFinal = () => sendMarkdown(target.chat_id, `${t().autoForwardLabel}\n\n${body}`, threadOpt)
+  try {
+    if (answerStream.has(key)) await answerStream.finalize(key, sendFinal)
+    else await sendFinal()
+  } catch (e) {
+    log(`reply-fallback send failed key=${key}: ${e}`)
+    return
+  }
   log(`reply-fallback: forwarded ${text.length} chars for key=${key} (agent never called reply)`)
 }
 
@@ -1945,6 +1986,23 @@ async function pollScreens(): Promise<void> {
     if (IDLE_UNLOAD_MS > 0) {
       void maybeIdleUnload(s, working)
     }
+  }
+  // Provider transcripts are the authority for answer text. Codex exposes cumulative
+  // `agent_message` snapshots separately from commentary/reasoning/tools; adapters that cannot
+  // make that distinction return empty and are deliberately not streamed.
+  for (const [key, pending] of pendingAnswer) {
+    const binding = loadBindings()[key]
+    if (!binding || binding.dir !== pending.dir) {
+      answerStream.discard(key)
+      continue
+    }
+    const text = adapterForBinding(binding).assistantDraftText(binding.dir, pending.at, binding.sessionId)
+    if (!text) continue
+    const target = keyToTarget(key)
+    void answerStream.update({
+      key, chatId: target.chat_id, threadId: target.thread_id,
+      bindingDir: binding.dir, turnAt: pending.at,
+    }, text).catch(e => log(`answer-stream update failed key=${key}: ${e}`))
   }
   for (const pane of [...activePickers.keys()]) if (!seen.has(pane)) disarmPicker(pane)
   for (const pane of [...lastPaneText.keys()]) if (!seen.has(pane)) lastPaneText.delete(pane)

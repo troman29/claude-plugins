@@ -193,6 +193,22 @@ export function lastCodexAssistantText(dir: string, sinceMs: number, sessionId?:
   return ''
 }
 
+export function codexAssistantDraftText(dir: string, sinceMs: number, sessionId?: string): string {
+  const row = selected(dir, sessionId)
+  if (!row || row.mtime < sinceMs - 2000) return ''
+  const lines = tail(row.path).split('\n')
+  for (let i = lines.length - 1; i >= 0; i--) {
+    try {
+      const event = JSON.parse(lines[i]!) as { timestamp?: string; type?: string; payload?: Record<string, unknown> }
+      if (event.type !== 'event_msg' || event.payload?.type !== 'agent_message') continue
+      const text = typeof event.payload.message === 'string' ? event.payload.message.trim() : ''
+      if (!text) continue
+      return event.timestamp && Date.parse(event.timestamp) < sinceMs ? '' : text
+    } catch {}
+  }
+  return ''
+}
+
 export function codexTranscriptSawIncoming(dir: string, sinceMs: number, needle: string): boolean {
   for (const row of codexRollouts(dir)) {
     if (row.mtime < sinceMs - 2000) continue
@@ -312,6 +328,7 @@ export const codexAdapter: AgentAdapter = {
   recentSessions: recentCodexSessions,
   transcriptSize: codexTranscriptSize,
   lastAssistantText: lastCodexAssistantText,
+  assistantDraftText: codexAssistantDraftText,
   transcriptSawIncoming: codexTranscriptSawIncoming,
   sessionForIncoming: codexSessionForIncoming,
   // Codex TUI parsing is intentionally explicit rather than reusing Claude signatures.

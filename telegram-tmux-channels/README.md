@@ -16,9 +16,10 @@ A fork of the official `telegram@claude-plugins-official`. Linux and macOS.
 
 ## Why this and not a mirror
 
-Tools like ccgram stream the whole transcript into chat. This one doesn't: **only the final
-answer or an explicit `reply` tool call** shows up; intermediate tool chatter stays in the TUI.
-Your phone stays readable while the agent grinds through 40 tool calls.
+Tools like ccgram stream the whole transcript into chat. This one doesn't: **only the answer**
+shows up; intermediate commentary, reasoning and tool chatter stay in the TUI. Codex answer text
+is previewed through one temporary Telegram draft while it is generated, then replaced by the
+ordinary final reply. Your phone stays readable while the agent grinds through 40 tool calls.
 
 What you get beyond plain messaging:
 
@@ -31,6 +32,9 @@ What you get beyond plain messaging:
 - **Live status.** Subagents, tasks, the todo list and skill calls all share ONE self-updating
   message per turn, so work in progress costs you a single notification. Backgrounded shells get
   their own, kept until the last of them finishes — they outlive the turn that started them.
+- **Restart-safe answer drafts.** One cumulative Codex answer preview is updated in place; its
+  draft identity and turn ownership survive a hub restart, and final delivery is serialized after
+  the last update so it cannot overtake or duplicate the draft.
 - **Full session control from the phone.** Restart, compact, interrupt, switch model, peek at
   the terminal — see [Commands](#commands).
 

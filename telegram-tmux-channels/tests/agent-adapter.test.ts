@@ -9,6 +9,7 @@ import {
   isCodexArgv, isCodexHeadlessArgv, codexPaneIsWorking, codexPaneReady, parseCodexError,
   codexCanOpenStatusPanel, parseCodexStatusPanel,
 } from '../src/agents/codex'
+import { codexAssistantDraftText } from '../src/agents/codex'
 
 describe('agent adapter registry', () => {
   test('old bindings remain Claude and both explicit adapters resolve', () => {
@@ -242,4 +243,29 @@ test('перезапуск не дублирует resume, если перед �
   expect(buildCodexLaunch(saved, 'resume', '01a0-new'))
     .toBe('codex --ask-for-approval never --sandbox danger-full-access resume 01a0-new')
   expect(buildCodexLaunch(saved, 'new')).toBe('codex --ask-for-approval never --sandbox danger-full-access')
+})
+
+test('streaming draft reads only agent_message snapshots, never commentary or tools', () => {
+  const dir = join(tmpdir(), `codex-draft-${process.pid}-${Date.now()}`)
+  const root = join(dir, 'sessions')
+  mkdirSync(root, { recursive: true })
+  const file = join(root, 'rollout.jsonl')
+  const rows = [
+    { type: 'session_meta', payload: { id: 's1', cwd: '/repo' } },
+    { timestamp: new Date(20).toISOString(), type: 'response_item', payload: {
+      type: 'message', role: 'assistant', phase: 'commentary', content: [{ type: 'output_text', text: 'internal progress' }],
+    } },
+    { timestamp: new Date(21).toISOString(), type: 'event_msg', payload: { type: 'item_completed', item: { type: 'tool_call', name: 'exec' } } },
+    { timestamp: new Date(22).toISOString(), type: 'event_msg', payload: { type: 'agent_message', message: 'Hel' } },
+    { timestamp: new Date(23).toISOString(), type: 'event_msg', payload: { type: 'agent_message', message: 'Hello' } },
+  ]
+  writeFileSync(file, rows.map(row => JSON.stringify(row)).join('\n'))
+  const old = process.env.CODEX_HOME
+  process.env.CODEX_HOME = dir
+  try {
+    expect(codexAssistantDraftText('/repo', 10, 's1')).toBe('Hello')
+  } finally {
+    old == null ? delete process.env.CODEX_HOME : process.env.CODEX_HOME = old
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

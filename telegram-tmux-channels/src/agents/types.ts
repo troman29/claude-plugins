@@ -55,6 +55,9 @@ export interface AgentAdapter {
   recentSessions(dir: string, limit?: number): RecentAgentSession[]
   transcriptSize(dir: string, sessionId?: string): number
   lastAssistantText(dir: string, sinceMs: number, sessionId?: string): string
+  // Safe cumulative assistant snapshot for Telegram drafts. Empty means this provider does not
+  // expose a channel that can be distinguished from reasoning/commentary/tool output.
+  assistantDraftText(dir: string, sinceMs: number, sessionId?: string): string
   transcriptSawIncoming(dir: string, sinceMs: number, needle: string): boolean
   sessionForIncoming(dir: string, sinceMs: number, needle: string): string | undefined
 
