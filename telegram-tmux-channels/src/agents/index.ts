@@ -1,3 +1,6 @@
+import { existsSync } from 'fs'
+import { homedir } from 'os'
+import { join } from 'path'
 import type { AgentAdapter, AgentKind } from './types'
 import { claudeAdapter } from './claude'
 import { codexAdapter } from './codex'
@@ -6,6 +9,18 @@ export type { AgentAdapter, AgentCapabilities, AgentKind, AgentStatusPanel, Laun
 export { claudeAdapter, codexAdapter }
 
 const adapters: Record<AgentKind, AgentAdapter> = { claude: claudeAdapter, codex: codexAdapter }
+
+// Обычные места установки обоих CLI. Смотрим их, а не только PATH: у user-юнита systemd PATH
+// свой и БЕЗ ~/.local/bin, где оба и лежат — по одному `Bun.which` хаб решал, что на машине нет
+// ни одного харнесса, и переключатель не показывал вообще нигде.
+const HARNESS_DIRS = [join(homedir(), '.local/bin'), '/usr/local/bin', '/opt/homebrew/bin', '/usr/bin']
+
+/** Харнессы, реально стоящие на машине. Дороже `Bun.which` на несколько stat — считается на
+ *  отрисовку пикера, зато поставленный после старта хаба CLI виден без рестарта. */
+export function installedAgents(dirs: string[] = HARNESS_DIRS): AgentKind[] {
+  return (Object.keys(adapters) as AgentKind[])
+    .filter(kind => !!Bun.which(kind) || dirs.some(dir => existsSync(join(dir, kind))))
+}
 
 export function agentAdapter(kind: AgentKind | undefined): AgentAdapter {
   return adapters[kind ?? 'claude']

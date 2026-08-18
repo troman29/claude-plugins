@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'bun:test'
-import { mkdirSync, rmSync, writeFileSync } from 'fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { agentAdapter, mayLearn, claudeAdapter, codexAdapter } from '../src/agents'
+import { agentAdapter, installedAgents, mayLearn, claudeAdapter, codexAdapter } from '../src/agents'
 import {
   buildCodexLaunch, codexRollouts, codexSessionMtimes, codexTranscriptSawIncoming,
   codexSessionForIncoming, lastCodexAssistantText, recentCodexSessions,
@@ -49,6 +49,21 @@ describe('agent adapter registry', () => {
     expect(claudeAdapter.isPaneCommand('codex')).toBe(false)
     expect(codexAdapter.isPaneCommand('/usr/local/bin/codex')).toBe(true)
     expect(codexAdapter.isPaneCommand('zsh')).toBe(false)
+  })
+})
+
+// 2026-08-18: PATH у user-юнита systemd свой и БЕЗ ~/.local/bin — `Bun.which` не находил там ни
+// claude, ни codex, и переключатель харнесса не показывался ни в одной группе.
+describe('поиск установленных харнессов', () => {
+  test('видит CLI в каталоге установки, даже когда его нет в PATH', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'harness-'))
+    writeFileSync(join(dir, 'codex'), '#!/bin/sh\n', { mode: 0o755 })
+    expect(installedAgents([dir])).toContain('codex')
+  })
+
+  test('пустой каталог ничего не добавляет', () => {
+    const empty = mkdtempSync(join(tmpdir(), 'harness-empty-'))
+    expect(installedAgents([empty])).toEqual(installedAgents([])) // что даёт PATH — то и даёт
   })
 })
 

@@ -49,7 +49,7 @@ import { FallbackGate } from './fallback-gate'
 import { topic as inTopic } from './chat'
 import { HubStateRepository, type PersistedPicker, type PersistedInbound, type PersistedLaunchCapture } from './state-repo'
 import { recordChat, recordTopic, topicTitle, chatLabel } from './known-chats'
-import { agentAdapter, mayLearn, type AgentAdapter, type AgentKind, type AgentStatusPanel } from './agents'
+import { agentAdapter, installedAgents, mayLearn, type AgentAdapter, type AgentKind, type AgentStatusPanel } from './agents'
 import { renderDoctor, type DoctorCheck } from './doctor'
 import { InteractionRegistry } from './interaction-registry'
 import { EditablePost } from './editable-post'
@@ -3079,10 +3079,8 @@ const ownDirLabel = () => t().ownDirLabel
 // Оба CLI ставятся глобально, поэтому и переключатель глобальный: группа перечисляет `agents`
 // только чтобы СУЗИТЬ выбор. Без этого топики в группах без такой строки молча оставались
 // одноагентными, хотя второй агент стоит на той же машине.
-const installedHarnesses = (['claude', 'codex'] as const).filter(kind => !!Bun.which(kind))
-
 function harnessChoices(cfg: TrustedGroupConfig): AgentKind[] {
-  const choices = cfg.agents ?? installedHarnesses
+  const choices = cfg.agents ?? installedAgents()
   return choices.length > 1 ? [...choices] : []
 }
 
