@@ -21,6 +21,53 @@ to expose the same Telegram behavior.
 | worktree/folder modes and stand hooks | shared hub | shared hub | existing + two-adapter scenarios |
 | durable binding/session identity and idle revive | JSON state + transcript | JSON state + transcript | restart/revive integration |
 
+## Product comparison
+
+This is a product-level inventory, not a release gate. `Hub` means telegram-tmux-channels as a
+whole, across both adapters. The CCGram column was checked against CCGram commit `b7088fd`
+(2026-08-16); it describes documented behavior and local source/tests, not evidence produced by
+this repository.
+
+Legend: ✅ supported, ◐ partial or materially different, — not found in the reviewed version.
+
+| User-visible capability | Hub | CCGram | Material difference |
+|---|---:|---:|---|
+| One Telegram forum topic per independent agent session | ✅ | ✅ | Hub uses one isolated tmux session per binding; CCGram uses a tmux window or guarded Herdr session. |
+| Claude Code and Codex | ✅ | ✅ | Hub has explicit adapter parity gates and native Claude channel delivery; CCGram drives both through the multiplexer/transcripts. |
+| Gemini, Pi, Antigravity, and plain shell providers | — | ✅ | CCGram has provider adapters and per-topic provider selection. |
+| Bind/unbind/delete and automatic topic setup | ✅ | ✅ | Hub supports trusted-group folder/worktree policies; CCGram offers a directory/provider browser and auto-detects tmux windows. |
+| Telegram directory and provider browser | — | ✅ | Hub binding is command/config driven. |
+| Folder and git-worktree topic modes | ✅ | ✅ | Hub supports project-specific create/delete hooks and stand hooks; CCGram offers an interactive branch/worktree picker. |
+| Inbound text and media while the agent is idle or busy | ✅ | ✅ | Hub has native delivery acknowledgement for Claude and transcript-correlated acknowledgement for Codex. |
+| Reply context from Telegram replies | ✅ | ◐ | Hub forwards replied message id, author, bounded text/caption, and media labels; CCGram documents General-chat reply support but no equivalent inbound envelope contract. |
+| Outbound text, files, voice, edits, and reactions initiated by the agent | ✅ | ◐ | Hub exposes these as agent MCP tools; CCGram relays agent output and supports bot-side files/TTS/status edits/reactions. |
+| Voice transcription | ✅ | ✅ | Hub forwards the transcription immediately; CCGram presents Send/Discard confirmation first. |
+| Text-to-speech replies | ✅ | ✅ | Hub uses OpenAI TTS; CCGram supports Edge or OpenAI TTS. |
+| Permission and interactive-question buttons | ✅ | ✅ | Both bridge terminal/agent prompts to Telegram buttons. |
+| Restart-safe interactive buttons and message edits | ✅ | ◐ | Hub persists typed interaction records and restores live views/drafts; CCGram handles stale callbacks but does not document the same restart contract for every interaction. |
+| `/new`, `/resume`, `/restart`, and `/stop` lifecycle control | ✅ | ✅ | Both recover dead sessions; Hub also has a first-class `/fork` that creates a separate Telegram topic. |
+| `/fork` into a new independent topic | ✅ | — | CCGram may forward provider `/fork`; no equivalent topic-branch lifecycle was found. |
+| `/compact`, `/clear`, `/esc`, and `/enter` terminal control | ✅ | ✅ | CCGram exposes common actions through its toolbar as well as commands. |
+| Queue/follow-up without steering the active turn | ✅ | ◐ | Hub provides provider-neutral `/queue`; CCGram documents `/followup` for Pi. |
+| Model picker | ✅ | ✅ | Hub drives Claude and Codex native pickers; CCGram exposes provider-specific mode/model actions. |
+| Status, limits/context, task progress, and typing state | ✅ | ✅ | The data sources and provider coverage differ; both combine hooks, transcripts, and terminal state. |
+| Live terminal image | ✅ | ✅ | Hub `/screen` is a self-updating PNG with Close; CCGram has `/screenshot` plus a configurable auto-refreshing live view. |
+| Recent terminal/output as text (`/last`) | ✅ | ✅ | Both provide a Telegram-readable text view. |
+| Workspace file delivery from Telegram | ◐ | ✅ | Hub `/send` means literal inbound text; files are sent by the agent's `reply` tool. CCGram `/send` browses/globs/searches workspace files for download. |
+| Agent/provider command discovery and Telegram command menu | ◐ | ✅ | Hub discovers global/project skills; CCGram also maintains provider command catalogs and dynamic provider discovery. |
+| Session dashboard | ◐ | ✅ | Hub `/status` is binding-local; CCGram `/sessions` lists sessions across topics. |
+| Topic name/status emoji synchronization | — | ✅ | CCGram synchronizes window/topic names and exposes configurable status emoji. |
+| Configurable action toolbar | — | ✅ | CCGram provides provider-specific and TOML-configurable buttons. |
+| Multiplexer abstraction beyond tmux | — | ✅ | CCGram supports Herdr as an alternative backend. |
+| Optional web dashboard | — | ✅ | CCGram documents an xterm.js mini-app with transcript search and a multi-pane grid. |
+| Project stand-up/stand-down hooks | ✅ | — | Hub can call project-defined dev-environment lifecycle commands. |
+| Idle unload and automatic quiet revival | ✅ | ◐ | Hub explicitly unloads inactive sessions and revives them on demand; CCGram provides crash/session recovery and auto-close behavior. |
+| Read-only `/doctor` diagnostics | ✅ | ✅ | Hub checks Telegram, binding, process, tmux/pane, resume identity, MCP routing, and voice setup; CCGram has CLI/provider-aware diagnostics. |
+
+The table is deliberately descriptive rather than a parity backlog. A CCGram-only row should be
+implemented here only when it solves a concrete Hub use case and fits Hub's native-channel,
+agent-tool architecture.
+
 ## Live release gate
 
 1. `bun run check` passes with no skipped or weakened legacy tests.
