@@ -257,6 +257,7 @@ describe('tmux-ops', () => {
     })
     expect(parseOpsCommand('/allow 123 456')).toEqual({ cmd: 'allow', arg: '123 456' })
     expect(parseOpsCommand('/status')).toEqual({ cmd: 'status' })
+    expect(parseOpsCommand('/doctor')).toEqual({ cmd: 'doctor' })
     expect(parseOpsCommand('/model')).toEqual({ cmd: 'model' })
     expect(parseOpsCommand('/stop')).toEqual({ cmd: 'stop' })
     expect(parseOpsCommand('/screen')).toEqual({ cmd: 'screen' })

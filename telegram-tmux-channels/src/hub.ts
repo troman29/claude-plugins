@@ -50,6 +50,7 @@ import { topic as inTopic } from './chat'
 import { HubStateRepository, type PersistedPicker, type PersistedInbound, type PersistedLaunchCapture } from './state-repo'
 import { recordChat, recordTopic, topicTitle, chatLabel } from './known-chats'
 import { agentAdapter, mayLearn, type AgentAdapter, type AgentKind, type AgentStatusPanel } from './agents'
+import { renderDoctor, type DoctorCheck } from './doctor'
 
 const log = (s: string) => process.stderr.write(`telegram hub: ${s}\n`)
 
@@ -1218,7 +1219,7 @@ function paneBelongsToKey(pane: string, key: string): boolean {
 // Command names are language-independent; descriptions come from the current lang table,
 // so the menu re-registers (with translated descriptions) whenever /lang switches.
 const OPS_NAMES = new Set([
-  'status', 'resume', 'screen', 'last', 'new', 'fork', 'skills', 'stand_up', 'stand_down',
+  'status', 'doctor', 'resume', 'screen', 'last', 'new', 'fork', 'skills', 'stand_up', 'stand_down',
   'pin', 'unpin', 'reload', 'compact', 'clear', 'esc', 'enter', 'model', 'stop',
   'restart', 'bind', 'unbind', 'delete', 'allow', 'lang',
 ])
@@ -1226,6 +1227,7 @@ function opsCommands(): { command: string; description: string }[] {
   const L = t()
   return [
     { command: 'status', description: L.cmd_status },
+    { command: 'doctor', description: L.cmd_doctor },
     { command: 'resume', description: L.cmd_resume },
     { command: 'screen', description: L.cmd_screen },
     { command: 'last', description: L.cmd_last },
@@ -3766,6 +3768,118 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
     }
     saveBindings(latest)
     await spawnSession(key, latestBinding, 'resume', html => void say(html))
+    return
+  }
+
+  if (cmd === 'doctor') {
+    const checks: DoctorCheck[] = [
+      { level: 'ok', label: L.doctorHub, detail: `pid ${process.pid}, socket <code>${escHtml(SOCK_PATH)}</code>` },
+    ]
+
+    let botId: number | undefined
+    try {
+      const me = await bot.api.getMe()
+      botId = me.id
+      checks.push({ level: 'ok', label: L.doctorTelegram, detail: L.doctorApiOk(escHtml(me.username)) })
+    } catch (e) {
+      checks.push({ level: 'fail', label: L.doctorTelegram, detail: L.doctorApiFail(escHtml(String(e))) })
+    }
+
+    if (Number(chat_id) > 0) {
+      checks.push({ level: 'ok', label: L.doctorPermissions, detail: L.doctorPrivateChat })
+    } else if (botId != null) {
+      try {
+        const member = await bot.api.getChatMember(chat_id, botId)
+        const admin = member.status === 'administrator' || member.status === 'creator'
+        const canTopics = member.status === 'creator' ||
+          (member.status === 'administrator' && member.can_manage_topics === true)
+        checks.push({
+          level: admin && canTopics ? 'ok' : 'warn',
+          label: L.doctorPermissions,
+          detail: admin && canTopics ? L.doctorAdminOk : L.doctorAdminLimited(escHtml(member.status)),
+        })
+      } catch (e) {
+        checks.push({ level: 'fail', label: L.doctorPermissions, detail: L.doctorApiFail(escHtml(String(e))) })
+      }
+    }
+
+    if (!binding) {
+      checks.push({ level: 'warn', label: L.doctorRegistry, detail: L.doctorNoBinding })
+    } else {
+      const adapter = adapterForBinding(binding)
+      checks.push({ level: 'ok', label: L.doctorRegistry, detail: L.doctorBindingOk(escHtml(adapter.displayName)) })
+      try {
+        const resolved = realpathSync(binding.dir)
+        const isDir = statSync(resolved).isDirectory()
+        if (!isDir) throw new Error('not a directory')
+        checks.push({ level: 'ok', label: L.doctorFolder, detail: L.doctorFolderOk(codePath(resolved)) })
+      } catch (e) {
+        checks.push({ level: 'fail', label: L.doctorFolder, detail: L.doctorFolderFail(escHtml(String(e))) })
+      }
+
+      if (live.length === 0) {
+        checks.push({ level: 'warn', label: L.doctorRouting, detail: L.doctorRoutingNone })
+      } else if (live.length === 1) {
+        checks.push({ level: 'ok', label: L.doctorRouting, detail: L.doctorRoutingOk })
+      } else {
+        checks.push({ level: 'fail', label: L.doctorRouting, detail: L.doctorRoutingMany(live.length) })
+      }
+
+      const current = live.length === 1 ? router.get(live[0]!) : undefined
+      if (current) {
+        if (current.pid == null) {
+          checks.push({ level: 'warn', label: L.doctorProcess, detail: L.doctorProcessUnknown })
+        } else {
+          checks.push({
+            level: alive(current.pid) ? 'ok' : 'fail',
+            label: L.doctorProcess,
+            detail: alive(current.pid) ? L.doctorProcessOk(current.pid) : L.doctorProcessFail(current.pid),
+          })
+        }
+      }
+
+      const name = sessionName(key, binding.dir)
+      const tmuxOk = await hasTmuxSession(name)
+      checks.push({
+        level: tmuxOk ? 'ok' : 'warn',
+        label: L.doctorTmux,
+        detail: tmuxOk ? L.doctorTmuxOk(`<code>${escHtml(name)}</code>`) : L.doctorTmuxMissing(`<code>${escHtml(name)}</code>`),
+      })
+
+      if (current?.pane) {
+        try {
+          await capturePane(current.pane)
+          const command = await paneCurrentCommand(current.pane)
+          checks.push({
+            level: adapter.isPaneCommand(command) ? 'ok' : 'fail',
+            label: L.doctorPane,
+            detail: adapter.isPaneCommand(command)
+              ? L.doctorPaneOk(`<code>${escHtml(current.pane)}</code>`, `<code>${escHtml(command)}</code>`)
+              : L.doctorPaneFail(`foreground <code>${escHtml(command || 'unknown')}</code>`),
+          })
+        } catch (e) {
+          checks.push({ level: 'fail', label: L.doctorPane, detail: L.doctorPaneFail(escHtml(String(e))) })
+        }
+      } else if (current) {
+        checks.push({ level: 'warn', label: L.doctorPane, detail: L.doctorPaneFail('pane id missing') })
+      }
+
+      checks.push({
+        level: binding.sessionId ? 'ok' : 'warn',
+        label: L.doctorConversation,
+        detail: binding.sessionId
+          ? L.doctorConversationOk(`<code>${escHtml(binding.sessionId)}</code>`)
+          : L.doctorConversationMissing,
+      })
+    }
+
+    const voiceEnabled = !!process.env.OPENAI_API_KEY
+    checks.push({
+      level: voiceEnabled ? 'ok' : 'warn',
+      label: L.doctorVoice,
+      detail: voiceEnabled ? L.doctorVoiceOk : L.doctorVoiceOff,
+    })
+    void say(renderDoctor(L.doctorHeader, checks, L.doctorSummary))
     return
   }
 

@@ -170,6 +170,7 @@ Sent in a bound topic or DM. These are handled by the bot and never reach the ag
 | Command | What it does |
 |---|---|
 | `/status` | Folder, branch, tmux name, session id, selected agent state, and supported usage/context data |
+| `/doctor` | Read-only checks for Telegram access, binding, folder, MCP routing, process, tmux/pane, resume id, and voice setup |
 | `/resume` | Bring the session back. `/resume <id>` picks one specific past conversation — works even with tmux down |
 | `/new` | Start fresh |
 | `/restart` · `/stop` | Graceful restart / stop |
