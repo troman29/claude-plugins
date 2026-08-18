@@ -56,6 +56,7 @@ import { EditablePost } from './editable-post'
 import { AnswerStream } from './answer-stream'
 import { literalSendText } from './literal-send'
 import { screenPollMs, uniqueByPane } from './screen-poll'
+import { startupAckKey } from './startup-ack'
 import { replyContext, type ReplyContext } from './reply-context'
 
 const log = (s: string) => process.stderr.write(`telegram hub: ${s}\n`)
@@ -853,12 +854,12 @@ function isAutoAckPrompt(picker: Picker): boolean {
 const autoAcked = new Map<string, { hash: string; at: number }>() // pane -> last ack
 const AUTO_ACK_RETRY_MS = 8000
 
-async function ackStartupPrompt(pane: string, picker: Picker): Promise<void> {
-  const prev = autoAcked.get(pane)
+async function ackStartupPrompt(pane: string, picker: Picker, identity = pane): Promise<void> {
+  const prev = autoAcked.get(identity)
   if (prev && prev.hash === picker.hash && Date.now() - prev.at < AUTO_ACK_RETRY_MS) {
     return
   }
-  autoAcked.set(pane, { hash: picker.hash, at: Date.now() })
+  autoAcked.set(identity, { hash: picker.hash, at: Date.now() })
   log(`startup prompt auto-acked on ${pane}: ${picker.title.slice(0, 48)}`)
   await sendKeys(pane, 'Enter').catch(() => {})
 }
@@ -925,7 +926,7 @@ async function ackStartupPromptsOnBoundPanes(): Promise<void> {
     }
     const picker = text ? parsePicker(text) : undefined
     if (picker && isAutoAckPrompt(picker)) {
-      await ackStartupPrompt(target, picker)
+      await ackStartupPrompt(target, picker, startupAckKey({ bindingKeys: [key], cwd: b.dir }, target))
     }
   }
 }
@@ -955,7 +956,7 @@ async function detectPicker(pane: string, session: SessionInfo, text: string): P
   const existing = activePickers.get(pane)
   if (!picker || isAutoAckPrompt(picker)) {
     if (picker) {
-      await ackStartupPrompt(pane, picker) // never surfaced to chat — and never left hanging
+      await ackStartupPrompt(pane, picker, startupAckKey(session, pane)) // never surfaced to chat — and never left hanging
     }
     if (existing) {
       // closed without a TG tap (answered in the TUI) — the answer is unknown to us
@@ -2012,7 +2013,9 @@ async function pollScreens(): Promise<void> {
   }
   for (const pane of [...activePickers.keys()]) if (!seen.has(pane)) disarmPicker(pane)
   for (const pane of [...lastPaneText.keys()]) if (!seen.has(pane)) lastPaneText.delete(pane)
-  for (const pane of [...autoAcked.keys()]) if (!seen.has(pane)) autoAcked.delete(pane)
+  // Binding-scoped startup acknowledgements bridge the pre-stub tmux target and post-stub pane.
+  // Keep them through that transition; only ephemeral pane-scoped fallbacks follow `seen`.
+  for (const pane of [...autoAcked.keys()]) if (pane.startsWith('%') && !seen.has(pane)) autoAcked.delete(pane)
   void ackStartupPromptsOnBoundPanes() // panes with no stub yet (stuck on a startup prompt)
   for (const pane of [...lastError.keys()]) if (!seen.has(pane)) { lastError.delete(pane); errorMisses.delete(pane) }
 
