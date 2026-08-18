@@ -2629,8 +2629,13 @@ async function spawnSession(
   key: string,
   binding: BindingEntry,
   mode: LaunchMode,
-  say: (html: string) => void,
+  // quiet глушит ТОЛЬКО болтовню про подъём (создал окно, режим старта). Отказы и ошибки
+  // уходят в чат всегда: тихий подъём над удалённой папкой оставлял топик молчать вовсе —
+  // пользователь видел «поднимаю сессию…» и больше ничего.
+  notify: { say: (html: string) => void; quiet?: boolean },
 ): Promise<void> {
+  const { say } = notify
+  const chatter = notify.quiet ? () => {} : say
   if (spawningBindings.has(key)) {
     log(`spawn skipped: already starting ${key}`)
     say(t().spawnInProgress)
@@ -2691,7 +2696,7 @@ async function spawnSession(
       log(`spawn: conversation ${binding.sessionId} gone from disk — starting fresh for ${key}`)
       say(t().conversationGone)
     }
-    say(
+    chatter(
       created
         ? t().tmuxCreated(escHtml(name), codePath(binding.dir))
         : t().tmuxExists(escHtml(name)),
@@ -2712,7 +2717,7 @@ async function spawnSession(
         : binding.sessionId && !lostConversation
           ? t().modeRestart
           : t().modeNew
-    say(`${startedLabel}\n\n<code>${escHtml(launch)}</code>`)
+    chatter(`${startedLabel}\n\n<code>${escHtml(launch)}</code>`)
     if (fresh && adapter.capabilities.captureSessionIdAtLaunch) {
       void captureNewAdapterSessionId(adapter, binding.dir, before, 60_000).then(id => {
         if (!id) {
@@ -2787,7 +2792,7 @@ async function reviveBoundSessions(): Promise<void> {
             log(`boot-revive notify failed: ${key} ${err}`)
           }
         })
-    await spawnSession(key, binding, binding.sessionId ? 'resume' : 'new', say)
+    await spawnSession(key, binding, binding.sessionId ? 'resume' : 'new', { say })
     await new Promise(r => setTimeout(r, 3000))
   }
 }
@@ -3052,7 +3057,7 @@ async function runAutoTopic(
       log(`auto-topic cancelled: ${key} was manually bound before launch`)
       return
     }
-    await spawnSession(key, reg[key], 'new', say)
+    await spawnSession(key, reg[key], 'new', { say })
   } catch (e) {
     say(t().sessionSpawnFail(escHtml(String(e))))
   } finally {
@@ -3354,7 +3359,7 @@ async function handleInbound(inbound: Inbound): Promise<void> {
         })
         .catch(() => {})
     }
-    await spawnSession(key, binding, binding.sessionId ? 'resume' : 'new', wasIdle ? () => {} : say)
+    await spawnSession(key, binding, binding.sessionId ? 'resume' : 'new', { say, quiet: wasIdle })
     conns = await waitForBinding(key, 30_000)
     if (conns.length === 0) {
       say(t().sessionNotConnectedInTime)
@@ -3919,7 +3924,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
         .sendMessage(chat_id, html, { message_thread_id: newThreadId, parse_mode: 'HTML' })
         .catch(() => {})
     sayFork(L.forkedFrom(threadId, escHtml(binding.sessionId)))
-    await spawnSession(newKey, fresh[newKey]!, 'fork', sayFork)
+    await spawnSession(newKey, fresh[newKey]!, 'fork', { say: sayFork })
     const conns = await waitForBinding(newKey, 30_000)
     if (conns.length === 0) {
       sayFork(L.sessionNotConnectedInTime)
@@ -3988,7 +3993,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
       return
     }
     saveBindings(latest)
-    await spawnSession(key, latestBinding, 'resume', html => void say(html))
+    await spawnSession(key, latestBinding, 'resume', { say: html => void say(html) })
     return
   }
 
@@ -4193,13 +4198,13 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
       // «сессия большая, возобновить из саммари?» и без трат на возобновление.
       if (cmd === 'clear' && binding.sessionId) {
         void say(L.clearStartsFresh)
-        await spawnSession(key, binding, 'new', html => void say(html))
+        await spawnSession(key, binding, 'new', { say: html => void say(html) })
         return
       }
       const revivable = cmd !== 'esc' && cmd !== 'stop'
       if (revivable && binding.sessionId) {
         void say(L.revivingForCommand(cmd))
-        await spawnSession(key, binding, 'resume', () => {})
+        await spawnSession(key, binding, 'resume', { say: html => void say(html), quiet: true })
         live = await waitForBinding(key, 30_000)
         const pane = live.length > 0 ? router.get(live[0])?.pane : undefined
         // Здесь срок НАМЕРЕННО короче PANE_READY_MS: это не ожидание доставки, а проба —
@@ -4338,7 +4343,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
         return
       }
       await new Promise(r => setTimeout(r, 1000))
-      await spawnSession(key, binding, 'new', html => void say(html))
+      await spawnSession(key, binding, 'new', { say: html => void say(html) })
       return
     }
     const liveAdapter = adapterForBinding(binding)
@@ -4442,11 +4447,11 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
     // apparently resumed but with an empty shell.  Starting fresh is the only
     // actionable interpretation of `/resume` here.
     if (recent.length === 0) {
-      await spawnSession(key, binding, 'new', html => void say(html))
+      await spawnSession(key, binding, 'new', { say: html => void say(html) })
       return
     }
   }
-  await spawnSession(key, binding, cmd === 'resume' ? 'resume' : 'new', html => void say(html))
+  await spawnSession(key, binding, cmd === 'resume' ? 'resume' : 'new', { say: html => void say(html) })
 }
 
 // "🆕 new or ⏪ which past session" keyboard — shown after /bind and on /resume.
@@ -4883,12 +4888,13 @@ bot.on('callback_query:data', async ctx => {
       )
       .catch(() => {})
     const target = keyToTarget(key)
-    await spawnSession(key, binding, sessionId ? 'resume' : 'new', html =>
-      void bot.api.sendMessage(target.chat_id, html, {
-        ...inTopic(target.thread_id),
-        parse_mode: 'HTML',
-      }).catch(() => {}),
-    )
+    await spawnSession(key, binding, sessionId ? 'resume' : 'new', {
+      say: html =>
+        void bot.api.sendMessage(target.chat_id, html, {
+          ...inTopic(target.thread_id),
+          parse_mode: 'HTML',
+        }).catch(() => {}),
+    })
     return
   }
   const pick = parseCallback(ctx.callbackQuery.data)
