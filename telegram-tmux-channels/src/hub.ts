@@ -31,7 +31,7 @@ import {
   capturePane, capturePaneAnsi, type OpsCommand,
 } from './tmux-ops'
 import { ansiToImage } from './ansi-image'
-import { emptyStatus, hasLiveWork, renderBg, renderStatus, statusIsEmpty, syncBg, type BgTask, type StatusState } from './status-render'
+import { deserializeStatus, emptyStatus, hasLiveWork, renderBg, renderStatus, serializeStatus, statusIsEmpty, syncBg, type BgTask, type StatusState } from './status-render'
 import { discoverGlobalSkills, discoverProjectSkills, mangleCmd, resolveSkillCommand, skillInvocation, tgDescription, type Skill } from './skills'
 import { agentPidsInDir, cmdlineOf } from './proc'
 import { rmQuiet } from './util'
@@ -51,6 +51,8 @@ import { HubStateRepository, type PersistedPicker, type PersistedInbound, type P
 import { recordChat, recordTopic, topicTitle, chatLabel } from './known-chats'
 import { agentAdapter, mayLearn, type AgentAdapter, type AgentKind, type AgentStatusPanel } from './agents'
 import { renderDoctor, type DoctorCheck } from './doctor'
+import { InteractionRegistry } from './interaction-registry'
+import { EditablePost } from './editable-post'
 
 const log = (s: string) => process.stderr.write(`telegram hub: ${s}\n`)
 
@@ -768,7 +770,7 @@ type ActivePicker = {
   key: string // binding key — reject a tap if the pane got recycled to another session post-restart
 }
 const activePickers = new Map<string, ActivePicker>() // key = pane
-const awaitingCustom = new Map<string, { chatId: string; threadId?: number; at: number; multi: boolean }>()
+const awaitingCustom = new Map<string, { chatId: string; threadId?: number; bindingKey: string; at: number; multi: boolean }>()
 
 function bindingAllows(chatId: string, senderId: string): boolean {
   const reg = loadBindings()
@@ -1031,51 +1033,60 @@ async function detectPicker(pane: string, session: SessionInfo, text: string): P
 //
 // The single status bubble owns the only instance; `fresh` comes from beginStatusBatch() below,
 // which combines sinceTurnEnd() with "nothing still running".
-class PerTurnEditablePost {
-  private msg = new Map<string, number>() // key -> Telegram message id (-1 = first send in flight)
-  private turnEnded = new Map<string, boolean>() // key -> a Stop happened since this post's last batch
-  endTurn(key: string): void { this.turnEnded.set(key, true) }
-  sinceTurnEnd(key: string): boolean { return this.turnEnded.get(key) ?? true }
-  forget(key: string): void { this.msg.delete(key); this.turnEnded.delete(key) }
+const stateRepo = new HubStateRepository(log)
+const interactions = new InteractionRegistry(
+  stateRepo.interactionSnapshot(),
+  snapshot => stateRepo.replaceInteractions(snapshot),
+)
+for (const [pane, value] of interactions.entries('custom-answer')) awaitingCustom.set(pane, value)
+function armCustom(pane: string, value: { chatId: string; threadId?: number; bindingKey: string; at: number; multi: boolean }): void {
+  awaitingCustom.set(pane, value)
+  interactions.set({ kind: 'custom-answer', key: pane, updatedAt: Date.now(), expiresAt: value.at + CUSTOM_TIMEOUT_MS, data: value })
+}
+function disarmCustom(pane: string): void {
+  awaitingCustom.delete(pane)
+  interactions.delete('custom-answer', pane)
+}
 
-  // `render` returns the HTML for the current domain state; it is called again after the first
-  // send to fold in state that changed during the await. `fresh` = the caller's "new batch" call.
-  async update(key: string, fresh: boolean, render: () => string): Promise<void> {
-    if (fresh) {
-      this.msg.delete(key) // new batch — start a fresh message at the bottom
-    }
-    this.turnEnded.set(key, false)
-    const { chat_id, thread_id } = keyToTarget(key)
-    const threadOpt = inTopic(thread_id)
-    const existing = this.msg.get(key)
-    if (existing === undefined) {
-      this.msg.set(key, -1) // reserve synchronously before the await
-      const text = render()
-      const sent = await bot.api
-        .sendMessage(chat_id, text, { ...threadOpt, parse_mode: 'HTML' })
-        .catch(() => undefined)
-      if (!sent) {
-        if (this.msg.get(key) === -1) this.msg.delete(key) // send failed — release the reservation
-        return
-      }
-      this.msg.set(key, sent.message_id)
-      const latest = render() // events that raced in while sending skipped their edit — re-render now
-      if (latest !== text) {
-        await bot.api.editMessageText(chat_id, sent.message_id, latest, { parse_mode: 'HTML' }).catch(() => {})
-      }
-      return
-    }
-    if (existing === -1) {
-      return // first send still in flight — the post-send re-render above will pick up this state
-    }
-    await bot.api.editMessageText(chat_id, existing, render(), { parse_mode: 'HTML' }).catch(() => {})
-  }
+const editableTransport = {
+  async send(key: string, text: string): Promise<number | undefined> {
+    const target = keyToTarget(key)
+    const sent = await bot.api.sendMessage(target.chat_id, text, {
+      ...inTopic(target.thread_id), parse_mode: 'HTML',
+    }).catch(() => undefined)
+    return sent?.message_id
+  },
+  async edit(key: string, msgId: number, text: string): Promise<void> {
+    const target = keyToTarget(key)
+    await bot.api.editMessageText(target.chat_id, msgId, text, { parse_mode: 'HTML' }).catch(() => {})
+  },
 }
 // ONE bubble for everything a turn spawns — agents, tasks, todos, skills, background shells.
 // Four separate posts meant a busy turn sent four notifications; now the first event sends and
 // every later one edits. State per key lives in `statusState`; rendering is pure (status-render).
-const statusPost = new PerTurnEditablePost()
-const statusState = new Map<string, StatusState>()
+const statusState = new Map<string, StatusState>(
+  interactions.entries('status')
+    .filter(([key, value]) => loadBindings()[key]?.dir === value.bindingDir)
+    .map(([key, value]) => [key, deserializeStatus(value.state)]),
+)
+const statusPost = new EditablePost(
+  interactions.entries('status').filter(([key, value]) => loadBindings()[key]?.dir === value.bindingDir).map(([key, value]) => [key, value]),
+  (key, msgId, turnEnded) => {
+    const state = statusState.get(key)
+    const bindingDir = loadBindings()[key]?.dir
+    if (!state || !bindingDir) return
+    const target = keyToTarget(key)
+    interactions.set({
+      kind: 'status', key, updatedAt: Date.now(),
+      data: {
+        chatId: target.chat_id, ...(target.thread_id != null ? { threadId: target.thread_id } : {}),
+        msgId, bindingDir, turnEnded, state: serializeStatus(state),
+      },
+    })
+  },
+  key => interactions.delete('status', key),
+  editableTransport,
+)
 
 // Returns the state to mutate, and whether this event opens a NEW bubble. A new batch starts
 // only once the turn ended AND nothing is still running — a run_in_background agent outlives
@@ -1118,7 +1129,6 @@ const lastFallback = new Map<string, string>() // key -> last auto-forwarded tex
 // Persist the two above so a hub restart between an inbound and the agent's reply no longer wipes
 // the pending marker (the fallback would then never fire). Maps stay the runtime source of truth;
 // the repo mirrors them to disk and rehydrates on boot.
-const stateRepo = new HubStateRepository(log)
 const launchCaptures = new Map<string, PersistedLaunchCapture>(stateRepo.launchCaptureEntries())
 for (const [k, v] of stateRepo.pendingEntries()) pendingAnswer.set(k, v)
 for (const [k, v] of stateRepo.fallbackEntries()) lastFallback.set(k, v)
@@ -1183,7 +1193,7 @@ function armPicker(pane: string, ap: ActivePicker): void {
   activePickers.set(pane, ap)
   stateRepo.setPicker(pane, { ...ap, at: Date.now() })
 }
-function disarmPicker(pane: string): void { activePickers.delete(pane); stateRepo.delPicker(pane) }
+function disarmPicker(pane: string): void { activePickers.delete(pane); stateRepo.delPicker(pane); disarmCustom(pane) }
 
 // pane -> a persisted picker awaiting confirmation that its session/pane still shows it
 const recoveredPickers = new Map<string, PersistedPicker>()
@@ -1340,9 +1350,20 @@ async function refreshCommands(): Promise<string> {
 
 // /skills menus: token → the project skills a message's buttons run. Callback data is
 // tiny (skrun:<token>:<idx>), so the name list lives here, not in the button payload.
-const skillMenus = new Map<string, { key: string; dir: string; names: string[] }>()
-let skillMenuSeq = 0
+const skillMenus = new Map<string, { key: string; dir: string; names: string[] }>(
+  interactions.entries('skill-menu').map(([token, value]) => [token, { key: value.bindingKey, dir: value.dir, names: value.names }]),
+)
+let skillMenuSeq = Math.max(0, ...[...skillMenus.keys()].map(Number).filter(Number.isFinite))
 const SKILL_PAGE = 8 // skills per page — one column, so keep it short enough to not scroll
+const SKILL_MENU_TTL_MS = 7 * 24 * 60 * 60 * 1000
+
+function liveSkillMenu(token: string): { key: string; dir: string; names: string[] } | undefined {
+  const menu = skillMenus.get(token)
+  if (menu && loadBindings()[menu.key]?.dir === menu.dir) return menu
+  skillMenus.delete(token)
+  interactions.delete('skill-menu', token)
+  return undefined
+}
 
 // One-column skill buttons + a ◀ page/pages ▶ nav row (only when >1 page).
 function skillMenuKeyboard(token: string, names: string[], page: number): InlineKeyboard {
@@ -1522,8 +1543,14 @@ async function handleSubagentEvent(msg: Extract<StubToHub, { op: 'subagent' }>):
 // "✻ Compacting conversation… (elapsed)" + a "▰▱… NN%" bar during /compact and auto-compact.
 // Mirror it into one self-editing Telegram message per pane. capturePane occasionally catches
 // a mid-redraw frame WITHOUT the line, so finalize only after 2 consecutive misses (anti-flicker).
-type CompactState = { chatId: string; threadId?: number; msgId: number; lastPct: number; misses: number }
-const compactMessages = new Map<string, CompactState>() // key = pane
+type CompactState = { chatId: string; threadId?: number; msgId: number; bindingKey: string; lastPct: number; misses: number }
+const compactMessages = new Map<string, CompactState>(interactions.entries('compaction')) // key = pane
+const PROGRESS_TTL_MS = 60 * 60 * 1000
+function persistCompaction(pane: string, state: CompactState): void {
+  if (state.msgId < 1) return
+  interactions.set({ kind: 'compaction', key: pane, updatedAt: Date.now(), expiresAt: Date.now() + PROGRESS_TTL_MS, data: state })
+}
+function forgetCompaction(pane: string): void { compactMessages.delete(pane); interactions.delete('compaction', pane) }
 
 function renderCompactBar(pct: number, elapsed?: string): string {
   const filled = Math.max(0, Math.min(10, Math.round(pct / 10)))
@@ -1533,7 +1560,12 @@ function renderCompactBar(pct: number, elapsed?: string): string {
 
 async function handleCompaction(pane: string, session: SessionInfo, text: string): Promise<void> {
   const prog = adapterForSession(session).parseCompaction(text)
-  const existing = compactMessages.get(pane)
+  const bindingKey = session.bindingKeys?.[0]
+  let existing = compactMessages.get(pane)
+  if (existing && existing.bindingKey !== bindingKey) {
+    forgetCompaction(pane)
+    existing = undefined
+  }
   if (prog) {
     if (!existing) {
       const target = pickerChatFor(session)
@@ -1541,7 +1573,8 @@ async function handleCompaction(pane: string, session: SessionInfo, text: string
         return
       }
       // reserve the slot synchronously so an overlapping tick doesn't double-send
-      compactMessages.set(pane, { chatId: target.chatId, ...(target.threadId != null ? { threadId: target.threadId } : {}), msgId: -1, lastPct: prog.pct, misses: 0 })
+      if (!bindingKey) return
+      compactMessages.set(pane, { chatId: target.chatId, ...(target.threadId != null ? { threadId: target.threadId } : {}), msgId: -1, bindingKey, lastPct: prog.pct, misses: 0 })
       const sent = await bot.api
         .sendMessage(target.chatId, renderCompactBar(prog.pct, prog.elapsed), {
           ...inTopic(target.threadId),
@@ -1549,7 +1582,9 @@ async function handleCompaction(pane: string, session: SessionInfo, text: string
         })
         .catch(() => undefined)
       if (sent) {
-        compactMessages.set(pane, { chatId: target.chatId, ...(target.threadId != null ? { threadId: target.threadId } : {}), msgId: sent.message_id, lastPct: prog.pct, misses: 0 })
+        const state = { chatId: target.chatId, ...(target.threadId != null ? { threadId: target.threadId } : {}), msgId: sent.message_id, bindingKey, lastPct: prog.pct, misses: 0 }
+        compactMessages.set(pane, state)
+        persistCompaction(pane, state)
       } else if (compactMessages.get(pane)?.msgId === -1) {
         compactMessages.delete(pane)
       }
@@ -1563,11 +1598,12 @@ async function handleCompaction(pane: string, session: SessionInfo, text: string
     await bot.api
       .editMessageText(existing.chatId, existing.msgId, renderCompactBar(prog.pct, prog.elapsed), { parse_mode: 'HTML' })
       .catch(() => {})
+    persistCompaction(pane, existing)
   } else if (existing && existing.msgId !== -1) {
     if (++existing.misses < 2) {
       return // tolerate a single flicker frame before declaring it done
     }
-    compactMessages.delete(pane)
+    forgetCompaction(pane)
     await bot.api
       .editMessageText(existing.chatId, existing.msgId, t().compactionDone, { parse_mode: 'HTML' })
       .catch(() => {})
@@ -1578,8 +1614,13 @@ async function handleCompaction(pane: string, session: SessionInfo, text: string
 // no name, but Claude Code renders the real name + agent count on one bottom line. Same
 // self-editing + 2-miss anti-flicker as compaction; the workflow-subagent hook status is
 // suppressed (handleSubagentEvent) so this doesn't double up.
-type WorkflowState = { chatId: string; threadId?: number; msgId: number; last: string; name: string; total: number; misses: number }
-const workflowMessages = new Map<string, WorkflowState>() // key = pane
+type WorkflowState = { chatId: string; threadId?: number; msgId: number; bindingKey: string; last: string; name: string; total: number; misses: number }
+const workflowMessages = new Map<string, WorkflowState>(interactions.entries('workflow')) // key = pane
+function persistWorkflow(pane: string, state: WorkflowState): void {
+  if (state.msgId < 1) return
+  interactions.set({ kind: 'workflow', key: pane, updatedAt: Date.now(), expiresAt: Date.now() + PROGRESS_TTL_MS, data: state })
+}
+function forgetWorkflow(pane: string): void { workflowMessages.delete(pane); interactions.delete('workflow', pane) }
 
 function renderWorkflow(name: string, done: number, total: number): string {
   return t().workflow(escHtml(name), done, total)
@@ -1587,16 +1628,21 @@ function renderWorkflow(name: string, done: number, total: number): string {
 
 async function handleWorkflow(pane: string, session: SessionInfo, text: string): Promise<void> {
   const wf = adapterForSession(session).parseWorkflow(text)
-  const existing = workflowMessages.get(pane)
+  const bindingKey = session.bindingKeys?.[0]
+  let existing = workflowMessages.get(pane)
+  if (existing && existing.bindingKey !== bindingKey) {
+    forgetWorkflow(pane)
+    existing = undefined
+  }
   if (wf) {
     const key = `${wf.name} ${wf.done}/${wf.total}`
     if (!existing) {
       const target = pickerChatFor(session)
-      if (!target) {
+      if (!target || !bindingKey) {
         return
       }
       const base = { chatId: target.chatId, ...(target.threadId != null ? { threadId: target.threadId } : {}) }
-      workflowMessages.set(pane, { ...base, msgId: -1, last: key, name: wf.name, total: wf.total, misses: 0 }) // reserve
+      workflowMessages.set(pane, { ...base, msgId: -1, bindingKey, last: key, name: wf.name, total: wf.total, misses: 0 }) // reserve
       const sent = await bot.api
         .sendMessage(target.chatId, renderWorkflow(wf.name, wf.done, wf.total), {
           ...inTopic(target.threadId),
@@ -1604,7 +1650,9 @@ async function handleWorkflow(pane: string, session: SessionInfo, text: string):
         })
         .catch(() => undefined)
       if (sent) {
-        workflowMessages.set(pane, { ...base, msgId: sent.message_id, last: key, name: wf.name, total: wf.total, misses: 0 })
+        const state = { ...base, msgId: sent.message_id, bindingKey, last: key, name: wf.name, total: wf.total, misses: 0 }
+        workflowMessages.set(pane, state)
+        persistWorkflow(pane, state)
       } else if (workflowMessages.get(pane)?.msgId === -1) {
         workflowMessages.delete(pane)
       }
@@ -1620,11 +1668,12 @@ async function handleWorkflow(pane: string, session: SessionInfo, text: string):
     await bot.api
       .editMessageText(existing.chatId, existing.msgId, renderWorkflow(wf.name, wf.done, wf.total), { parse_mode: 'HTML' })
       .catch(() => {})
+    persistWorkflow(pane, existing)
   } else if (existing && existing.msgId !== -1) {
     if (++existing.misses < 2) {
       return // tolerate a flicker frame before declaring it done
     }
-    workflowMessages.delete(pane)
+    forgetWorkflow(pane)
     await bot.api
       .editMessageText(existing.chatId, existing.msgId, t().workflowDone(escHtml(existing.name), existing.total), { parse_mode: 'HTML' })
       .catch(() => {})
@@ -1732,8 +1781,27 @@ async function handleSkillEvent(msg: Extract<StubToHub, { op: 'skill' }>): Promi
 // Background shells own a message of their own, on the same send-once-then-edit machinery as
 // the turn bubble but with a different lifetime: a run keeps its message until every shell in
 // it has finished, however many turns that takes. The next shell after that starts a new one.
-const bgPost = new PerTurnEditablePost()
-const bgState = new Map<string, BgTask[]>() // key -> shells of the current run, done ones kept
+const bgState = new Map<string, BgTask[]>(interactions.entries('background')
+  .filter(([key, value]) => loadBindings()[key]?.dir === value.bindingDir)
+  .map(([key, value]) => [key, value.tasks]))
+const bgPost = new EditablePost(
+  interactions.entries('background').filter(([key, value]) => loadBindings()[key]?.dir === value.bindingDir).map(([key, value]) => [key, value]),
+  (key, msgId) => {
+    const tasks = bgState.get(key)
+    const bindingDir = loadBindings()[key]?.dir
+    if (!tasks || !bindingDir) return
+    const target = keyToTarget(key)
+    interactions.set({
+      kind: 'background', key, updatedAt: Date.now(),
+      data: {
+        chatId: target.chat_id, ...(target.thread_id != null ? { threadId: target.thread_id } : {}),
+        msgId, bindingDir, tasks,
+      },
+    })
+  },
+  key => interactions.delete('background', key),
+  editableTransport,
+)
 
 // Returns the list to mutate, and whether this opens a NEW message: only once the previous run
 // is fully finished. Otherwise a shell launched now joins the message already on screen.
@@ -1766,20 +1834,29 @@ async function handleBgEvent(msg: Extract<StubToHub, { op: 'bg' }>): Promise<voi
 // Unlike Claude's TUI bar, Codex hooks expose an exact compaction lifecycle but no numeric
 // progress. One message per binding gives start → completion visibility without inventing a
 // percentage from an unstable transcript.
-const hookCompactions = new Map<string, { chatId: string; threadId?: number; msgId: number }>()
+const hookCompactions = new Map<string, { chatId: string; threadId?: number; msgId: number; bindingDir: string }>(
+  interactions.entries('hook-compaction').filter(([key, value]) => loadBindings()[key]?.dir === value.bindingDir),
+)
 async function handleCompactionEvent(msg: Extract<StubToHub, { op: 'compaction' }>): Promise<void> {
   for (const key of msg.bindingKeys) {
     const existing = hookCompactions.get(key)
     if (msg.phase === 'start') {
       if (existing) continue
+      const bindingDir = loadBindings()[key]?.dir
+      if (!bindingDir) continue
       const target = keyToTarget(key)
       const sent = await bot.api.sendMessage(target.chat_id, t().compactionStarted(msg.trigger ?? ''), {
         ...inTopic(target.thread_id), parse_mode: 'HTML',
       }).catch(() => undefined)
-      if (sent) hookCompactions.set(key, { chatId: target.chat_id, ...(target.thread_id != null ? { threadId: target.thread_id } : {}), msgId: sent.message_id })
+      if (sent) {
+        const state = { chatId: target.chat_id, ...(target.thread_id != null ? { threadId: target.thread_id } : {}), msgId: sent.message_id, bindingDir }
+        hookCompactions.set(key, state)
+        interactions.set({ kind: 'hook-compaction', key, updatedAt: Date.now(), expiresAt: Date.now() + PROGRESS_TTL_MS, data: state })
+      }
       continue
     }
     hookCompactions.delete(key)
+    interactions.delete('hook-compaction', key)
     if (existing) {
       await bot.api.editMessageText(existing.chatId, existing.msgId, t().compactionDone, { parse_mode: 'HTML' }).catch(() => {})
     }
@@ -1873,9 +1950,7 @@ async function pollScreens(): Promise<void> {
   for (const pane of [...lastPaneText.keys()]) if (!seen.has(pane)) lastPaneText.delete(pane)
   for (const pane of [...autoAcked.keys()]) if (!seen.has(pane)) autoAcked.delete(pane)
   void ackStartupPromptsOnBoundPanes() // panes with no stub yet (stuck on a startup prompt)
-  for (const pane of [...compactMessages.keys()]) if (!seen.has(pane)) compactMessages.delete(pane)
   for (const pane of [...lastError.keys()]) if (!seen.has(pane)) { lastError.delete(pane); errorMisses.delete(pane) }
-  for (const pane of [...workflowMessages.keys()]) if (!seen.has(pane)) workflowMessages.delete(pane)
 
   // PASS 2 — detectors, parallel across panes; skip if a prior pass is still running
   if (detectorsRunning) {
@@ -2007,9 +2082,10 @@ async function handlePickCallback(
         await sendKeys(pane, String(ap.picker.customIndex))
       }
     }
-    awaitingCustom.set(pane, {
+    armCustom(pane, {
       chatId: ap.chatId,
       ...(ap.threadId != null ? { threadId: ap.threadId } : {}),
+      bindingKey: ap.key,
       at: Date.now(),
       multi: ap.picker.mode === 'multi',
     })
@@ -2276,9 +2352,12 @@ async function renderScreenImage(pane: string): Promise<Uint8Array | undefined> 
 // (the message + Close button stay so it can still be dismissed).
 // kind: 'png' = /screen (rendered photo), 'text' = /last (paneDigest as a <pre> message).
 // Both share the same live-view lifecycle (one self-updating message, Close button, auto-stop).
-type LiveScreen = { chatId: string; threadId?: number; msgId: number; pane: string; lastText: string; kind: 'png' | 'text'; timer?: ReturnType<typeof setInterval> }
-const liveScreens = new Map<string, LiveScreen>() // token -> view
-let screenSeq = 0
+type LiveScreen = { chatId: string; threadId?: number; msgId: number; pane: string; bindingKey: string; lastText: string; kind: 'png' | 'text'; refreshUntil: number; timer?: ReturnType<typeof setInterval> }
+const liveScreens = new Map<string, LiveScreen>(interactions.entries('live-screen').map(([token, value]) => [token, {
+  chatId: value.chatId, ...(value.threadId != null ? { threadId: value.threadId } : {}), msgId: value.msgId,
+  pane: value.pane, bindingKey: value.bindingKey, lastText: value.lastText, kind: value.viewKind, refreshUntil: value.refreshUntil,
+}])) // token -> view
+let screenSeq = Math.max(0, ...[...liveScreens.keys()].map(Number).filter(Number.isFinite))
 const SCREEN_REFRESH_MS = 5000 // calm cadence — a busier tick just spams "edited" on the message
 const SCREEN_LIVE_MS = 3 * 60_000
 const LAST_LIVE_MS = 30 * 60_000 // /last — это editMessageText, ни рендера, ни заливки: живёт долго
@@ -2296,6 +2375,7 @@ function closeLiveScreen(token: string): LiveScreen | undefined {
   if (v) {
     if (v.timer) clearInterval(v.timer)
     liveScreens.delete(token)
+    interactions.delete('live-screen', token)
   }
   return v
 }
@@ -2320,6 +2400,8 @@ function stopRefreshing(token: string): void {
   }
   clearInterval(v.timer)
   v.timer = undefined
+  v.refreshUntil = 0
+  persistLiveScreen(token, v)
   if (v.kind === 'text') {
     void bot.api
       .editMessageText(v.chatId, v.msgId, digestMsg(v.pane, paneDigest(v.lastText), t().updateStopped), { parse_mode: 'HTML', reply_markup: closeKb(token) })
@@ -2333,7 +2415,7 @@ function stopRefreshing(token: string): void {
 
 async function refreshLiveScreen(token: string): Promise<void> {
   const v = liveScreens.get(token)
-  if (!v) {
+  if (!v || !paneBelongsToKey(v.pane, v.bindingKey)) {
     return
   }
   const text = await capturePane(v.pane).catch(() => '')
@@ -2346,6 +2428,7 @@ async function refreshLiveScreen(token: string): Promise<void> {
       return
     }
     v.lastText = text
+    persistLiveScreen(token, v)
     await bot.api
       .editMessageText(v.chatId, v.msgId, digestMsg(v.pane, paneDigest(text)), { parse_mode: 'HTML', reply_markup: closeKb(token) })
       .catch(() => {})
@@ -2359,6 +2442,7 @@ async function refreshLiveScreen(token: string): Promise<void> {
     return
   }
   v.lastText = text
+  persistLiveScreen(token, v)
   const png = await renderScreenImage(v.pane).catch(() => undefined)
   if (!png) {
     return
@@ -2374,7 +2458,29 @@ async function refreshLiveScreen(token: string): Promise<void> {
     .catch(() => {})
 }
 
-async function startLiveScreen(chatId: string, threadId: number | undefined, pane: string, kind: 'png' | 'text' = 'png'): Promise<void> {
+function persistLiveScreen(token: string, v: LiveScreen): void {
+  interactions.set({
+    kind: 'live-screen', key: token, updatedAt: Date.now(), expiresAt: Math.max(Date.now(), v.refreshUntil) + 24 * 60 * 60 * 1000,
+    data: {
+      chatId: v.chatId, ...(v.threadId != null ? { threadId: v.threadId } : {}), msgId: v.msgId,
+      pane: v.pane, bindingKey: v.bindingKey, lastText: v.lastText, viewKind: v.kind, refreshUntil: v.refreshUntil,
+    },
+  })
+}
+
+let liveScreensResumed = false
+function resumeLiveScreens(): void {
+  if (liveScreensResumed) return
+  liveScreensResumed = true
+  const now = Date.now()
+  for (const [token, v] of liveScreens) {
+    if (v.refreshUntil <= now) continue
+    v.timer = setInterval(() => void refreshLiveScreen(token), SCREEN_REFRESH_MS)
+    setTimeout(() => stopRefreshing(token), v.refreshUntil - now)
+  }
+}
+
+async function startLiveScreen(chatId: string, threadId: number | undefined, pane: string, bindingKey: string, kind: 'png' | 'text' = 'png'): Promise<void> {
   await closeAllLiveScreens() // ровно один живой экран на бота — новый гасит прежний
   const token = String(++screenSeq)
   const kb = closeKb(token)
@@ -2387,7 +2493,9 @@ async function startLiveScreen(chatId: string, threadId: number | undefined, pan
       .catch(() => undefined)
     if (sent) {
       const timer = setInterval(() => void refreshLiveScreen(token), SCREEN_REFRESH_MS)
-      liveScreens.set(token, { chatId, ...(threadId != null ? { threadId } : {}), msgId: sent.message_id, pane, lastText: raw, kind: 'text', timer })
+      const state = { chatId, ...(threadId != null ? { threadId } : {}), msgId: sent.message_id, pane, bindingKey, lastText: raw, kind: 'text' as const, refreshUntil: Date.now() + LAST_LIVE_MS, timer }
+      liveScreens.set(token, state)
+      persistLiveScreen(token, state)
       setTimeout(() => stopRefreshing(token), LAST_LIVE_MS)
     }
     return
@@ -2401,13 +2509,15 @@ async function startLiveScreen(chatId: string, threadId: number | undefined, pan
     if (sent) {
       const lastText = await capturePane(pane).catch(() => '')
       const timer = setInterval(() => void refreshLiveScreen(token), SCREEN_REFRESH_MS)
-      liveScreens.set(token, { chatId, ...(threadId != null ? { threadId } : {}), msgId: sent.message_id, pane, lastText, kind: 'png', timer })
+      const state = { chatId, ...(threadId != null ? { threadId } : {}), msgId: sent.message_id, pane, bindingKey, lastText, kind: 'png' as const, refreshUntil: Date.now() + SCREEN_LIVE_MS, timer }
+      liveScreens.set(token, state)
+      persistLiveScreen(token, state)
       setTimeout(() => stopRefreshing(token), SCREEN_LIVE_MS) // stop refreshing; Close still works
       return
     }
   }
   // render / photo failed → fall back to the live text view (same as /last)
-  await startLiveScreen(chatId, threadId, pane, 'text')
+  await startLiveScreen(chatId, threadId, pane, bindingKey, 'text')
 }
 
 // Стаб подключился ≠ пейн готов принять ввод: на старте висит модалка (доверие к папке,
@@ -2630,6 +2740,7 @@ async function teardownBinding(key: string, binding: BindingEntry): Promise<{ no
   const reg = loadBindings()
   delete reg[key]
   saveBindings(reg)
+  purgeBindingInteractions(key)
   // The report goes to General (the topic is already gone) — so it must name what was removed itself:
   // the topic (id + name, if known), the folder and the conversation id, else it's unreadable in the shared feed.
   const { chat_id: chatId, thread_id: tid } = keyToTarget(key)
@@ -2690,6 +2801,21 @@ async function teardownBinding(key: string, binding: BindingEntry): Promise<{ no
   return { note, failed }
 }
 
+function purgeBindingInteractions(key: string): void {
+  statusPost.forget(key)
+  statusState.delete(key)
+  bgPost.forget(key)
+  bgState.delete(key)
+  hookCompactions.delete(key)
+  disarmPendingTopic(key)
+  for (const [token, menu] of skillMenus) if (menu.key === key) skillMenus.delete(token)
+  for (const [pane, custom] of awaitingCustom) if (custom.bindingKey === key) awaitingCustom.delete(pane)
+  for (const [pane, state] of compactMessages) if (state.bindingKey === key) compactMessages.delete(pane)
+  for (const [pane, state] of workflowMessages) if (state.bindingKey === key) workflowMessages.delete(pane)
+  for (const [token, state] of [...liveScreens]) if (state.bindingKey === key) closeLiveScreen(token)
+  interactions.deleteBinding(key)
+}
+
 // Telegram has NO "forum topic deleted" update (unlike created/closed/reopened) — bots
 // aren't told. So a deleted topic is detected reactively: the next send to it fails with
 // "message thread not found". That error triggers this teardown; notifications go to
@@ -2721,7 +2847,24 @@ async function onTopicGone(key: string): Promise<void> {
 
 // new forum topic in a trusted group → auto-bind + auto-start, no /bind needed
 type PendingTopic = { cfg: TrustedGroupConfig; mode: TrustedGroupMode; topicName: string; say: (html: string) => void; base?: string; agent?: AgentKind }
-const pendingTopics = new Map<string, PendingTopic>() // waiting for a "which folder?" answer
+const pendingTopics = new Map<string, PendingTopic>(interactions.entries('pending-topic').map(([key, value]) => [key, {
+  cfg: value.cfg, mode: value.mode, topicName: value.topicName, say: sayFor(value.chatId, value.threadId),
+  ...(value.base ? { base: value.base } : {}), ...(value.agent ? { agent: value.agent } : {}),
+}])) // waiting for a "which folder?" answer
+
+function armPendingTopic(key: string, value: PendingTopic): void {
+  pendingTopics.set(key, value)
+  const target = keyToTarget(key)
+  if (target.thread_id == null) return
+  interactions.set({
+    kind: 'pending-topic', key, updatedAt: Date.now(), expiresAt: Date.now() + 60 * 60 * 1000,
+    data: {
+      cfg: value.cfg, mode: value.mode, topicName: value.topicName, chatId: target.chat_id, threadId: target.thread_id,
+      ...(value.base ? { base: value.base } : {}), ...(value.agent ? { agent: value.agent } : {}),
+    },
+  })
+}
+function disarmPendingTopic(key: string): void { pendingTopics.delete(key); interactions.delete('pending-topic', key) }
 // mode picker sent, waiting for a button tap — before dir resolution starts
 type PendingModeChoice = { cfg: TrustedGroupConfig; topicName: string; say: (html: string) => void; agent?: AgentKind }
 const pendingModeChoice = new Map<string, PendingModeChoice>()
@@ -2744,7 +2887,7 @@ function sayFor(chatId: string, threadId: number) {
 }
 function armMode(key: string, value: PendingModeChoice, chatId: string, threadId: number): void {
   pendingModeChoice.set(key, value)
-  stateRepo.setPendingMode(key, { cfg: value.cfg, topicName: value.topicName, chatId, threadId })
+  stateRepo.setPendingMode(key, { cfg: value.cfg, topicName: value.topicName, chatId, threadId, ...(value.agent ? { agent: value.agent } : {}) })
 }
 function disarmMode(key: string): void { pendingModeChoice.delete(key); stateRepo.delPendingMode(key) }
 function enqueueForTopic(key: string, inbound: Inbound): void {
@@ -2797,7 +2940,7 @@ function beginTopicSession(
 ): void {
   if (!cfg.dir) {
     say(t().sendFolderPromptBind(codePath(PROJECTS_DIR)))
-    pendingTopics.set(key, { cfg, mode, topicName, say, ...(base ? { base } : {}), ...(agent ? { agent } : {}) })
+    armPendingTopic(key, { cfg, mode, topicName, say, ...(base ? { base } : {}), ...(agent ? { agent } : {}) })
     return
   }
   void runAutoTopic(key, cfg, cfg.dir, mode, slugFromTopicName(topicName), say, base, agent)
@@ -2958,7 +3101,7 @@ function reviveInbound(value: PersistedInbound): Inbound {
 
 for (const [key, values] of stateRepo.queuedEntries()) queuedMessages.set(key, values.map(reviveInbound))
 for (const [key, value] of stateRepo.pendingModeEntries()) {
-  pendingModeChoice.set(key, { cfg: value.cfg, topicName: value.topicName, say: sayFor(value.chatId, value.threadId) })
+  pendingModeChoice.set(key, { cfg: value.cfg, topicName: value.topicName, say: sayFor(value.chatId, value.threadId), ...(value.agent ? { agent: value.agent } : {}) })
 }
 
 async function handleInbound(inbound: Inbound): Promise<void> {
@@ -3020,7 +3163,7 @@ async function handleInbound(inbound: Inbound): Promise<void> {
     // must not consume topic setup. Only a command that explicitly replaces or
     // removes the binding invalidates the still-visible mode callback.
     if (ops.cmd === 'bind' || ops.cmd === 'unbind' || ops.cmd === 'delete') {
-      pendingTopics.delete(key)
+      disarmPendingTopic(key)
       disarmMode(key)
     }
     await handleOps({ cmd: ops.cmd, arg: ops.arg, key, chat_id, threadId, senderId, ...(msgId != null ? { msgId } : {}) })
@@ -3043,7 +3186,7 @@ async function handleInbound(inbound: Inbound): Promise<void> {
       pendingTopic.say(t().notAFolder(escHtml(e instanceof Error ? e.message : String(e))))
       return
     }
-    pendingTopics.delete(key)
+    disarmPendingTopic(key)
     await runAutoTopic(key, pendingTopic.cfg, dir, pendingTopic.mode, slugFromTopicName(pendingTopic.topicName), pendingTopic.say, pendingTopic.base, pendingTopic.agent)
     return
   }
@@ -3057,7 +3200,11 @@ async function handleInbound(inbound: Inbound): Promise<void> {
       continue
     }
     if (Date.now() - aw.at > CUSTOM_TIMEOUT_MS) {
-      awaitingCustom.delete(pane)
+      disarmCustom(pane)
+      continue
+    }
+    if (aw.bindingKey !== key || !paneBelongsToKey(pane, aw.bindingKey)) {
+      disarmCustom(pane)
       continue
     }
     if (isAdmin(senderId) || bindingAllowsKey(key, senderId)) {
@@ -3085,7 +3232,7 @@ async function handleInbound(inbound: Inbound): Promise<void> {
           disarmPicker(pane)
         }
       }
-      awaitingCustom.delete(pane)
+      disarmCustom(pane)
       return
     }
   }
@@ -3475,6 +3622,10 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
     const token = String(++skillMenuSeq)
     const names = skills.map(s => s.name)
     skillMenus.set(token, { key, dir: binding.dir, names })
+    interactions.set({
+      kind: 'skill-menu', key: token, updatedAt: Date.now(), expiresAt: Date.now() + SKILL_MENU_TTL_MS,
+      data: { bindingKey: key, dir: binding.dir, names },
+    })
     void bot.api
       .sendMessage(chat_id, L.projectSkillsMenu(skills.length), {
         ...threadOpt, parse_mode: 'HTML', reply_markup: skillMenuKeyboard(token, names, 0),
@@ -4037,7 +4188,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
           // Universal 1:1 view of the pane — the escape hatch for any TUI state the picker
           // bridge doesn't recognize. Live, self-updating message with a Close button (deletes
           // it) instead of a one-shot photo, so the debug view doesn't pile up in history.
-          await startLiveScreen(chat_id, threadId, s.pane)
+          await startLiveScreen(chat_id, threadId, s.pane, key)
           // drop the "/screen" command itself too (works where the bot can delete — groups; a
           // DM won't let a bot delete the user's message, hence best-effort).
           if (msgId != null) {
@@ -4046,7 +4197,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
         } else if (cmd === 'last') {
           // Same live view as /screen but text-only (paneDigest) — readable recent output +
           // live bottom, no image render at all. Self-updating with a Close button.
-          await startLiveScreen(chat_id, threadId, s.pane, 'text')
+          await startLiveScreen(chat_id, threadId, s.pane, key, 'text')
           if (msgId != null) {
             void bot.api.deleteMessage(chat_id, msgId).catch(() => {})
           }
@@ -4442,7 +4593,7 @@ bot.on('callback_query:data', async ctx => {
   // skpg:<token>:<page> — flip the /skills menu to another page (edit keyboard in place).
   const sp = /^skpg:(\d+):(\d+)$/.exec(ctx.callbackQuery.data)
   if (sp) {
-    const menu = skillMenus.get(sp[1]!)
+    const menu = liveSkillMenu(sp[1]!)
     if (!menu) {
       await ctx.answerCallbackQuery({ text: t().toastMenuStale }).catch(() => {})
       return
@@ -4454,7 +4605,7 @@ bot.on('callback_query:data', async ctx => {
   // skrun:<token>:<idx> — run a project skill picked from the /skills menu.
   const sr = /^skrun:(\d+):(\d+)$/.exec(ctx.callbackQuery.data)
   if (sr) {
-    const menu = skillMenus.get(sr[1]!)
+    const menu = liveSkillMenu(sr[1]!)
     const name = menu?.names[Number(sr[2])]
     if (!menu || !name) {
       await ctx.answerCallbackQuery({ text: t().toastMenuStale }).catch(() => {})
@@ -4479,6 +4630,8 @@ bot.on('callback_query:data', async ctx => {
     )
     await ctx.answerCallbackQuery({ text: ok ? t().toastRun(name) : t().toastNotInTmux }).catch(() => {})
     if (ok && msg) {
+      skillMenus.delete(sr[1]!)
+      interactions.delete('skill-menu', sr[1]!)
       await ctx.editMessageText(t().skillLaunched(escHtml(name)), { parse_mode: 'HTML' }).catch(() => {})
     }
     return
@@ -4500,7 +4653,8 @@ bot.on('callback_query:data', async ctx => {
     const choices = harnessChoices(pending.cfg)
     const cur = pending.agent ?? pending.cfg.agent ?? choices[0]!
     const next = choices[(choices.indexOf(cur) + 1) % choices.length]!
-    pendingModeChoice.set(key!, { ...pending, agent: next })
+    const target = keyToTarget(key!)
+    armMode(key!, { ...pending, agent: next }, target.chat_id, target.thread_id!)
     await ctx.answerCallbackQuery({ text: agentAdapter(next).displayName }).catch(() => {})
     await ctx.editMessageReplyMarkup({ reply_markup: modeKeyboard(key!, pending.cfg, next) }).catch(() => {})
     return
@@ -4543,7 +4697,7 @@ bot.on('callback_query:data', async ctx => {
     await ctx.answerCallbackQuery({ text: ownDirLabel() }).catch(() => {})
     await ctx.editMessageText(t().modeChosen(ownDirLabel())).catch(() => {})
     pending.say(t().sendFolderPromptShort(codePath(PROJECTS_DIR)))
-    pendingTopics.set(key, { cfg: pending.cfg, mode: 'folder', topicName: pending.topicName, say: pending.say })
+    armPendingTopic(key, { cfg: pending.cfg, mode: 'folder', topicName: pending.topicName, say: pending.say })
     return
   }
   // nr:<key>:<idx|esc>:<title-hash> = drive the CLI's own /resume list by arrows
@@ -4735,6 +4889,7 @@ async function pollForever(): Promise<void> {
           botUsername = info.username
           rmQuiet(SPAWN_LOCK)
           log(`polling as @${info.username}`)
+          resumeLiveScreens()
           void reviveBoundSessions() // host reboot: tmux died with it — bring sessions back
           // A pending marker that survived a restart: the turnend that would have forwarded its
           // answer may have fired while we were down, so re-check each once (reads the transcript,

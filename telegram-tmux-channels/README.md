@@ -387,6 +387,10 @@ Two details worth knowing, because they explain most of the behaviour:
 - **Status messages are edited, not re-sent.** One message per turn accumulates subagents, tasks,
   todos and skill calls, with finished items marked ✅ instead of vanishing, so the message ends
   up being the history of that turn.
+- **Interactive state survives hub restarts.** Editable status/background/progress messages keep
+  their Telegram message ids; skill menus, custom picker answers, topic setup and live views keep
+  their callback state. Persisted records are typed, TTL-bounded where appropriate, and tied to
+  the binding (and pane where relevant), so a recycled terminal cannot inherit old buttons.
 - **Background shells are tracked on their own clock.** They outlive their turn, so they get a
   separate message that lives until the last shell in the run finishes — putting them in the turn
   bubble meant either losing the line at the next turn or re-posting every unfinished shell into

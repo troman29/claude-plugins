@@ -19,6 +19,21 @@ export type StatusState = {
   skills: SkillCall[] // append-only within a batch
 }
 
+export type SerializedStatusState = {
+  agents: [string, SubagentStatus][]
+  tasks: [string, TaskStatus][]
+  todos: Todo[]
+  skills: SkillCall[]
+}
+
+export const serializeStatus = (s: StatusState): SerializedStatusState => ({
+  agents: [...s.agents], tasks: [...s.tasks], todos: s.todos, skills: s.skills,
+})
+
+export const deserializeStatus = (s: SerializedStatusState): StatusState => ({
+  agents: new Map(s.agents), tasks: new Map(s.tasks), todos: s.todos, skills: s.skills,
+})
+
 export const emptyStatus = (): StatusState => ({
   agents: new Map(),
   tasks: new Map(),

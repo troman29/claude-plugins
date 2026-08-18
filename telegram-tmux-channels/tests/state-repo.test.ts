@@ -4,6 +4,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { HubStateRepository } from '../src/state-repo'
 import type { Picker } from '../src/picker'
+import { InteractionRegistry } from '../src/interaction-registry'
 
 const picker: Picker = { title: 'Pick one', options: [{ index: 0, label: 'A' }, { index: 1, label: 'B' }], hash: 'abc123', mode: 'single' }
 const tmp = () => mkdtempSync(join(tmpdir(), 'hubstate-'))
@@ -40,11 +41,12 @@ describe('HubStateRepository picker persistence', () => {
   test('pending mode and first queued message survive a restart', () => {
     const dir = tmp()
     const a = new HubStateRepository(() => {}, dir)
-    a.setPendingMode('g/7', { cfg: { modes: ['folder'], dir: '/project' }, topicName: 'New work', chatId: '-100', threadId: 7 })
+    a.setPendingMode('g/7', { cfg: { modes: ['folder'], dir: '/project' }, topicName: 'New work', chatId: '-100', threadId: 7, agent: 'codex' })
     a.setQueued('g/7', [{ text: 'first task', chatId: '-100', threadId: 7, senderId: '9', msgId: 11, at: 12 }])
     a.flush()
     const b = new HubStateRepository(() => {}, dir)
     expect(Object.fromEntries(b.pendingModeEntries())['g/7']?.topicName).toBe('New work')
+    expect(Object.fromEntries(b.pendingModeEntries())['g/7']?.agent).toBe('codex')
     expect(Object.fromEntries(b.queuedEntries())['g/7']?.[0]?.text).toBe('first task')
   })
 
@@ -58,5 +60,20 @@ describe('HubStateRepository picker persistence', () => {
     b.delLaunchCapture('g/8')
     b.flush()
     expect(new HubStateRepository(() => {}, dir).launchCaptureEntries()).toEqual([])
+  })
+
+  test('typed interaction snapshot survives repository flush and reload', () => {
+    const dir = tmp()
+    const a = new HubStateRepository(() => {}, dir)
+    const interactions = new InteractionRegistry(a.interactionSnapshot(), value => a.replaceInteractions(value), 10)
+    interactions.set({
+      kind: 'skill-menu', key: '3', updatedAt: 10, expiresAt: 100,
+      data: { bindingKey: 'g/7', dir: '/repo', names: ['review'] },
+    })
+    a.flush()
+
+    const b = new HubStateRepository(() => {}, dir)
+    const restored = new InteractionRegistry(b.interactionSnapshot(), () => {}, 20)
+    expect(restored.get('skill-menu', '3')).toEqual({ bindingKey: 'g/7', dir: '/repo', names: ['review'] })
   })
 })

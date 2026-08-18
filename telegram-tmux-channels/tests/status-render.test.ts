@@ -1,7 +1,16 @@
 import { describe, expect, test } from 'bun:test'
-import { emptyStatus, hasLiveWork, renderBg, renderStatus, statusIsEmpty, syncBg, type BgTask } from '../src/status-render'
+import { deserializeStatus, emptyStatus, hasLiveWork, renderBg, renderStatus, serializeStatus, statusIsEmpty, syncBg, type BgTask } from '../src/status-render'
 
 describe('status-render', () => {
+  test('status state survives JSON serialization without losing Map identity', () => {
+    const state = emptyStatus()
+    state.agents.set('a', { name: 'worker', done: false })
+    state.tasks.set('t', { subject: 'test', status: 'in_progress' })
+    const restored = deserializeStatus(JSON.parse(JSON.stringify(serializeStatus(state))))
+    expect(restored.agents.get('a')).toEqual({ name: 'worker', done: false })
+    expect(restored.tasks.get('t')?.status).toBe('in_progress')
+  })
+
   test('empty state renders nothing and reports empty', () => {
     const s = emptyStatus()
     expect(statusIsEmpty(s)).toBe(true)

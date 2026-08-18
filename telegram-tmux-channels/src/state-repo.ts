@@ -1,7 +1,6 @@
 // Atomic file-backed persistence for hub state that must survive a restart. Today: the
-// reply-fallback "awaiting an answer" markers (a hub restart between an inbound message and the
-// agent's reply used to wipe them, so the fallback never fired — the bug this fixes). Pickers,
-// permissions and status-message refs plug into the same store next.
+// reply-fallback markers plus the typed interaction registry (editable messages, menus, live
+// views and multi-step input). Feature code keeps its ergonomic Maps; this is the durable snapshot.
 //
 // One JSON snapshot under STATE_DIR, written tmp→rename so a crash mid-write can't leave a
 // half-file, debounced so a burst of updates doesn't thrash the disk. In-memory maps stay the
@@ -11,6 +10,7 @@ import { STATE_DIR } from './paths'
 import { join } from 'path'
 import type { Picker } from './picker'
 import type { TrustedGroupConfig } from './trusted-groups'
+import type { PersistedInteraction } from './interaction-registry'
 
 type PendingAnswer = { dir: string; at: number }
 // An open TUI picker mirrored to Telegram buttons. Keyed by tmux pane. `key` (the binding) lets us
@@ -26,16 +26,17 @@ export type HubState = {
   pendingModes: Record<string, PersistedPendingMode>
   queuedMessages: Record<string, PersistedInbound[]>
   launchCaptures: Record<string, PersistedLaunchCapture>
+  interactions: Record<string, PersistedInteraction>
 }
 
-export type PersistedPendingMode = { cfg: TrustedGroupConfig; topicName: string; chatId: string; threadId: number }
+export type PersistedPendingMode = { cfg: TrustedGroupConfig; topicName: string; chatId: string; threadId: number; agent?: 'claude' | 'codex' }
 export type PersistedInbound = { text: string; chatId: string; threadId?: number; senderId: string; username?: string; msgId?: number; at: number }
 // A fresh launch has no session id yet. Preserve the pre-launch rollout ids so
 // a hub restart can continue the exact capture instead of guessing the newest
 // conversation in a shared directory.
 export type PersistedLaunchCapture = { beforeIds: string[]; at: number }
 
-const empty = (): HubState => ({ version: 1, pendingAnswer: {}, lastFallback: {}, pickers: {}, pendingModes: {}, queuedMessages: {}, launchCaptures: {} })
+const empty = (): HubState => ({ version: 1, pendingAnswer: {}, lastFallback: {}, pickers: {}, pendingModes: {}, queuedMessages: {}, launchCaptures: {}, interactions: {} })
 
 export class HubStateRepository {
   private state: HubState = empty()
@@ -63,6 +64,7 @@ export class HubStateRepository {
           pendingModes: raw.pendingModes ?? {},
           queuedMessages: raw.queuedMessages ?? {},
           launchCaptures: raw.launchCaptures ?? {},
+          interactions: raw.interactions ?? {},
         }
       }
     } catch {} // no file / corrupt → start empty
@@ -89,6 +91,8 @@ export class HubStateRepository {
   launchCaptureEntries(): [string, PersistedLaunchCapture][] { return Object.entries(this.state.launchCaptures) }
   setLaunchCapture(key: string, v: PersistedLaunchCapture): void { this.state.launchCaptures[key] = v; this.schedule() }
   delLaunchCapture(key: string): void { delete this.state.launchCaptures[key]; this.schedule() }
+  interactionSnapshot(): Record<string, unknown> { return this.state.interactions }
+  replaceInteractions(value: Record<string, PersistedInteraction>): void { this.state.interactions = value; this.schedule() }
 
   private schedule(): void {
     if (this.timer) return
