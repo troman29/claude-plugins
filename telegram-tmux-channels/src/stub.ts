@@ -9,11 +9,13 @@ import { z } from 'zod'
 import { spawn } from 'child_process'
 import { statSync, writeFileSync } from 'fs'
 import { join } from 'path'
+import { homedir } from 'os'
 import type { Socket } from 'bun'
 
 import { SOCK_PATH, STATE_DIR } from './paths'
 import { encode, makeLineDecoder, type StubToHub, type HubToStub, type RpcMethod, type SessionInfo } from './protocol'
 import { findAgentAncestor, cwdOf, envOf } from './proc'
+import { shouldAutospawnHub } from './hub-autospawn'
 
 const log = (s: string) => process.stderr.write(`telegram stub: ${s}\n`)
 
@@ -22,7 +24,9 @@ const log = (s: string) => process.stderr.write(`telegram stub: ${s}\n`)
 // wins" comes for free: once the hub runs, the socket exists → connect succeeds → no spawn.
 const HUB_SCRIPT = join(import.meta.dir, 'hub.ts')
 const SPAWN_LOCK = join(STATE_DIR, 'hub.spawnlock')
-const AUTOSPAWN = process.env.TELEGRAM_HUB_AUTOSPAWN !== '0'
+const AUTOSPAWN = shouldAutospawnHub({
+  enabled: process.env.TELEGRAM_HUB_AUTOSPAWN !== '0', platform: process.platform, home: homedir(),
+})
 let spawnedHub = false
 
 const SPAWN_LOCK_FRESH_MS = 15_000

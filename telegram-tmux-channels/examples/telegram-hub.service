@@ -17,7 +17,9 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=/bin/sh -c 'exec bun run "$(ls -d %h/.claude/plugins/cache/*/telegram-tmux-channels/*/src/hub.ts | sort -V | tail -1)"'
-Restart=on-failure
+# A competing legacy/autospawn hub exits us by SIGTERM (status=0). Always reclaim ownership;
+# stubs detect this unit and wait through the restart window instead of spawning a rival.
+Restart=always
 RestartSec=3
 
 [Install]
