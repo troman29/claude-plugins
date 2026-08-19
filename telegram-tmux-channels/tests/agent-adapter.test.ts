@@ -38,10 +38,10 @@ describe('agent adapter registry', () => {
   })
 
   test('agent-specific launch environment stays behind the adapter contract', () => {
-    expect(claudeAdapter.launchEnvPrefix(['dm:7'])).toContain('CLAUDE_CODE_DISABLE_RESUME_PROMPT=1')
+    expect(claudeAdapter.launchEnvPrefix(['dm:7'])).toContain('CLAUDE_CODE_RESUME_TOKEN_THRESHOLD=')
     expect(claudeAdapter.launchEnvPrefix(['dm:7'])).toContain('TELEGRAM_BINDING_KEYS')
     expect(codexAdapter.launchEnvPrefix(['dm:7'])).toContain('TELEGRAM_BINDING_KEYS')
-    expect(codexAdapter.launchEnvPrefix(['dm:7'])).not.toContain('CLAUDE_CODE_DISABLE_RESUME_PROMPT')
+    expect(codexAdapter.launchEnvPrefix(['dm:7'])).not.toContain('CLAUDE_CODE_RESUME_TOKEN_THRESHOLD')
   })
 
   test('recognises only its own live pane command for foreign-pane protection', () => {

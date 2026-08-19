@@ -1311,6 +1311,9 @@ let globalSkillMap = new Map<string, string>() // mangled command → real skill
 let lastSkillCount = 0
 let cmdRetryTimer: ReturnType<typeof setTimeout> | undefined
 const CMD_RETRY_MS = 60_000
+// Столько ждём ответа на вопрос, с которым поднялась сессия, прежде чем бросить команду:
+// человек мог отойти, а держать её вечно — значит выполнить неожиданно много часов спустя.
+const PENDING_CMD_MS = 10 * 60_000
 
 // Rediscover global skills and (re)register the bot command list. Returns a summary.
 async function refreshCommands(): Promise<string> {
@@ -4233,6 +4236,118 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
   }
 
   if (cmd === 'compact' || cmd === 'clear' || cmd === 'esc' || cmd === 'enter' || cmd === 'restart' || cmd === 'model' || cmd === 'stop' || cmd === 'screen' || cmd === 'last') {
+    // Одно и то же выполнение — сразу или после того, как пользователь ответит на вопрос,
+    // с которым поднялась сессия.
+    const runOnPanes = async (targets: typeof live) => {
+      for (const conn of targets) {
+        const s = router.get(conn)
+        if (!s?.pane) {
+          void say(L.notInTmuxControl)
+          continue
+        }
+        try {
+          if (cmd === 'compact') {
+            await sendKeys(s.pane, '/compact', 'Enter')
+            void say(L.compactSent)
+          } else if (cmd === 'clear') {
+            await sendKeys(s.pane, '/clear', 'Enter')
+            void say(L.historyCleared)
+          } else if (cmd === 'esc') {
+            // Interrupt the current turn AND drain the input queue. After an interrupt Claude Code
+            // immediately starts the NEXT queued message, so a lone Escape looks like it "did
+            // nothing" when a queue is feeding (the prod runaway couldn't be stopped this way).
+            // Escape a few times to drain a short queue, then Ctrl-U to clear the input line.
+            for (let i = 0; i < 3; i++) {
+              await sendKeys(s.pane, 'Escape')
+              await new Promise(r => setTimeout(r, 500))
+            }
+            await sendKeys(s.pane, 'C-u')
+            // Escape подряд открывает Rewind — наш же дренаж оставлял на экране диалог, который
+            // потом съедает ввод и подсовывает picker'у нумерованные списки из вывода агента.
+            // Закрываем то, что сами открыли (интервал не спасает: клавиши доезжают пачкой).
+            for (let i = 0; i < 2; i++) {
+              if (!hasPickerFooter(await capturePane(s.pane).catch(() => ''))) {
+                break
+              }
+              await sendKeys(s.pane, 'Escape')
+              await new Promise(r => setTimeout(r, 400))
+            }
+            void say(L.escSent)
+          } else if (cmd === 'enter') {
+            // Submit whatever is already in the pane's input line (e.g. a /compact that got
+            // typed but not sent) — a bare Enter, without typing anything.
+            await sendKeys(s.pane, 'Enter')
+            void say(L.enterSent)
+          } else if (cmd === 'screen') {
+            // Universal 1:1 view of the pane — the escape hatch for any TUI state the picker
+            // bridge doesn't recognize. Live, self-updating message with a Close button (deletes
+            // it) instead of a one-shot photo, so the debug view doesn't pile up in history.
+            await startLiveScreen(chat_id, threadId, s.pane, key)
+            // drop the "/screen" command itself too (works where the bot can delete — groups; a
+            // DM won't let a bot delete the user's message, hence best-effort).
+            if (msgId != null) {
+              void bot.api.deleteMessage(chat_id, msgId).catch(() => {})
+            }
+          } else if (cmd === 'last') {
+            // Same live view as /screen but text-only (paneDigest) — readable recent output +
+            // live bottom, no image render at all. Self-updating with a Close button.
+            await startLiveScreen(chat_id, threadId, s.pane, key, 'text')
+            if (msgId != null) {
+              void bot.api.deleteMessage(chat_id, msgId).catch(() => {})
+            }
+          } else if (cmd === 'model') {
+            // Typed as real keystrokes (not a message-event) so the CLI opens its
+            // native picker — pollScreens/detectPicker below turns it into buttons.
+            await sendKeys(s.pane, '/model', 'Enter')
+            void say(L.modelSent)
+          } else if (cmd === 'stop') {
+            if (!s.pid) {
+              void say(L.stopNoProc)
+              continue
+            }
+            void say(L.stopping)
+            expectedDisconnect.add(key)
+            void stopSession(s.pane, s.pid, log)
+              .then(ok => {
+                if (!ok) {
+                  return void say(L.procNotDead)
+                }
+                // straight into the what-next choice — same keyboard as after /bind
+                void bot.api
+                  .sendMessage(chat_id, L.sessionStopped, {
+                    ...threadOpt, parse_mode: 'HTML', reply_markup: startChoiceKeyboard(key, binding),
+                  })
+                  .catch(() => {})
+              })
+              .catch(e => say(L.stopFail(escHtml(String(e)))))
+              .finally(() => setTimeout(() => expectedDisconnect.delete(key), 90_000))
+          } else {
+            if (!s.pid || !s.cmdline?.length) {
+              void say(L.restartNoProc)
+              continue
+            }
+            void say(L.restarting)
+            expectedDisconnect.add(key)
+            const restartKeys = s.bindingKeys?.length ? s.bindingKeys : [key]
+            const adapter = adapterForSession(s)
+            const restart = adapter.capabilities.nativeInboundTransport
+              ? restartSession(s.pane, s.pid, s.cmdline, restartKeys, log)
+              : stopSession(s.pane, s.pid, log).then(async ok => {
+                  if (!ok) throw new Error('process did not stop')
+                  await new Promise(r => setTimeout(r, 1000))
+                  await typeLine(s.pane!, adapter.launchEnvPrefix(restartKeys) + ' ' + memoryCapPrefix() + adapter.buildLaunch(s.cmdline, 'resume', binding.sessionId))
+                })
+            void restart
+              .then(() => say(L.restartSent))
+              .catch(e => say(L.restartFail(escHtml(String(e)))))
+              .finally(() => setTimeout(() => expectedDisconnect.delete(key), 90_000))
+          }
+        } catch (e) {
+          void say(L.cmdFail(escHtml(cmd), escHtml(String(e))))
+        }
+      }
+    }
+
     if (live.length === 0) {
       // Сессию мог остановить idle-unload — для пользователя она «просто есть», он не обязан
       // знать про выгрузку. Команды, осмысленные на поднятой сессии, поднимают её сами (как
@@ -4256,7 +4371,16 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
         // не готов за 12 с, значит сессия о чём-то спрашивает, и пользователю надо сказать
         // об этом сейчас, а не через минуту молчания. Не сводить к общей константе.
         if (!(await waitPaneReady(pane, 12_000, adapterForBinding(binding)))) {
+          // Сессия поднялась в диалог (доверие к папке, вопрос про возобновление). Команду
+          // НЕ теряем и повторить не просим: ждём ответа в фоне и выполняем сами — иначе
+          // отправленное в выгруженную сессию молча пропадает.
           void say(L.sessionAsksFirst(cmd)) // кнопки уже отправил picker bridge
+          void (async () => {
+            if (!(await waitPaneReady(pane, PENDING_CMD_MS, adapterForBinding(binding)))) {
+              return void say(L.pendingCmdDropped(cmd))
+            }
+            await runOnPanes(await waitForBinding(key, 5_000))
+          })()
           return
         }
       }
@@ -4265,113 +4389,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
         return
       }
     }
-    for (const conn of live) {
-      const s = router.get(conn)
-      if (!s?.pane) {
-        void say(L.notInTmuxControl)
-        continue
-      }
-      try {
-        if (cmd === 'compact') {
-          await sendKeys(s.pane, '/compact', 'Enter')
-          void say(L.compactSent)
-        } else if (cmd === 'clear') {
-          await sendKeys(s.pane, '/clear', 'Enter')
-          void say(L.historyCleared)
-        } else if (cmd === 'esc') {
-          // Interrupt the current turn AND drain the input queue. After an interrupt Claude Code
-          // immediately starts the NEXT queued message, so a lone Escape looks like it "did
-          // nothing" when a queue is feeding (the prod runaway couldn't be stopped this way).
-          // Escape a few times to drain a short queue, then Ctrl-U to clear the input line.
-          for (let i = 0; i < 3; i++) {
-            await sendKeys(s.pane, 'Escape')
-            await new Promise(r => setTimeout(r, 500))
-          }
-          await sendKeys(s.pane, 'C-u')
-          // Escape подряд открывает Rewind — наш же дренаж оставлял на экране диалог, который
-          // потом съедает ввод и подсовывает picker'у нумерованные списки из вывода агента.
-          // Закрываем то, что сами открыли (интервал не спасает: клавиши доезжают пачкой).
-          for (let i = 0; i < 2; i++) {
-            if (!hasPickerFooter(await capturePane(s.pane).catch(() => ''))) {
-              break
-            }
-            await sendKeys(s.pane, 'Escape')
-            await new Promise(r => setTimeout(r, 400))
-          }
-          void say(L.escSent)
-        } else if (cmd === 'enter') {
-          // Submit whatever is already in the pane's input line (e.g. a /compact that got
-          // typed but not sent) — a bare Enter, without typing anything.
-          await sendKeys(s.pane, 'Enter')
-          void say(L.enterSent)
-        } else if (cmd === 'screen') {
-          // Universal 1:1 view of the pane — the escape hatch for any TUI state the picker
-          // bridge doesn't recognize. Live, self-updating message with a Close button (deletes
-          // it) instead of a one-shot photo, so the debug view doesn't pile up in history.
-          await startLiveScreen(chat_id, threadId, s.pane, key)
-          // drop the "/screen" command itself too (works where the bot can delete — groups; a
-          // DM won't let a bot delete the user's message, hence best-effort).
-          if (msgId != null) {
-            void bot.api.deleteMessage(chat_id, msgId).catch(() => {})
-          }
-        } else if (cmd === 'last') {
-          // Same live view as /screen but text-only (paneDigest) — readable recent output +
-          // live bottom, no image render at all. Self-updating with a Close button.
-          await startLiveScreen(chat_id, threadId, s.pane, key, 'text')
-          if (msgId != null) {
-            void bot.api.deleteMessage(chat_id, msgId).catch(() => {})
-          }
-        } else if (cmd === 'model') {
-          // Typed as real keystrokes (not a message-event) so the CLI opens its
-          // native picker — pollScreens/detectPicker below turns it into buttons.
-          await sendKeys(s.pane, '/model', 'Enter')
-          void say(L.modelSent)
-        } else if (cmd === 'stop') {
-          if (!s.pid) {
-            void say(L.stopNoProc)
-            continue
-          }
-          void say(L.stopping)
-          expectedDisconnect.add(key)
-          void stopSession(s.pane, s.pid, log)
-            .then(ok => {
-              if (!ok) {
-                return void say(L.procNotDead)
-              }
-              // straight into the what-next choice — same keyboard as after /bind
-              void bot.api
-                .sendMessage(chat_id, L.sessionStopped, {
-                  ...threadOpt, parse_mode: 'HTML', reply_markup: startChoiceKeyboard(key, binding),
-                })
-                .catch(() => {})
-            })
-            .catch(e => say(L.stopFail(escHtml(String(e)))))
-            .finally(() => setTimeout(() => expectedDisconnect.delete(key), 90_000))
-        } else {
-          if (!s.pid || !s.cmdline?.length) {
-            void say(L.restartNoProc)
-            continue
-          }
-          void say(L.restarting)
-          expectedDisconnect.add(key)
-          const restartKeys = s.bindingKeys?.length ? s.bindingKeys : [key]
-          const adapter = adapterForSession(s)
-          const restart = adapter.capabilities.nativeInboundTransport
-            ? restartSession(s.pane, s.pid, s.cmdline, restartKeys, log)
-            : stopSession(s.pane, s.pid, log).then(async ok => {
-                if (!ok) throw new Error('process did not stop')
-                await new Promise(r => setTimeout(r, 1000))
-                await typeLine(s.pane!, adapter.launchEnvPrefix(restartKeys) + ' ' + memoryCapPrefix() + adapter.buildLaunch(s.cmdline, 'resume', binding.sessionId))
-              })
-          void restart
-            .then(() => say(L.restartSent))
-            .catch(e => say(L.restartFail(escHtml(String(e)))))
-            .finally(() => setTimeout(() => expectedDisconnect.delete(key), 90_000))
-        }
-      } catch (e) {
-        void say(L.cmdFail(escHtml(cmd), escHtml(String(e))))
-      }
-    }
+    await runOnPanes(live)
     return
   }
 
