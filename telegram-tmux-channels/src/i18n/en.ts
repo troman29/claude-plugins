@@ -174,7 +174,8 @@ export const en = {
     `⚠️ Topic not deleted (does the bot have can_delete_messages?): ${err}\n` +
     'The topic is still open; its next message will offer setup again.',
   deleteKeptOnCleanupFail:
-    '🛑 <b>Topic kept, binding restored</b> — the cleanup above failed, and deleting the topic now would leave the worktree and its stand behind with nobody watching. Fix the cause and run <code>/delete</code> again.',
+    '🛑 <b>Nothing was touched</b> — the cleanup failed, and tearing the topic down over a live worktree would kill the session and leave the stand running. Fix the cause and run <code>/delete</code> again, or force it: <code>/delete force</code>.',
+  teardownForced: '\n⚠️ Forced: the cleanup failed, so the worktree and its stand are still on disk — remove them by hand.',
 
   // ── stand up/down ──
   standUpProgress: '⏳ Bringing the stand up…',

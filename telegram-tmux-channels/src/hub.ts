@@ -2822,11 +2822,14 @@ async function reviveBoundSessions(): Promise<void> {
 // binding was hook-created, else a plain `git worktree remove` when the dir is a linked
 // worktree). Shared by /unbind and topic-deletion cleanup. Returns an HTML summary plus
 // failed=true, если папку/стенд убрать не вышло — /delete по нему решает, сносить ли топик.
-async function teardownBinding(key: string, binding: BindingEntry): Promise<{ note: string; failed: boolean }> {
+async function teardownBinding(
+  key: string,
+  binding: BindingEntry,
+  // force доводит снос до конца, даже если уборка провалилась: без него застрявший воркри
+  // не даёт закрыть топик вовсе.
+  opts: { force?: boolean } = {},
+): Promise<{ note: string; failed: boolean }> {
   const reg = loadBindings()
-  delete reg[key]
-  saveBindings(reg)
-  purgeBindingInteractions(key)
   // The report goes to General (the topic is already gone) — so it must name what was removed itself:
   // the topic (id + name, if known), the folder and the conversation id, else it's unreadable in the shared feed.
   const { chat_id: chatId, thread_id: tid } = keyToTarget(key)
@@ -2836,22 +2839,11 @@ async function teardownBinding(key: string, binding: BindingEntry): Promise<{ no
     L.unbound(tid != null ? L.unboundTopicPart(tid) : '') +
     `${topic ? ` «${escHtml(topic)}»` : ''}\n📁 ${codePath(binding.dir)}` +
     `${binding.sessionId ? L.unboundSessionPart(escHtml(binding.sessionId)) : ''}`
-  // The hub created this tmux session (spawnSession) — it owns tearing it down, any mode.
-  const name = sessionName(key, binding.dir)
-  if (await hasTmuxSession(name)) {
-    await killTmuxSession(name)
-    note += L.tmuxClosed(escHtml(name))
-  }
   // Папку сносим, только если её больше никто не держит: /fork наследует dir родителя, и
   // `git worktree remove --force` по своему топику стёр бы живому соседу незакоммиченные правки.
-  const alsoBound = keysForDir(reg, binding.dir)
-  if (alsoBound.length) {
-    const tids = alsoBound.map(k => {
-      const t2 = keyToTarget(k).thread_id
-      return t2 != null ? `<code>#${t2}</code>` : `<code>${escHtml(k)}</code>`
-    })
-    return { note: note + L.dirStillInUse(tids.join(', ')), failed: false }
-  }
+  const others = { ...reg }
+  delete others[key]
+  const alsoBound = keysForDir(others, binding.dir)
   const groupCfg = loadTrustedGroups()[keyToTarget(key).chat_id]
   // same source as on creation: the project's `.tmux-channels.json` wins over the group hook
   const hook = groupCfg?.dir ? worktreeHook(groupCfg.dir, groupCfg.hook) : groupCfg?.hook
@@ -2865,27 +2857,51 @@ async function teardownBinding(key: string, binding: BindingEntry): Promise<{ no
   const hookBranch =
     binding.hookBranch ??
     (hook?.delete && (await isLinkedWorktree(binding.dir)) ? basename(binding.dir) : undefined)
+  // Уборка ПЕРВЫМ делом, до отвязки и убийства tmux: провалилась — не разбираем ничего,
+  // иначе топик остаётся с мёртвой сессией над живым воркри (и следующее сообщение поднимает
+  // сессию в полуразобранном состоянии).
+  let cleanup = ''
   let failed = false
-  if (hookBranch && hook?.delete && groupCfg?.dir) {
+  if (alsoBound.length) {
+    const tids = alsoBound.map(k => {
+      const t2 = keyToTarget(k).thread_id
+      return t2 != null ? `<code>#${t2}</code>` : `<code>${escHtml(k)}</code>`
+    })
+    cleanup = L.dirStillInUse(tids.join(', '))
+  } else if (hookBranch && hook?.delete && groupCfg?.dir) {
     try {
       await runHookDelete(hook, hookBranch, groupCfg.dir)
-      note += L.cleanupHookOk(escHtml(hookBranch))
+      cleanup = L.cleanupHookOk(escHtml(hookBranch))
     } catch (e) {
-      note += L.cleanupHookFail(escHtml(String(e)))
+      cleanup = L.cleanupHookFail(escHtml(String(e)))
       failed = true
     }
   } else {
     try {
       if (await removePlainWorktree(binding.dir)) {
-        note += L.worktreeRemoved
+        cleanup = L.worktreeRemoved
       }
     } catch (e) {
-      note += L.worktreeRemoveFail(escHtml(String(e)))
+      cleanup = L.worktreeRemoveFail(escHtml(String(e)))
       failed = true
     }
   }
-  return { note, failed }
+  if (failed && !opts.force) {
+    return { note: cleanup, failed: true }
+  }
+  delete reg[key]
+  saveBindings(reg)
+  purgeBindingInteractions(key)
+  note = cleanup + (cleanup ? '\n' : '') + note
+  // The hub created this tmux session (spawnSession) — it owns tearing it down, any mode.
+  const name = sessionName(key, binding.dir)
+  if (await hasTmuxSession(name)) {
+    await killTmuxSession(name)
+    note += L.tmuxClosed(escHtml(name))
+  }
+  return { note: failed ? note + L.teardownForced : note, failed: false }
 }
+
 
 function purgeBindingInteractions(key: string): void {
   statusPost.forget(key)
@@ -3795,15 +3811,13 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
         void say(L.deleteOnlyInTopic)
         return
       }
+      const force = arg?.trim().toLowerCase() === 'force'
       const { note, failed } = binding
-        ? await teardownBinding(key, binding)
+        ? await teardownBinding(key, binding, { force })
         : { note: L.noBindingInTopic(threadId, topicTitle(chat_id, threadId) ? escHtml(topicTitle(chat_id, threadId)!) : ''), failed: false }
-      // Уборка провалилась — топик НЕ удаляем и биндинг возвращаем: иначе воркри со стендом
+      // Уборка провалилась — не разбираем ничего и топик не удаляем: иначе воркри со стендом
       // остаются жить, а жалоба уезжает в General, где её никто не читает (так и набились слоты).
-      if (failed && binding) {
-        const back = loadBindings()
-        back[key] = binding
-        saveBindings(back)
+      if (failed) {
         void say(`${note}\n${L.deleteKeptOnCleanupFail}`)
         return
       }
@@ -3865,7 +3879,8 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
         void say(L.nothingBoundHere)
         return
       }
-      void say((await teardownBinding(key, binding)).note)
+      const { note, failed } = await teardownBinding(key, binding, { force: arg?.trim().toLowerCase() === 'force' })
+      void say(failed ? `${note}\n${L.deleteKeptOnCleanupFail}` : note)
       return
     }
     // allow
