@@ -2870,7 +2870,7 @@ async function teardownBinding(
     cleanup = L.dirStillInUse(tids.join(', '))
   } else if (hookBranch && hook?.delete && groupCfg?.dir) {
     try {
-      await runHookDelete(hook, hookBranch, groupCfg.dir)
+      await runHookDelete(hook, hookBranch, groupCfg.dir, opts.force)
       cleanup = L.cleanupHookOk(escHtml(hookBranch))
     } catch (e) {
       cleanup = L.cleanupHookFail(escHtml(String(e)))

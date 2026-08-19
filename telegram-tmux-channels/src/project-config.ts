@@ -6,6 +6,7 @@
 // {
 //   "stand": { "up": "…", "down": "…", "status": "…" },   // status: exit 0 = up
 //   "worktree": { "create": "…", "delete": "…",           // create prints the path on its last line
+//                 "deleteForce": "…",                     // снос без вопросов — для `/delete force`
 //                 "base": "dev" | ["dev", "master"] }     // откуда резать ветку; несколько — кнопками
 // }
 import { readFileSync } from 'fs'
@@ -19,7 +20,7 @@ export type ProjectConfig = {
   stand?: StandConfig
   // create необязателен: база может быть задана и без хука — обычному `git worktree add` она
   // нужна ровно так же.
-  worktree?: { create?: string; delete?: string; base?: string | string[] }
+  worktree?: { create?: string; delete?: string; deleteForce?: string; base?: string | string[] }
 }
 
 /** Базы для ворктри проекта, нормализованные в список (строка → список из одной). */

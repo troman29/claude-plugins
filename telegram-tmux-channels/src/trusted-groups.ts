@@ -16,7 +16,7 @@ export type TrustedGroupMode = 'folder' | 'worktree' | 'worktree-plain'
 // optional worktree-mode customization: shell command templates ({branch}/{dir}
 // substituted, run via `sh -c`) that replace `git worktree add`/`remove` — e.g. a
 // wrapper that also provisions a per-branch DB. No hook configured → plain git worktree.
-export type HookConfig = { create: string; delete?: string }
+export type HookConfig = { create: string; delete?: string; deleteForce?: string }
 
 export type TrustedGroupConfig = {
   modes: TrustedGroupMode[] // 1 = auto, no picker; 2+ = per-topic button choice

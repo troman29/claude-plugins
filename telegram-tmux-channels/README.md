@@ -287,7 +287,8 @@ In `worktree` mode every topic gets its own branch. By default the bot just runs
 {
   "worktree": {
     "create": "scripts/wt.py new {branch} --db clean",
-    "delete": "scripts/wt.py rm {branch}"          // optional
+    "delete": "scripts/wt.py rm {branch}",         // optional
+    "deleteForce": "scripts/wt.py rm {branch} --force"  // optional, used by `/delete force`
   }
 }
 ```

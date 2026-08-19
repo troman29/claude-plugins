@@ -29,6 +29,10 @@ describe('worktreeHook', () => {
   test('project hook applies even when the group has NO hook — the case that broke teardown', () => {
     expect(worktreeHook(projectDir({ worktree: projectHook }), undefined)).toEqual(projectHook)
   })
+  test('deleteForce доезжает до хука — иначе /delete force сносит топик, а стенд оставляет', () => {
+    const hook = { ...projectHook, deleteForce: 'echo project-delete-force' }
+    expect(worktreeHook(projectDir({ worktree: hook }), undefined)).toEqual(hook)
+  })
 })
 
 describe('resolveModeDir returns the hook it actually used', () => {

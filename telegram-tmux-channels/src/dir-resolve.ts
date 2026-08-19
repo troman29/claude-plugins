@@ -115,11 +115,14 @@ export async function resolveHookDir(hook: HookConfig, branch: string, groupDir:
   return dir
 }
 
-export async function runHookDelete(hook: HookConfig, branch: string, groupDir: string): Promise<void> {
-  if (!hook.delete) {
+// force берёт отдельную команду проекта: дописывать флаг к чужому шаблону нельзя — что для одного
+// репозитория `--force`, для другого неизвестный аргумент. Нет такой команды — идём обычной.
+export async function runHookDelete(hook: HookConfig, branch: string, groupDir: string, force = false): Promise<void> {
+  const template = (force && hook.deleteForce) || hook.delete
+  if (!template) {
     return
   }
-  const res = await runHookCommand(hook.delete, branch, groupDir)
+  const res = await runHookCommand(template, branch, groupDir)
   if (!res.ok) {
     throw new Error(`hook delete failed: ${(res.err || res.out).trim()}`)
   }
@@ -157,7 +160,9 @@ export function worktreeHook(baseDir: string, groupHook: HookConfig | undefined)
   // `create` теперь необязателен (в секции может лежать одна `base`) — без него это не хук,
   // и подменять им групповой нельзя: иначе ворктри резал бы «никак».
   const w = loadProjectConfig(baseDir)?.worktree
-  return w?.create ? { create: w.create, ...(w.delete ? { delete: w.delete } : {}) } : groupHook
+  return w?.create
+    ? { create: w.create, ...(w.delete ? { delete: w.delete } : {}), ...(w.deleteForce ? { deleteForce: w.deleteForce } : {}) }
+    : groupHook
 }
 
 // Returns the resolved dir AND the hook that produced it, so the caller records teardown state from
