@@ -912,7 +912,7 @@ async function ackStartupPromptsOnBoundPanes(): Promise<void> {
     if (!b?.dir || router.byBindingKey(key).length > 0) {
       continue // no dir, or a stub is connected → PASS 1 already covers this pane
     }
-    const name = sessionName(key, b.dir)
+    const name = sessionName(key, b)
     if (!(await hasTmuxSession(name).catch(() => false))) {
       continue
     }
@@ -2414,8 +2414,19 @@ async function waitForBinding(key: string, timeoutMs: number): Promise<Socket<un
 }
 
 // dir alone collides when several bindings share it (mode: shared) — tmux session is per-binding
-function sessionName(key: string, dir: string): string {
-  return tmuxSessionName(basename(dir), key)
+function sessionName(key: string, binding: BindingEntry): string {
+  return binding.tmux ?? tmuxSessionName(basename(binding.dir), key)
+}
+
+/** Свободное имя tmux: тёзка из другого топика не должен получить чужую сессию. */
+async function freeTmuxName(base: string): Promise<string> {
+  for (let n = 1; n < 20; n++) {
+    const name = n === 1 ? base : `${base}-${n}`
+    if (!(await hasTmuxSession(name).catch(() => false))) {
+      return name
+    }
+  }
+  return base
 }
 
 function trackedPids(): Set<number> {
@@ -2728,7 +2739,7 @@ async function spawnSession(
     say(t().bindingDirectoryMissing(codePath(binding.dir)))
     return
   }
-  const name = sessionName(key, binding.dir)
+  const name = sessionName(key, binding)
   // форк тоже получает свой session id — его надо выучить, иначе биндинг ветки указывает
   // на оригинал и следующий подъём поднимет (и снова форкнёт) не ту сессию
   // Разговор мог исчезнуть с диска — чистка Claude Code по возрасту (cleanupPeriodDays)
@@ -2830,7 +2841,7 @@ async function reviveBoundSessions(): Promise<void> {
       idleUnloaded.add(key) // it was asleep before the reboot — leave it so; an inbound wakes it
       continue
     }
-    if (await hasTmuxSession(sessionName(key, binding.dir))) {
+    if (await hasTmuxSession(sessionName(key, binding))) {
       continue
     }
     log(`boot-revive: ${key} → ${binding.dir}`)
@@ -2944,7 +2955,7 @@ async function teardownBinding(
   purgeBindingInteractions(key)
   note = cleanup + (cleanup ? '\n' : '') + note
   // The hub created this tmux session (spawnSession) — it owns tearing it down, any mode.
-  const name = sessionName(key, binding.dir)
+  const name = sessionName(key, binding)
   if (await hasTmuxSession(name)) {
     await killTmuxSession(name)
     note += L.tmuxClosed(escHtml(name))
@@ -3131,8 +3142,11 @@ async function runAutoTopic(
       return
     }
     const reg = loadBindings()
+    // Имя tmux даём здесь же: слаг топика (или ветки ворктри) плюс имя проекта, без id чата.
+    const tmux = await freeTmuxName(tmuxSessionName(basename(dir), key, mode === 'folder' ? branch : usedBranch))
     reg[key] = {
       dir: resolvedDir,
+      tmux,
       ...(usedAgent ? { agent: usedAgent } : {}),
       // cmdline из конфига группы — только если он про ТОГО ЖЕ агента. Адаптер чужой argv
       // и сам отбросит, но хранить в биндинге запуск claude под codex — врать состоянием.
@@ -3582,8 +3596,8 @@ async function deliverMessage(key: string, dir: string, payload: HubToStub, need
   // not relaunch into that pane (which types a second `codex` command into the first agent).
   const subscribedPane = first ? router.get(first)?.pane : undefined
   const directPane = !subscribedPane && !adapter.capabilities.nativeInboundTransport && binding
-    && await hasTmuxSession(sessionName(key, binding.dir)).catch(() => false)
-    ? `=${sessionName(key, binding.dir)}:`
+    && await hasTmuxSession(sessionName(key, binding)).catch(() => false)
+    ? `=${sessionName(key, binding)}:`
     : undefined
   const pane = subscribedPane ?? directPane
   const ready = await waitPaneReady(pane, PANE_READY_MS, adapter)
@@ -3637,8 +3651,8 @@ function deliveryDeps(key: string, dir: string, payload: HubToStub, id: string, 
       const binding = loadBindings()[key]
       const pane = conn
         ? router.get(conn)?.pane
-        : !adapter.capabilities.nativeInboundTransport && binding && await hasTmuxSession(sessionName(key, binding.dir)).catch(() => false)
-          ? `=${sessionName(key, binding.dir)}:`
+        : !adapter.capabilities.nativeInboundTransport && binding && await hasTmuxSession(sessionName(key, binding)).catch(() => false)
+          ? `=${sessionName(key, binding)}:`
           : undefined
       if (pane && payload.op === 'event' && payload.kind === 'message') {
         await typeLine(pane, fallbackInboundText(payload.content, payload.meta, key))
@@ -3897,13 +3911,20 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
           // user-selected conversation. Never preserve its Claude argv/session into the manual
           // Codex binding, and kill its per-key tmux before publishing the replacement.
           if (binding) {
-            await killTmuxSession(sessionName(key, binding.dir)).catch(() => {})
+            await killTmuxSession(sessionName(key, binding)).catch(() => {})
           }
         }
         // Rebinding changes only the requested target and adapter.  The rest of
         // the record is durable session/worktree state: dropping it would orphan
         // a conversation and prevent a worktree hook from cleaning up later.
-        reg[key] = { ...(replacesAutoTopic ? {} : binding), dir, agent: spec.agent }
+        // Имя tmux у уже привязанного топика не трогаем: под ним живёт его сессия.
+        const title = threadId != null ? topicTitle(chat_id, threadId) : undefined
+        const keepTmux = replacesAutoTopic ? undefined : binding?.tmux
+        const tmux = keepTmux
+          ?? (title ? await freeTmuxName(tmuxSessionName(basename(dir), key, slugFromTopicName(title))) : undefined)
+        reg[key] = {
+          ...(replacesAutoTopic ? {} : binding), dir, agent: spec.agent, ...(tmux ? { tmux } : {}),
+        }
         saveBindings(reg)
         const boundText = binding
           ? L.rebound(
@@ -4027,6 +4048,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
     const fresh = loadBindings()
     fresh[newKey] = {
       dir: binding.dir,
+      tmux: await freeTmuxName(tmuxSessionName(basename(binding.dir), newKey, slugFromTopicName(name))),
       ...(binding.agent ? { agent: binding.agent } : {}),
       sessionId: binding.sessionId, // точка разветвления; свой id ветка выучит при старте
       ...(binding.cmdline ? { cmdline: binding.cmdline } : {}),
@@ -4178,7 +4200,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
         }
       }
 
-      const name = sessionName(key, binding.dir)
+      const name = sessionName(key, binding)
       const tmuxOk = await hasTmuxSession(name)
       checks.push({
         level: tmuxOk ? 'ok' : 'warn',
@@ -4240,7 +4262,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
       const pidState = session.pid
         ? alive(session.pid) ? L.pidAlive(session.pid) : L.pidDead(session.pid)
         : L.pidUnknown
-      const tmuxName = sessionName(key, binding.dir)
+      const tmuxName = sessionName(key, binding)
       lines.push(
         `🤖 ${adapter.displayName}: ${pidState}`,
         `🪟 tmux: <code>${escHtml(tmuxName)}</code>${session.pane ? ` <i>(${escHtml(session.pane)})</i>` : ''}`,
@@ -4250,7 +4272,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
       }
     } else {
       lines.push(`⚫ ${adapter.displayName}: disconnected`)
-      const name = sessionName(key, binding.dir)
+      const name = sessionName(key, binding)
       const tmuxState = (await hasTmuxSession(name)) ? L.tmuxHas : L.tmuxNone
       lines.push(L.statusTmux(escHtml(name), tmuxState), '', L.statusResumeHint)
     }

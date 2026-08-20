@@ -205,6 +205,23 @@ Live views stop refreshing eventually — `/screen` after 3 minutes (each refres
   only ones who can bind, unbind or grant access.
 - **Everyone else** must be added per topic with `/allow <id>`. No allow list means admins only.
 
+## Naming: topic → branch, worktree, tmux
+
+A topic's title becomes the name of its branch, its worktree folder and its tmux session. Two
+words of it, lowercased, cut at 24 characters — Cyrillic titles are transliterated, so
+«Console: проблема у экомобайла» becomes `console-problema` rather than a sentence-long slug.
+
+**Name the branch yourself by ending the title with `#name`:**
+
+```
+Ревью сайта #site-review      →  branch site-review, worktree site-review, tmux console-site-review
+Console: OOM #fix/trace-oom   →  branch fix/trace-oom
+```
+
+The explicit name is taken as written, case included. A name already taken by another topic gets
+`-2`, `-3` — a branch is never reused, since that would put new work on top of someone else's.
+Sessions created before this scheme keep their old tmux name (it is what the hub finds them by).
+
 ## Trusted groups: a topic per branch
 
 Point a group at a project once (`trusted-groups.json`) and every new topic in it becomes a

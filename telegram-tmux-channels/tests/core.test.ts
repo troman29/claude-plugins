@@ -569,15 +569,38 @@ describe('trusted-groups', () => {
     expect(isExcludedTopic(cfg, 2, 'locked 🔒 topic')).toBe(true)
     expect(isExcludedTopic(cfg, 2, 'fix login bug')).toBe(false)
   })
+  test('tmuxSessionName: со слагом читаемое имя, без слага — прежняя схема от ключа', () => {
+    // Старые биндинги живут под именем из id чата и топика: переименовать задним числом нельзя,
+    // хаб найдёт их сессию только под ним.
+    expect(tmuxSessionName('agentek-console', '-1003837420846/8023')).toBe('agentek-console---1003837420846-8023')
+    expect(tmuxSessionName('agentek-console', '-1003837420846/8023', 'site-review')).toBe('agentek-console-site-review')
+    // точка и слэш в имени tmux ломают адресацию сессии — заменяются
+    expect(tmuxSessionName('console', 'dm:7', 'fix/trace-oom')).toBe('console-fix_trace-oom')
+  })
+
   test('slugFromTopicName: sanitizes, keeps slashes, falls back', () => {
     expect(slugFromTopicName('feature/foo')).toBe('feature/foo')
-    expect(slugFromTopicName('Fix login bug!')).toBe('Fix-login-bug')
+    expect(slugFromTopicName('Fix login bug!')).toBe('fix-login') // два слова, нижний регистр
     expect(slugFromTopicName('  spaced  ')).toBe('spaced')
     expect(slugFromTopicName('!!!')).toBe('topic')
   })
+
+  test('slugFromTopicName: имя после решётки берётся как есть — так ветку называют вручную', () => {
+    expect(slugFromTopicName('Ревью сайта #site-review')).toBe('site-review')
+    expect(slugFromTopicName('Console: OOM в трейсе #fix/trace-oom')).toBe('fix/trace-oom')
+    expect(slugFromTopicName('Хвост #Fix-OOM')).toBe('Fix-OOM') // явное имя регистр сохраняет
+    expect(slugFromTopicName('решётка без имени #')).toBe('reshyotka-bez')
+  })
+
+  test('slugFromTopicName: длинный заголовок режется, а не транслитерируется целиком', () => {
+    // Полный транслит давал Console-Problema-u-ekomobayla — такое имя не хочется видеть
+    // ни в ветке, ни в пути ворктри, ни в имени tmux.
+    expect(slugFromTopicName('Console: проблема у экомобайла')).toBe('console-problema')
+    expect(slugFromTopicName('Очень длинное название топика про всё сразу').length).toBeLessThanOrEqual(24)
+  })
   test('slugFromTopicName: transliterates Cyrillic (Cyrillic topic names are the norm here, but git branches/tmux names need ASCII)', () => {
-    expect(slugFromTopicName('продать BTC')).toBe('prodat-BTC')
-    expect(slugFromTopicName('Почини баг с логином')).toBe('Pochini-bag-s-loginom')
+    expect(slugFromTopicName('продать BTC')).toBe('prodat-btc')
+    expect(slugFromTopicName('Почини баг с логином')).toBe('pochini-bag')
   })
   test('mergeGroupConfig: group overrides win, falls back to defaults, dir optional', () => {
     const defaults: { modes: TrustedGroupMode[]; cmdline: string[]; dir: string; agent: 'codex' } = {

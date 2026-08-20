@@ -122,8 +122,12 @@ export function parseWorkflow(text: string): { name: string; done: number; total
 // `session:window.pane`). Without the same rewrite here, a repo dir like `console--GPT-5.6`
 // yields a name we can never address again: `send-keys -t =…GPT-5.6---123` parses `.6---123`
 // as a pane and dies with "can't find session". Pure — tested in core.test.ts.
-export function tmuxSessionName(dirBase: string, key: string): string {
-  return `${dirBase}--${key.replace(/[^\w.-]/g, '-')}`.replace(/[.:]/g, '_')
+export function tmuxSessionName(dirBase: string, key: string, slug?: string): string {
+  // Со слагом имя читаемое: `console-site-review`. Без него — прежняя схема от ключа биндинга
+  // (id чата и топика): так зовутся сессии, созданные до слагов, и их нельзя переименовать
+  // задним числом — хаб найдёт их по имени только под старым.
+  const base = slug ? `${dirBase}-${slug}` : `${dirBase}--${key.replace(/[^\w.-]/g, '-')}`
+  return base.replace(/[.:\/]/g, '_')
 }
 
 // Idle-unload decision: is this binding idle enough to stop? False while working, for a

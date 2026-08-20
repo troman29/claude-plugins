@@ -22,6 +22,9 @@ export type BindingEntry = {
   cmdline?: string[]
   sessionId?: string // claude conversation id — --resume target when this binding's dir is shared
   hookBranch?: string // set for auto-topic worktree bindings created via a group hook — /unbind runs hook.delete on this
+  tmux?: string // имя tmux-сессии. Пишется при создании биндинга: имя собрано из проекта и слага
+  // топика, а раньше выводилось из id чата и топика — те в имени никому не нужны. Старые
+  // биндинги поля не имеют и продолжают жить под прежним именем.
   pinned?: boolean // /pin — never idle-unload this binding (see TELEGRAM_IDLE_UNLOAD_MINUTES)
   unloaded?: boolean // suspended by idle-unload — survives a reboot so boot-revive leaves it asleep
 }

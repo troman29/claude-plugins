@@ -102,8 +102,29 @@ function transliterate(name: string): string {
     .join('')
 }
 
-// topic title → branch/worktree slug — transliterated, then only genuinely safe
-// chars kept (everything else collapses to a dash).
+const SLUG_WORDS = 2 // сколько слов заголовка берём в имя, если явное не задано
+const SLUG_MAX = 24
+
+const sanitizeSlug = (raw: string): string =>
+  raw.replace(/[^\p{L}\p{N}/_.-]+/gu, '-').replace(/^-+|-+$/g, '')
+
+/**
+ * Название топика → имя ветки, папки ворктри и tmux-сессии.
+ *
+ * Явное имя после решётки в конце («Ревью сайта #site-review») берётся как есть — это способ
+ * назвать ветку по-человечески, не ломая заголовок топика. Без него имя собирается из первых
+ * двух слов транслита и режется по длине: полный транслит русского заголовка давал
+ * `Console-Problema-u-ekomobayla`, чего никто не хочет видеть ни в ветке, ни в пути.
+ */
 export function slugFromTopicName(name: string): string {
-  return transliterate(name.trim()).replace(/[^\p{L}\p{N}/_.-]+/gu, '-').replace(/^-+|-+$/g, '') || 'topic'
+  const trimmed = name.trim()
+  const explicit = /#([^\s#]+)\s*$/.exec(trimmed)
+  if (explicit) {
+    return sanitizeSlug(transliterate(explicit[1])) || 'topic'
+  }
+  // Явное имя оставляем как написано, а вот собранное из заголовка приводим к нижнему регистру:
+  // ветка `Console-problema` выглядит опечаткой, а не именем.
+  const words = sanitizeSlug(transliterate(trimmed)).toLowerCase().split('-').filter(Boolean)
+  const slug = words.slice(0, SLUG_WORDS).join('-').slice(0, SLUG_MAX).replace(/-+$/, '')
+  return slug || 'topic'
 }
