@@ -65,6 +65,7 @@ export const ru: Strings = {
   // ── pickers ──
   pickerDefaultTitle: 'Вопрос',
   pickerAnsweredInTerminal: '<i>отвечено в терминале</i>',
+  modalUnparsed: '⚠️ Сессия ждёт ответа в диалоге, который я не смог разобрать в кнопки. Вот его экран — ответь в терминале или пришли <code>/esc</code>, чтобы закрыть.',
   pickerClosedRestart: '❓ <i>Пикер закрыт (рестарт)</i>',
   pickerClosedNoRevive: '❓ <i>Пикер закрыт (сессия не восстановилась)</i>',
   sendAnswerMsg: '✍️ <b>Пришли ответ</b> сообщением.',

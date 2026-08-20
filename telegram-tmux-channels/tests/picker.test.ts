@@ -88,6 +88,20 @@ describe('parsePicker', () => {
     const p = parsePicker(fx('live-with-trailing-chrome.txt'))!
     expect(p.options.map(o => o.label)).toEqual(['Back to text', 'Keep voice as is', 'Type something.', 'Chat about this'])
   })
+  test('раскладка с превью: две колонки, перенесённые подписи, подсказки под списком', () => {
+    // Живой снимок из screenlog: AskUserQuestion с preview рисует список слева и рамку справа.
+    // Раньше разбор упирался в «Chat about this» между списком и футером и молча сдавался —
+    // в Telegram кнопки не уезжали, а сессия висела в ожидании ответа.
+    const p = parsePicker(fx('picker-preview.txt'))!
+    expect(p.mode).toBe('single')
+    expect(p.title).toContain('Как называть ветку')
+    expect(p.options).toEqual([
+      { index: 1, label: 'Явное имя, иначе короткий slug' },
+      { index: 2, label: 'Явное имя, иначе номер топика' },
+      { index: 3, label: 'Спрашивать имя кнопкой в пикере' },
+    ])
+    expect(p.title).not.toContain('│') // левая планка рамки в заголовок не попадает
+  })
   test('scrollback: a numbered list ABOVE the picker does not leak into options/title', () => {
     const p = parsePicker(fx('scrollback-noise.txt'))!
     expect(p.options.map(o => o.label)).toEqual(['Migrate', 'Roll back', 'Type something.'])

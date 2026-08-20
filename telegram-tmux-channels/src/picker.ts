@@ -88,6 +88,16 @@ function isSeparator(t: string): boolean {
   return /^[─▔━]+$/.test(t)
 }
 
+// Опции с превью рисуются в ДВЕ колонки: слева список, справа рамка с примером. Всё, что
+// правее рамки, к выбору отношения не имеет — режем, иначе label уносит с собой чужой текст.
+const PREVIEW_COLUMN_RE = /\s{2,}[┌│└├].*$/
+// Левая планка заголовка диалога — часть рамки, а не текста.
+const TITLE_GUTTER_RE = /^\s*│\s?/
+const BOX_ONLY_RE = /^[┌┐└┘├┤─│\s]+$/
+// Подсказки TUI между списком и футером. Именно перечислением: любой НЕизвестный текст в этом
+// месте по-прежнему означает «это не пикер», иначе кнопками уедет вывод агента.
+const HINT_RE = /^(?:Notes: press n to add notes|Chat about this|Press \S+ .*)$/
+
 // UI chrome inside a picker box (not a separator — those are handled by the scan):
 // blanks, the ●-sub-control, and the header chip (`☐ Word` / multi `← ☐ … Submit →`).
 function isChrome(t: string): boolean {
@@ -103,7 +113,7 @@ function isChrome(t: string): boolean {
   if (t.startsWith('←') && (t.includes('Submit') || t.includes('→'))) {
     return true
   }
-  return false
+  return BOX_ONLY_RE.test(t) || HINT_RE.test(t)
 }
 
 // Пейн реально готов принять ввод: отрисована строка-приглашение и не висит модалка.
@@ -120,6 +130,46 @@ export function fnv1a(s: string): string {
     h = Math.imul(h, 0x01000193)
   }
   return (h >>> 0).toString(16).padStart(8, '0')
+}
+
+/**
+ * Готовит строки пейна к разбору: срезает колонку предпросмотра и приклеивает перенос длинной
+ * опции к её строке. Номера строк сохраняются (вместо склеенной кладём пустую) — по ним
+ * дальше ищется футер.
+ *
+ * Склейка — ТОЛЬКО в раскладке с превью. Там список ужат в узкую левую колонку и длинная
+ * подпись переносится, а описаний под опциями нет вовсе. В обычной раскладке строка с
+ * отступом под опцией — это её ОПИСАНИЕ, и приклеивать его к подписи нельзя.
+ * Пустая строка разрывает серию: иначе к последней опции приклеились бы подсказки под списком.
+ */
+export function joinWrappedOptions(lines: string[]): string[] {
+  const withPreview = lines.some(line => PREVIEW_COLUMN_RE.test(line))
+  const out: string[] = []
+  let optionIdx = -1
+  let optionIndent = 0
+  for (const raw of lines) {
+    const line = raw.replace(PREVIEW_COLUMN_RE, '')
+    const m = OPTION_RE.exec(line)
+    if (m) {
+      out.push(line)
+      optionIdx = out.length - 1
+      optionIndent = line.search(/\S/)
+      continue
+    }
+    if (!line.trim()) {
+      out.push(line)
+      optionIdx = -1
+      continue
+    }
+    if (withPreview && optionIdx >= 0 && line.search(/\S/) > optionIndent) {
+      out[optionIdx] += ' ' + line.trim()
+      out.push('')
+      continue
+    }
+    out.push(line)
+    optionIdx = -1
+  }
+  return out
 }
 
 // Parse only the picker box: scan UPWARD from the footer, collecting the option
@@ -145,9 +195,11 @@ export function parsePicker(text: string): Picker | undefined {
   let titleParts: string[] = []
   let titleStarted = false
   let multi = false
+  const prepared = joinWrappedOptions(lines)
   for (let i = footerIdx - 1; i >= 0; i--) {
-    const t = lines[i].trim()
-    const m = OPTION_RE.exec(lines[i])
+    const line = prepared[i]
+    const t = line.trim()
+    const m = OPTION_RE.exec(line)
     if (m) {
       if (CHECKBOX_RE.test(m[2])) {
         multi = true
@@ -173,7 +225,7 @@ export function parsePicker(text: string): Picker | undefined {
       return undefined
     }
     titleStarted = true
-    titleParts.unshift(t)
+    titleParts.unshift(t.replace(TITLE_GUTTER_RE, ''))
     if (titleParts.length >= MAX_TITLE_LINES) {
       break
     }

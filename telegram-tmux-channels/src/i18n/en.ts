@@ -64,6 +64,7 @@ export const en = {
   // ── pickers ──
   pickerDefaultTitle: 'Question',
   pickerAnsweredInTerminal: '<i>answered in the terminal</i>',
+  modalUnparsed: '⚠️ The session is waiting on a dialog I could not turn into buttons. Here is its screen — answer in the terminal, or send <code>/esc</code> to dismiss it.',
   pickerClosedRestart: '❓ <i>Picker closed (restart)</i>',
   pickerClosedNoRevive: '❓ <i>Picker closed (session did not recover)</i>',
   sendAnswerMsg: '✍️ <b>Send the answer</b> as a message.',

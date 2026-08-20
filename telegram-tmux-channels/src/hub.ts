@@ -947,6 +947,34 @@ async function resolvePickerMessage(ap: ActivePicker, answer: string): Promise<v
     .catch(() => {})
 }
 
+// Модалка на экране, которую разобрать в кнопки не вышло. Молчать нельзя: пользователь ждёт
+// ответа агента, а сессия ждёт ответа пользователя — и оба висят (ровно так и произошло с
+// пикером в две колонки). Показываем экран один раз на модалку.
+const unparsedModals = new Map<string, { since: number; told: boolean }>()
+const UNPARSED_MODAL_MS = 20_000
+
+async function tellAboutUnparsedModal(pane: string, session: SessionInfo, text: string): Promise<void> {
+  if (!hasPickerFooter(text)) {
+    unparsedModals.delete(pane)
+    return
+  }
+  const seen = unparsedModals.get(pane) ?? { since: Date.now(), told: false }
+  unparsedModals.set(pane, seen)
+  if (seen.told || Date.now() - seen.since < UNPARSED_MODAL_MS) {
+    return
+  }
+  seen.told = true
+  const target = pickerChatFor(session)
+  if (!target) {
+    return
+  }
+  await bot.api
+    .sendMessage(target.chatId, `${t().modalUnparsed}\n<pre>${escHtml(paneDigest(text, 20))}</pre>`, {
+      ...inTopic(target.threadId), parse_mode: 'HTML',
+    })
+    .catch(() => {})
+}
+
 async function detectPicker(pane: string, session: SessionInfo, text: string): Promise<void> {
   // Разрешение на наш собственный telegram-тул отвечаем сами и в чат не выносим: без него
   // агент не может ответить вовсе, а пользователь получал бы вопрос на каждую реплику.
@@ -957,6 +985,9 @@ async function detectPicker(pane: string, session: SessionInfo, text: string): P
   const picker = parsePicker(text)
   const existing = activePickers.get(pane)
   if (!picker || isAutoAckPrompt(picker)) {
+    if (!picker) {
+      void tellAboutUnparsedModal(pane, session, text)
+    }
     if (picker) {
       await ackStartupPrompt(pane, picker, startupAckKey(session, pane)) // never surfaced to chat — and never left hanging
     }
@@ -967,6 +998,7 @@ async function detectPicker(pane: string, session: SessionInfo, text: string): P
     }
     return
   }
+  unparsedModals.delete(pane) // разобрали — тревожить нечем
   if (existing && existing.hash === picker.hash) {
     // Already tracked (incl. a picker recovered from disk after a restart) — no duplicate send.
     return
