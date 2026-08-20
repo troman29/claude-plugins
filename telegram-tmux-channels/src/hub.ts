@@ -54,6 +54,7 @@ import { agentAdapter, installedAgents, mayLearn, type AgentAdapter, type AgentK
 import { renderDoctor, type DoctorCheck } from './doctor'
 import { InteractionRegistry } from './interaction-registry'
 import { EditablePost } from './editable-post'
+import { ProgressPost } from './progress-post'
 import { AnswerStream } from './answer-stream'
 import { literalSendText } from './literal-send'
 import { screenPollMs, uniqueByPane } from './screen-poll'
@@ -2645,17 +2646,38 @@ async function stopLiveSessions(key: string, binding: BindingEntry): Promise<boo
 // tmux+launch for a binding — shared by /resume,/new and auto-topic creation
 const spawningBindings = new Set<string>()
 const SPAWN_GUARD_MS = 30_000
+/** Пост операции: шаги дописываются в одно сообщение топика. Общая обёртка — см. progress-post.ts. */
+function progressPost(chatId: string | number, threadId?: number, initial: string[] = []): ProgressPost {
+  return new ProgressPost(
+    {
+      send: async text =>
+        (await bot.api.sendMessage(chatId, text, { ...inTopic(threadId), parse_mode: 'HTML' }).catch(() => undefined))
+          ?.message_id,
+      edit: async (msgId, text) => {
+        await bot.api.editMessageText(chatId, msgId, text, { parse_mode: 'HTML' }).catch(() => {})
+      },
+    },
+    initial,
+  )
+}
+
 async function spawnSession(
   key: string,
   binding: BindingEntry,
   mode: LaunchMode,
-  // quiet глушит ТОЛЬКО болтовню про подъём (создал окно, режим старта). Отказы и ошибки
-  // уходят в чат всегда: тихий подъём над удалённой папкой оставлял топик молчать вовсе —
+  // quiet глушит ТОЛЬКО болтовню про подъём (папка, режим старта). Отказы и ошибки уходят
+  // в чат всегда: тихий подъём над удалённой папкой оставлял топик молчать вовсе —
   // пользователь видел «поднимаю сессию…» и больше ничего.
-  notify: { say: (html: string) => void; quiet?: boolean },
+  // progress — общий пост операции: шаги дописываются в него, а не сыплются сообщениями.
+  notify: { say: (html: string) => void; quiet?: boolean; progress?: ProgressPost },
 ): Promise<void> {
   const { say } = notify
-  const chatter = notify.quiet ? () => {} : say
+  // Пост подъёма один на всю операцию. Свой передаёт только тот, кто начал рассказ раньше
+  // (авто-топик пишет «готовлю сессию…» ещё до spawnSession) — остальным заводим здесь,
+  // чтобы «папка» и «режим старта» не расходились двумя сообщениями.
+  const { chat_id: postChat, thread_id: postThread } = keyToTarget(key)
+  const progress = notify.progress ?? progressPost(postChat, postThread)
+  const chatter = notify.quiet ? () => {} : (html: string) => progress.step(html)
   if (spawningBindings.has(key)) {
     log(`spawn skipped: already starting ${key}`)
     say(t().spawnInProgress)
@@ -2716,11 +2738,7 @@ async function spawnSession(
       log(`spawn: conversation ${binding.sessionId} gone from disk — starting fresh for ${key}`)
       say(t().conversationGone)
     }
-    chatter(
-      created
-        ? t().tmuxCreated(escHtml(name), codePath(binding.dir))
-        : t().tmuxExists(escHtml(name)),
-    )
+    chatter(t().sessionFolder(codePath(binding.dir)))
     const envPrefix = adapter.launchEnvPrefix([key])
     await reapDeadScopes(log) // тёзка мог остаться от прошлой сессии — systemd-run на занятое имя не встанет
     await typeLine(`=${name}:`, `cd ${shellQuote([binding.dir])} && ${envPrefix} ${memoryCapPrefix(key)}${launch}`)
@@ -2738,7 +2756,7 @@ async function spawnSession(
         : binding.sessionId && !lostConversation
           ? t().modeRestart
           : t().modeNew
-    chatter(`${startedLabel}\n\n<code>${escHtml(launch)}</code>`)
+    chatter(startedLabel)
     if (fresh && adapter.capabilities.captureSessionIdAtLaunch) {
       void captureNewAdapterSessionId(adapter, binding.dir, before, 60_000).then(id => {
         if (!id) {
@@ -3060,7 +3078,8 @@ async function runAutoTopic(
 ): Promise<void> {
   const usedAgent = agent ?? cfg.agent // выбор в пикере важнее группового умолчания
   const branchNote = mode === 'folder' ? '' : t().branchNote(escHtml(branch))
-  say(t().preparingSession(escHtml(mode), branchNote))
+  const { chat_id: chatId, thread_id: threadId } = keyToTarget(key)
+  const progress = progressPost(chatId, threadId, [t().preparingSession(escHtml(mode), branchNote)])
   settingUp.add(key)
   try {
     // hook comes back resolved (project config wins over the group's) — flag the binding from THAT,
@@ -3070,7 +3089,7 @@ async function runAutoTopic(
       // Имя было занято прошлым топиком — говорим вслух, иначе человек ищет ветку под старым
       // именем и правит не то (а именно так и уехал PR на месячную базу).
       log(`auto-topic: branch "${branch}" занята → "${usedBranch}"`)
-      say(t().branchRenamed(escHtml(branch), escHtml(usedBranch)))
+      progress.step(t().branchRenamed(escHtml(branch), escHtml(usedBranch)))
     }
     // A manual /bind may have won while resolving a worktree/hook. Do not write the
     // stale auto-topic defaults over that deliberate adapter/path choice, and do not
@@ -3094,7 +3113,7 @@ async function runAutoTopic(
       log(`auto-topic cancelled: ${key} was manually bound before launch`)
       return
     }
-    await spawnSession(key, reg[key], 'new', { say })
+    await spawnSession(key, reg[key], 'new', { say, progress })
   } catch (e) {
     say(t().sessionSpawnFail(escHtml(String(e))))
   } finally {
@@ -4827,7 +4846,9 @@ bot.on('callback_query:data', async ctx => {
     }
     disarmMode(key)
     await ctx.answerCallbackQuery({ text: modeLabel(mode) }).catch(() => {})
-    await ctx.editMessageText(t().modeChosen(modeLabel(mode))).catch(() => {})
+    // Пикер убираем совсем: выбранный режим стоит первой строкой поста подъёма, отдельный
+    // пузырь «— выбрано» только множит сообщения, а их-то и просили сократить.
+    await ctx.deleteMessage().catch(() => {})
     const base = baseIdx !== undefined && pending.cfg.dir
       ? worktreeBases(pending.cfg.dir)[Number(baseIdx)]
       : undefined

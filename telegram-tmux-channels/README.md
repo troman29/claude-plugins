@@ -38,6 +38,7 @@ What you get beyond plain messaging:
 - **Full session control from the phone.** Restart, compact, interrupt, switch model, peek at
   the terminal — see [Commands](#commands).
 
+
 ## Quick start
 
 You need [Bun](https://bun.sh), tmux, and a bot from [@BotFather](https://t.me/BotFather).
@@ -416,3 +417,19 @@ Set `TELEGRAM_DEBUG_LOG=1` and everything through the hub lands in `screenlog.js
 timeline: pane snapshots, inbound updates, and the **final** payload actually sent to Telegram.
 That last part matters — a `reply` call only returns `sent, id`, so when you're chasing "what
 did the user actually see", read the log instead of guessing. Ring buffer, last 1000 entries.
+
+### One message per multi-step operation
+
+An operation that reports its own progress — raising a session goes mode → folder → launch — sends
+**one** post and appends lines to it instead of firing a message per step. The wrapper is
+`src/progress-post.ts`:
+
+```ts
+const post = progressPost(chatId, threadId, ['⏳ Preparing the session…'])
+post.step('📁 ~/projects/x')
+post.step('🆕 Starting a session')
+```
+
+`step()` is fire-and-forget: delivery is serialized inside, consecutive steps collapse into a
+single edit, and a failed send loses nothing — the next one carries every line. Reach for this
+wrapper when adding a new multi-step flow instead of chaining `say()` calls.

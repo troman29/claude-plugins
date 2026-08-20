@@ -48,8 +48,7 @@ export const en = {
     '⚠️ <b>The session never received that message</b> — sent it twice, nothing reached the conversation. ' +
     'Try <code>/restart</code>, then send it again.',
   notInTmuxSlash: '⚠️ Session is not in tmux — can\'t type the slash command.',
-  tmuxCreated: (name: string, path: string) => `🪟 tmux <code>${name}</code> created in ${path}.`,
-  tmuxExists: (name: string) => `🪟 tmux <code>${name}</code> already exists — typing the launch into its active pane.`,
+  sessionFolder: (path: string) => `📁 ${path}`,
   tmuxForeignAgent: (command: string) => `⚠️ An unconnected <code>${command}</code> is already active in this tmux pane; refusing to type a launch into it.`,
   spawnInProgress: '⏳ This session is already starting; the duplicate launch was skipped.',
   modeResume: '🚀 <b>Resuming</b>',
