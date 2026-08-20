@@ -57,7 +57,7 @@ import { EditablePost } from './editable-post'
 import { ProgressPost } from './progress-post'
 import { AnswerStream } from './answer-stream'
 import { literalSendText } from './literal-send'
-import { screenPollMs, uniqueByPane } from './screen-poll'
+import { isLivePaneKey, screenPollMs, uniqueByPane } from './screen-poll'
 import { startupAckKey } from './startup-ack'
 import { replyContext, type ReplyContext } from './reply-context'
 
@@ -907,12 +907,46 @@ async function ackCodexStartupTrustScreen(pane: string, text: string): Promise<v
 // which is exactly how a swallowed Enter used to hang a pane forever. Scan the tmux session of each
 // bound key that has no live stub and ack there too. Target the session (`=name:`) rather than a
 // pane id, since we have no connection to ask for one.
+/** Закрыть кнопки модалки, которую показали до подъёма стаба: ответ уже дан, в пейне её нет. */
+function closePrestartPicker(tmuxName: string): void {
+  const target = `=${tmuxName}:`
+  const ap = activePickers.get(target)
+  if (!ap) {
+    return
+  }
+  void resolvePickerMessage(ap, t().pickerAnsweredInTerminal)
+  disarmPicker(target)
+}
+
+// Один проход за раз. Скан зовут каждый тик (по умолчанию раз в 300 мс), а сам он спавнит
+// по два tmux-процесса на каждый биндинг без стаба — на нескольких спящих топиках проходы
+// начинают накладываться, очередь спавнов растёт, и ack стартовой модалки приезжает через
+// минуты вместо секунд (ровно так сессия и молчала 20.08: подъём в 15:19, ack в 15:24).
+let prestartScanRunning = false
 async function ackStartupPromptsOnBoundPanes(): Promise<void> {
+  if (prestartScanRunning) {
+    return
+  }
+  prestartScanRunning = true
+  try {
+    await scanPrestartPanes()
+  } finally {
+    prestartScanRunning = false
+  }
+}
+
+async function scanPrestartPanes(): Promise<void> {
   for (const [key, b] of Object.entries(loadBindings())) {
-    if (!b?.dir || router.byBindingKey(key).length > 0) {
-      continue // no dir, or a stub is connected → PASS 1 already covers this pane
+    if (!b?.dir) {
+      continue
     }
     const name = sessionName(key, b)
+    if (router.byBindingKey(key).length > 0) {
+      // стаб поднялся → PASS 1 ведёт этот пейн сама; предстартовая модалка отвечена — закрываем
+      // её сообщение здесь: по `%pane` её чистилка не найдёт, ключ у неё «=имя-сессии:».
+      closePrestartPicker(name)
+      continue
+    }
     if (!(await hasTmuxSession(name).catch(() => false))) {
       continue
     }
@@ -926,9 +960,12 @@ async function ackStartupPromptsOnBoundPanes(): Promise<void> {
       await ackCodexHooksTrustScreen(target, text)
       continue
     }
-    const picker = text ? parsePicker(text) : undefined
-    if (picker && isAutoAckPrompt(picker)) {
-      await ackStartupPrompt(target, picker, startupAckKey({ bindingKeys: [key], cwd: b.dir }, target))
+    // Тот же мост, что и для живых сессий: своё — авто-ack, чужое — кнопками в чат. Раньше
+    // здесь отвечали ТОЛЬКО на trust-промпты, а любая другая модалка (напр. «сессия старая,
+    // резюмить целиком?») висела молча: стаб до ответа не поднимется, PASS 2 ходит только по
+    // поднятым — подъём вставал навсегда, а сообщения пользователя терялись.
+    if (text) {
+      await detectPicker(target, { pane: target, cwd: b.dir, bindingKeys: [key] }, text)
     }
   }
 }
@@ -2048,11 +2085,13 @@ async function pollScreens(): Promise<void> {
       bindingDir: binding.dir, turnAt: pending.at,
     }, text).catch(e => log(`answer-stream update failed key=${key}: ${e}`))
   }
-  for (const pane of [...activePickers.keys()]) if (!seen.has(pane)) disarmPicker(pane)
+  // Только пейны: предстартовый пикер живёт под ключом «=имя-сессии:», его `seen` не содержит
+  // никогда — снос по этому условию убивал бы кнопки каждый тик и слал их заново.
+  for (const pane of [...activePickers.keys()]) if (isLivePaneKey(pane) && !seen.has(pane)) disarmPicker(pane)
   for (const pane of [...lastPaneText.keys()]) if (!seen.has(pane)) lastPaneText.delete(pane)
   // Binding-scoped startup acknowledgements bridge the pre-stub tmux target and post-stub pane.
   // Keep them through that transition; only ephemeral pane-scoped fallbacks follow `seen`.
-  for (const pane of [...autoAcked.keys()]) if (pane.startsWith('%') && !seen.has(pane)) autoAcked.delete(pane)
+  for (const pane of [...autoAcked.keys()]) if (isLivePaneKey(pane) && !seen.has(pane)) autoAcked.delete(pane)
   void ackStartupPromptsOnBoundPanes() // panes with no stub yet (stuck on a startup prompt)
   for (const pane of [...lastError.keys()]) if (!seen.has(pane)) { lastError.delete(pane); errorMisses.delete(pane) }
 
@@ -2299,6 +2338,10 @@ async function handleStubMessage(sock: Socket<undefined>, msg: StubToHub): Promi
     persistUnloaded(session.bindingKeys ?? [], false)
     learnCmdline(session)
     log(`subscribe: cwd=${session.cwd ?? '-'} pane=${session.pane ?? '-'}`)
+    // Сессия дошла — отдать всё, что придержали, пока она поднималась (сколько бы это ни заняло).
+    for (const key of session.bindingKeys ?? []) {
+      void flushQueued(key)
+    }
     return
   }
   if (msg.op === 'rpc') {
@@ -3064,29 +3107,34 @@ function enqueueForTopic(key: string, inbound: Inbound): void {
     void bot.api.setMessageReaction(String(inbound.ctx.chat!.id), msgId, [{ type: 'emoji', emoji: '👌' }]).catch(() => {})
   }
 }
+// Одна разборка очереди на ключ: её дёргают и подъём (runAutoTopic), и подключение стаба —
+// без замка оба забрали бы один и тот же массив и доставили сообщения дважды.
+const flushing = new Set<string>()
 async function flushQueued(key: string): Promise<void> {
   const q = queuedMessages.get(key)
-  queuedMessages.delete(key)
-  stateRepo.delQueued(key)
   if (!q?.length) {
+    queuedMessages.delete(key)
+    stateRepo.delQueued(key)
     return
   }
-  const conns = await waitForBinding(key, 30_000)
-  if (!conns.length) {
-    const c = q[0]?.ctx
-    if (c?.chat) {
-      const tid = c.message?.message_thread_id
-      void bot.api
-        .sendMessage(String(c.chat.id), t().sessionNotUpInTime, {
-          ...inTopic(tid),
-          parse_mode: 'HTML',
-        })
-        .catch(() => {})
+  if (flushing.has(key)) {
+    return
+  }
+  flushing.add(key)
+  try {
+    const conns = await waitForBinding(key, 30_000)
+    if (!conns.length) {
+      // Подъём затянулся — очередь НЕ выбрасываем: стаб подключится и сам позовёт flushQueued.
+      log(`queue held: ${key} — сессия ещё не поднялась, ${q.length} сообщ. ждут подключения`)
+      return
     }
-    return
-  }
-  for (const inb of q) {
-    await handleInbound(inb) // binding now exists → normal delivery path
+    queuedMessages.delete(key)
+    stateRepo.delQueued(key)
+    for (const inb of q) {
+      await handleInbound(inb) // binding now exists → normal delivery path
+    }
+  } finally {
+    flushing.delete(key)
   }
 }
 
@@ -3484,7 +3532,10 @@ async function handleInbound(inbound: Inbound): Promise<void> {
     await spawnSession(key, binding, binding.sessionId ? 'resume' : 'new', { say, quiet: wasIdle })
     conns = await waitForBinding(key, 30_000)
     if (conns.length === 0) {
-      say(t().sessionNotConnectedInTime)
+      // Подъём бывает и минутами (стартовая модалка, тяжёлый резюм). Сообщение не теряем:
+      // придерживаем, стаб на подключении сам вызовет flushQueued.
+      enqueueForTopic(key, inbound)
+      say(t().sessionSlowHeld)
       return
     }
     // Ждать пейн и перерезолвить conn не нужно — это делает deliverMessage перед самой отправкой.

@@ -43,7 +43,7 @@ export const en = {
   autoForwardLabel: '↩️ *auto-forward*', // markdown: the label rides through the same renderer as the body
   raisingSession: '▶️ <b>Bringing the session up…</b>',
   sessionNotConnectedInTime: '⚠️ Session did not connect in time — message not delivered, try again.',
-  sessionNotUpInTime: '⚠️ Session did not come up in time — queued messages not delivered, resend.',
+  sessionSlowHeld: '⏳ <b>Session is still coming up</b> — the message is held and goes through the moment it connects.',
   deliveryLost:
     '⚠️ <b>The session never received that message</b> — sent it twice, nothing reached the conversation. ' +
     'Try <code>/restart</code>, then send it again.',

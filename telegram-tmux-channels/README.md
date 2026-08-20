@@ -405,6 +405,13 @@ Two details worth knowing, because they explain most of the behaviour:
 - **The picker bridge is a screen scraper.** The hub reads each tmux pane on a timer; when it
   recognizes a TUI prompt, it posts buttons, and a tap is replayed as real keystrokes. There's
   no API for those prompts — this is a diff of the terminal.
+- **A session that is still starting is scraped too.** Its stub isn't connected yet, so the hub
+  scans the tmux session by name instead of by pane: trust prompts are answered for you, anything
+  else (an old conversation asking whether to resume in full) goes to the chat as buttons. Without
+  that, a modal nobody can see blocks the launch and the stub never comes up.
+- **A message is never dropped because the launch is slow.** If the session isn't up when the
+  message arrives, it is held (👌) and delivered the moment the stub connects, however long that
+  takes.
 - **Agents write Markdown; the hub picks how to send it.** Most replies are rendered to Telegram
   HTML as they always were. A rich message is used only when `needsRich()` sees something that
   conversion would lose, because a rich message carries no plain `text` field — a client too old

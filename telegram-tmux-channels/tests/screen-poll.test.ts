@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { screenPollMs, uniqueByPane } from '../src/screen-poll'
+import { isLivePaneKey, screenPollMs, uniqueByPane } from '../src/screen-poll'
 
 describe('fast screen polling', () => {
   test('defaults to 300ms (5x faster than the legacy 1500ms)', () => {
@@ -15,5 +15,12 @@ describe('fast screen polling', () => {
   test('polls duplicate stub subscriptions for one pane only once', () => {
     const rows = [{ pane: '%1', id: 1 }, { pane: '%1', id: 2 }, { pane: '%2', id: 3 }]
     expect(uniqueByPane(rows).map(row => row.id)).toEqual([1, 3])
+  })
+})
+
+describe('чистилка тика', () => {
+  test('владеет только живыми пейнами, предстартовую цель сессии не трогает', () => {
+    expect(isLivePaneKey('%12')).toBe(true)
+    expect(isLivePaneKey('=homelab---100-42:')).toBe(false)
   })
 })
