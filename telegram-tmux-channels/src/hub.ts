@@ -3425,7 +3425,10 @@ function reviveInbound(value: PersistedInbound): Inbound {
   return { ctx, text: value.text, literal: value.literal, reply: value.reply }
 }
 
-for (const [key, values] of stateRepo.queuedEntries()) queuedMessages.set(key, values.map(reviveInbound))
+for (const [key, values] of stateRepo.queuedEntries()) {
+  queuedMessages.set(key, values.map(reviveInbound))
+  liveQueue(key) // протухшее с прошлого запуска не воскрешаем — топик уехал дальше без него
+}
 for (const [key, value] of stateRepo.pendingModeEntries()) {
   pendingModeChoice.set(key, { cfg: value.cfg, topicName: value.topicName, say: sayFor(value.chatId, value.threadId), ...(value.agent ? { agent: value.agent } : {}) })
 }
