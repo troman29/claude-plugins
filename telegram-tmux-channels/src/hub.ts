@@ -57,7 +57,7 @@ import { EditablePost } from './editable-post'
 import { ProgressPost } from './progress-post'
 import { AnswerStream } from './answer-stream'
 import { literalSendText } from './literal-send'
-import { isLivePaneKey, screenPollMs, uniqueByPane } from './screen-poll'
+import { isHeldTooLong, isLivePaneKey, screenPollMs, uniqueByPane } from './screen-poll'
 import { startupAckKey } from './startup-ack'
 import { replyContext, type ReplyContext } from './reply-context'
 
@@ -3223,8 +3223,8 @@ const MAX_HOLD_MS = 6 * 60 * 60_000
 /** Очередь топика без протухшего. Протухшее выбрасывает сразу — и из памяти, и с диска. */
 function liveQueue(key: string): Inbound[] {
   const q = queuedMessages.get(key) ?? []
-  const cutoff = Date.now() - MAX_HOLD_MS
-  const live = q.filter(inbound => (inbound.ctx.message?.date ?? 0) * 1000 >= cutoff)
+  const now = Date.now()
+  const live = q.filter(inbound => !isHeldTooLong(inbound.ctx.message?.date, now, MAX_HOLD_MS))
   if (live.length === q.length) {
     return q
   }

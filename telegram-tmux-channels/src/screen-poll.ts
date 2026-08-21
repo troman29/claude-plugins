@@ -14,3 +14,9 @@ export function uniqueByPane<T extends { pane: string }>(rows: T[]): T[] {
 export function isLivePaneKey(key: string): boolean {
   return key.startsWith('%')
 }
+
+/** Придержанное сообщение пора выбросить? `date` — время самого сообщения (секунды Telegram).
+ *  Даты нет — НЕ протухшее: «не знаю когда» не повод выбросить молча. */
+export function isHeldTooLong(date: number | undefined, now: number, maxMs: number): boolean {
+  return date != null && now - date * 1000 >= maxMs
+}
