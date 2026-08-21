@@ -6,7 +6,14 @@ const CHECKBOX_RE = /^\[[ ✔xX]\]\s*/
 const CUSTOM_RE = /type something|other|custom|own/i
 export const FOOTER = 'Esc to cancel' // общий признак «в пейне открыт модальный диалог»
 const FOOTER_RE = /esc to (?:cancel|go back)/i
+// Стартовые гейты Codex (доверие каталогу, доверие хукам, «вышло обновление») — та же
+// нумерованная модалка, но подвал у неё другой. Разбор принимает оба подвала: иначе такой
+// экран не превращается в кнопки и висит в пейне, пока кто-нибудь не сядет за терминал.
+const ENTER_FOOTER_RE = /^\s*press enter to (?:continue|confirm)\s*$/i
+// Только Esc-вариант: строка Codex остаётся на экране и ПОСЛЕ ответа, и пейн по ней числился
+// бы занятым навсегда (paneReady) — а модалку без вариантов мы и так узнаём по ней же.
 export const hasPickerFooter = (text: string): boolean => FOOTER_RE.test(text)
+const isPickerFooterLine = (line: string): boolean => FOOTER_RE.test(line) || ENTER_FOOTER_RE.test(line)
 
 export type PickerOption = { index: number; label: string }
 export type Picker = {
@@ -183,7 +190,7 @@ export function parsePicker(text: string): Picker | undefined {
   }
   let footerIdx = -1
   for (let i = lastIdx; i >= 0; i--) {
-    if (hasPickerFooter(lines[i])) {
+    if (isPickerFooterLine(lines[i])) {
       footerIdx = i
       break
     }

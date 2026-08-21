@@ -6,6 +6,18 @@ import { parsePicker, checkedIndexes, pickerCursorIndex, parseResumeList, paneRe
 const fx = (name: string) => readFileSync(join(import.meta.dir, 'fixtures', name), 'utf8')
 
 describe('parsePicker', () => {
+  test('стартовый гейт Codex с подвалом «Press enter to continue» — тоже пикер', () => {
+    // Реальный экран из habebe-trader 21.08: codex поднялся, упёрся в предложение обновиться
+    // и не подключил стаб; в чат ничего не ушло, топик молча копил придержанные сообщения.
+    const picker = parsePicker(fx('codex-update-prompt.txt'))
+    expect(picker?.mode).toBe('single')
+    expect(picker?.options.map(o => o.label)).toEqual([
+      "Update now (runs `sh -c 'curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh'`)",
+      'Skip',
+      'Skip until next version',
+    ])
+  })
+
   test('Codex 0.147 command approval: options and lowercase footer', () => {
     const pane = `  Would you like to run the following command?\n\n  $ touch /tmp/probe\n\n› 1. Yes, proceed (y)\n  2. Yes, and don't ask again (p)\n  3. No, and tell Codex what to do differently (esc)\n\n  Press enter to confirm or esc to cancel`
     expect(parsePicker(pane)).toMatchObject({

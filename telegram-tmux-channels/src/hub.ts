@@ -3112,6 +3112,9 @@ function enqueueForTopic(key: string, inbound: Inbound): void {
 // Одна разборка очереди на ключ: её дёргают и подъём (runAutoTopic), и подключение стаба —
 // без замка оба забрали бы один и тот же массив и доставили сообщения дважды.
 const flushing = new Set<string>()
+// «Придержал» говорим один раз на подъём: сообщений может прийти сколько угодно, а новость
+// в них одна и та же. Снимается, когда очередь ушла в сессию.
+const heldNotice = new Set<string>()
 async function flushQueued(key: string): Promise<void> {
   const q = queuedMessages.get(key)
   if (!q?.length) {
@@ -3132,6 +3135,7 @@ async function flushQueued(key: string): Promise<void> {
     }
     queuedMessages.delete(key)
     stateRepo.delQueued(key)
+    heldNotice.delete(key)
     for (const inb of q) {
       await handleInbound(inb) // binding now exists → normal delivery path
     }
@@ -3537,7 +3541,10 @@ async function handleInbound(inbound: Inbound): Promise<void> {
       // Подъём бывает и минутами (стартовая модалка, тяжёлый резюм). Сообщение не теряем:
       // придерживаем, стаб на подключении сам вызовет flushQueued.
       enqueueForTopic(key, inbound)
-      say(t().sessionSlowHeld)
+      if (!heldNotice.has(key)) {
+        heldNotice.add(key)
+        say(t().sessionSlowHeld)
+      }
       return
     }
     // Ждать пейн и перерезолвить conn не нужно — это делает deliverMessage перед самой отправкой.
