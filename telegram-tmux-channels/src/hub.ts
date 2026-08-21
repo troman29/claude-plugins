@@ -909,7 +909,7 @@ async function ackCodexStartupTrustScreen(pane: string, text: string): Promise<v
 // pane id, since we have no connection to ask for one.
 /** Закрыть кнопки модалки, которую показали до подъёма стаба: ответ уже дан, в пейне её нет. */
 function closePrestartPicker(tmuxName: string): void {
-  const target = `=${tmuxName}:`
+  const target = prestartTarget(tmuxName)
   const ap = activePickers.get(target)
   if (!ap) {
     return
@@ -950,7 +950,7 @@ async function scanPrestartPanes(): Promise<void> {
     if (!(await hasTmuxSession(name).catch(() => false))) {
       continue
     }
-    const target = `=${name}:`
+    const target = prestartTarget(name)
     const text = await captureTimeout(target).catch(() => '')
     if (text && isCodexStartupTrustScreen(text)) {
       await ackCodexStartupTrustScreen(target, text)
@@ -1038,6 +1038,9 @@ async function detectPicker(pane: string, session: SessionInfo, text: string): P
   unparsedModals.delete(pane) // разобрали — тревожить нечем
   if (existing && existing.hash === picker.hash) {
     // Already tracked (incl. a picker recovered from disk after a restart) — no duplicate send.
+    return
+  }
+  if (justAnswered(pane, picker.hash)) {
     return
   }
   const target = pickerChatFor(session)
@@ -1304,6 +1307,28 @@ function armPicker(pane: string, ap: ActivePicker): void {
   activePickers.set(pane, ap)
   stateRepo.setPicker(pane, { ...ap, at: Date.now() })
 }
+// Ответ уже ушёл в пейн, но TUI перерисовывается не мгновенно — у стартового гейта Codex за
+// Enter стоит установщик. Без этого окна следующий тик увидит ту же модалку и пришлёт вторые
+// кнопки на уже отвеченный вопрос.
+const answeredPickers = new Map<string, { hash: string; at: number }>()
+const ANSWER_SETTLE_MS = 5000
+
+function markPickerAnswered(pane: string, hash: string): void {
+  answeredPickers.set(pane, { hash, at: Date.now() })
+}
+
+function justAnswered(pane: string, hash: string): boolean {
+  const prev = answeredPickers.get(pane)
+  if (!prev || prev.hash !== hash) {
+    return false
+  }
+  if (Date.now() - prev.at >= ANSWER_SETTLE_MS) {
+    answeredPickers.delete(pane)
+    return false
+  }
+  return true
+}
+
 function disarmPicker(pane: string): void { activePickers.delete(pane); stateRepo.delPicker(pane); disarmCustom(pane) }
 
 // pane -> a persisted picker awaiting confirmation that its session/pane still shows it
@@ -1327,8 +1352,21 @@ if (recoveredPickers.size > 0) {
 }
 
 // The live session on `pane` really belongs to binding `key` (guards against a recycled pane id).
+/** Цель tmux для сессии, у которой ещё нет стаба: пейн назвать некому, адресуем всю сессию.
+ *  Один вид ключа на всех — скан, чистилку и проверку «чей это пейн» нельзя разъехать. */
+function prestartTarget(tmuxName: string): string {
+  return `=${tmuxName}:`
+}
+
 function paneBelongsToKey(pane: string, key: string): boolean {
   if (!key) return true // legacy picker without a stored key — nothing to check against
+  // Предстартовая модалка висит на ЦЕЛИ tmux-сессии: стаба, который назвал бы пейн, ещё нет
+  // (он и не поднимется, пока на неё не ответят). Сверяем по имени сессии этого биндинга —
+  // проверка «чужому пейну не пишем» остаётся, просто опирается на имя, а не на подключение.
+  const binding = loadBindings()[key]
+  if (binding && pane === prestartTarget(sessionName(key, binding))) {
+    return true
+  }
   return router.all().some(c => { const s = router.get(c); return s?.pane === pane && !!s.bindingKeys?.includes(key) })
 }
 
@@ -2192,6 +2230,7 @@ async function handlePickCallback(
   if (action.kind === 'opt' && ap.picker.mode === 'single') {
     await selectOption(pane, action.index)
     await resolvePickerMessage(ap, `✅ <b>${escHtml(labelOf(action.index))}</b>`)
+    markPickerAnswered(pane, ap.hash)
     disarmPicker(pane)
     typing(ap.chatId, ap.threadId) // agent resumes on the answer
     await ctx.answerCallbackQuery({ text: t().toastChosen }).catch(() => {})
@@ -2219,6 +2258,7 @@ async function handlePickCallback(
       await selectOption(pane, 1) // Submit answers
     }
     await resolvePickerMessage(ap, `✅ <b>${chosen.length ? escHtml(chosen.join(', ')) : '—'}</b>`)
+    markPickerAnswered(pane, ap.hash)
     disarmPicker(pane)
     typing(ap.chatId, ap.threadId) // agent resumes on the submitted answers
     await ctx.answerCallbackQuery({ text: t().toastSent }).catch(() => {})
