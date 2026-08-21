@@ -44,6 +44,8 @@ export const en = {
   raisingSession: '▶️ <b>Bringing the session up…</b>',
   sessionNotConnectedInTime: '⚠️ Session did not connect in time — message not delivered, try again.',
   sessionSlowHeld: '⏳ <b>Session is still coming up</b> — the message is held and goes through the moment it connects.',
+  bringUpStuck: (seconds: number) =>
+    `⚠️ <b>Session still isn't up after ${seconds}s</b>\n\nThis is what its terminal shows — answer it there, or <code>/restart</code>:`,
   deliveryLost:
     '⚠️ <b>The session never received that message</b> — sent it twice, nothing reached the conversation. ' +
     'Try <code>/restart</code>, then send it again.',

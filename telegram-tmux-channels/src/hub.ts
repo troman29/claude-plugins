@@ -907,6 +907,44 @@ async function ackCodexStartupTrustScreen(pane: string, text: string): Promise<v
 // which is exactly how a swallowed Enter used to hang a pane forever. Scan the tmux session of each
 // bound key that has no live stub and ack there too. Target the session (`=name:`) rather than a
 // pane id, since we have no connection to ask for one.
+// Сторож подъёма. Каждая поломка подъёма выглядит для пользователя одинаково — топик молчит:
+// не отвеченная модалка, отбитый тап по кнопке, вышедший из пейна агент, гейт, которого мы не
+// знаем. Отдельный признак есть у каждой, общего не было ни у одной, и узнавали мы о них только
+// когда Рома присылал скриншот. Здесь общий: подъём начат — засекли, стаб подключился — сняли,
+// не уложился — один раз показываем в чат САМ ЭКРАН. Не чинит, а прекращает молчание.
+const BRING_UP_GRACE_MS = 60_000
+const pendingBringUp = new Map<string, { at: number; told: boolean }>()
+
+function armBringUp(key: string): void {
+  pendingBringUp.set(key, { at: Date.now(), told: false })
+}
+
+function clearBringUp(key: string): void {
+  const pending = pendingBringUp.get(key)
+  if (!pending) {
+    return
+  }
+  pendingBringUp.delete(key)
+  log(`bring-up: ${key} поднялся за ${Math.round((Date.now() - pending.at) / 1000)} c`)
+}
+
+async function reportStuckBringUp(key: string, text: string): Promise<void> {
+  const pending = pendingBringUp.get(key)
+  const waited = pending ? Date.now() - pending.at : 0
+  if (!pending || pending.told || waited < BRING_UP_GRACE_MS) {
+    return
+  }
+  pending.told = true
+  const seconds = Math.round(waited / 1000)
+  log(`bring-up stuck: ${key} — ${seconds} c без стаба, показываю экран`)
+  const { chat_id, thread_id } = keyToTarget(key)
+  await bot.api
+    .sendMessage(chat_id, `${t().bringUpStuck(seconds)}\n<pre>${escHtml(paneDigest(text, 20))}</pre>`, {
+      ...inTopic(thread_id), parse_mode: 'HTML',
+    })
+    .catch(() => {})
+}
+
 /** Закрыть кнопки модалки, которую показали до подъёма стаба: ответ уже дан, в пейне её нет. */
 function closePrestartPicker(tmuxName: string): void {
   const target = prestartTarget(tmuxName)
@@ -967,6 +1005,7 @@ async function scanPrestartPanes(): Promise<void> {
     if (text) {
       await detectPicker(target, { pane: target, cwd: b.dir, bindingKeys: [key] }, text)
     }
+    await reportStuckBringUp(key, text)
     await relaunchForHeldMessages(key, b, target)
   }
 }
@@ -2398,8 +2437,9 @@ async function handleStubMessage(sock: Socket<undefined>, msg: StubToHub): Promi
     persistUnloaded(session.bindingKeys ?? [], false)
     learnCmdline(session)
     log(`subscribe: cwd=${session.cwd ?? '-'} pane=${session.pane ?? '-'}`)
-    // Сессия дошла — отдать всё, что придержали, пока она поднималась (сколько бы это ни заняло).
+    // Сессия дошла — снять сторожа и отдать всё, что придержали, пока она поднималась.
     for (const key of session.bindingKeys ?? []) {
+      clearBringUp(key)
       void flushQueued(key)
     }
     return
@@ -2891,6 +2931,7 @@ async function spawnSession(
     await reapDeadScopes(log) // тёзка мог остаться от прошлой сессии — systemd-run на занятое имя не встанет
     await typeLine(`=${name}:`, `cd ${shellQuote([binding.dir])} && ${envPrefix} ${memoryCapPrefix(key)}${launch}`)
     launchIssued = true
+    armBringUp(key) // с этой секунды подъём под сторожем — снимет его handshake стаба
     // A broken launch must not wedge future retries forever. Successful launches
     // clear this sooner, from the stub's subscribe handshake above.
     setTimeout(() => spawningBindings.delete(key), SPAWN_GUARD_MS)
