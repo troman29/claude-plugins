@@ -1018,6 +1018,12 @@ async function relaunchForHeldMessages(key: string, binding: BindingEntry, targe
   if (!liveQueue(key).length || spawningBindings.has(key)) {
     return
   }
+  if (pendingBringUp.has(key)) {
+    // Одна автоматическая попытка на затык: подъём уже начат (или уже признан провалившимся
+    // и показан в чат). Без этого скан перезапускал сессию каждые SPAWN_GUARD_MS и заодно
+    // переармливал сторожа — минута молчания не наступала никогда, доклад не уходил.
+    return
+  }
   const command = await paneCurrentCommand(target).catch(() => '')
   if (adapterForBinding(binding).isPaneCommand(command)) {
     return // агент на месте — просто ещё не подключился
