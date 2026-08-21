@@ -967,7 +967,27 @@ async function scanPrestartPanes(): Promise<void> {
     if (text) {
       await detectPicker(target, { pane: target, cwd: b.dir, bindingKeys: [key] }, text)
     }
+    await relaunchForHeldMessages(key, b, target)
   }
+}
+
+/** Придержанное сообщение — обещание доставить его, когда сессия дойдёт. Но подъём случается
+ *  только на ВХОДЯЩЕЕ, а входящее лежит в очереди: если агент из пейна ушёл (стартовый гейт
+ *  увёл его в установщик — «Please restart Codex»), забрать очередь некому и топик молчит
+ *  навсегда. Поднимаем сами — ровно в этом случае, тихо. */
+async function relaunchForHeldMessages(key: string, binding: BindingEntry, target: string): Promise<void> {
+  if (!liveQueue(key).length || spawningBindings.has(key)) {
+    return
+  }
+  const command = await paneCurrentCommand(target).catch(() => '')
+  if (adapterForBinding(binding).isPaneCommand(command)) {
+    return // агент на месте — просто ещё не подключился
+  }
+  log(`prestart: ${key} — очередь ждёт, агента в пейне нет (${command || '?'}); поднимаю`)
+  const { chat_id, thread_id } = keyToTarget(key)
+  const say = (html: string) =>
+    void bot.api.sendMessage(chat_id, html, { ...inTopic(thread_id), parse_mode: 'HTML' }).catch(() => {})
+  await spawnSession(key, binding, binding.sessionId ? 'resume' : 'new', { say, quiet: true })
 }
 
 function pickerTitleHtml(ap: ActivePicker): string {
@@ -3155,9 +3175,32 @@ const flushing = new Set<string>()
 // «Придержал» говорим один раз на подъём: сообщений может прийти сколько угодно, а новость
 // в них одна и та же. Снимается, когда очередь ушла в сессию.
 const heldNotice = new Set<string>()
+// Придержанное дольше этого — уже не «сейчас доставим»: разговор ушёл дальше, и сообщение
+// прилетело бы в чужой контекст. Одно такое пролежало в очереди четыре дня.
+const MAX_HOLD_MS = 6 * 60 * 60_000
+
+/** Очередь топика без протухшего. Протухшее выбрасывает сразу — и из памяти, и с диска. */
+function liveQueue(key: string): Inbound[] {
+  const q = queuedMessages.get(key) ?? []
+  const cutoff = Date.now() - MAX_HOLD_MS
+  const live = q.filter(inbound => (inbound.ctx.message?.date ?? 0) * 1000 >= cutoff)
+  if (live.length === q.length) {
+    return q
+  }
+  log(`queue: ${key} — выбросил ${q.length - live.length} придержанных сообщ. старше ${MAX_HOLD_MS / 3600_000} ч`)
+  if (live.length) {
+    queuedMessages.set(key, live)
+    stateRepo.setQueued(key, live.map(persistInbound))
+  } else {
+    queuedMessages.delete(key)
+    stateRepo.delQueued(key)
+  }
+  return live
+}
+
 async function flushQueued(key: string): Promise<void> {
-  const q = queuedMessages.get(key)
-  if (!q?.length) {
+  const q = liveQueue(key)
+  if (!q.length) {
     queuedMessages.delete(key)
     stateRepo.delQueued(key)
     return
@@ -3365,7 +3408,9 @@ function persistInbound(inbound: Inbound): PersistedInbound {
   return {
     text: inbound.text, chatId: String(inbound.ctx.chat!.id), threadId: msg?.message_thread_id,
     senderId: String(inbound.ctx.from!.id), username: inbound.ctx.from?.username,
-    msgId: msg?.message_id, at: Date.now(), literal: inbound.literal, reply,
+    // Время САМОГО сообщения: перезапись очереди не должна омолаживать придержанное
+    // (иначе оно не протухнет никогда), а reviveInbound кладёт `at` обратно в message.date.
+    msgId: msg?.message_id, at: (msg?.date ?? 0) * 1000 || Date.now(), literal: inbound.literal, reply,
   }
 }
 
