@@ -39,3 +39,20 @@ export function mayLearn(
   const same = (bindingAgent ?? 'claude') === sessionAgent
   return { argv: owned || same, agent: owned && !same }
 }
+
+/** Что теряет биндинг при смене харнесса: разговор и argv прежнего.
+ *
+ * Разговоры Claude и Codex лежат в разных хранилищах, и чужой id новый адаптер не найдёт
+ * никогда — подъём каждый раз объявляет разговор пропавшим и стартует с нуля (топики 9/283/1680
+ * так и жили с claude-id под `agent: codex`). Правит биндинг на месте: реестр сохраняет вызывающий.
+ */
+export function forgetForeignConversation(
+  binding: { agent?: AgentKind; sessionId?: string; cmdline?: string[] },
+  agent: AgentKind | undefined,
+): void {
+  if ((binding.agent ?? 'claude') === (agent ?? 'claude')) {
+    return
+  }
+  delete binding.sessionId
+  delete binding.cmdline
+}

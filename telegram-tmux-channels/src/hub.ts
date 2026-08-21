@@ -50,7 +50,7 @@ import { FallbackGate } from './fallback-gate'
 import { topic as inTopic } from './chat'
 import { HubStateRepository, type PersistedPicker, type PersistedInbound, type PersistedLaunchCapture } from './state-repo'
 import { recordChat, recordTopic, topicTitle, chatLabel } from './known-chats'
-import { agentAdapter, installedAgents, mayLearn, type AgentAdapter, type AgentKind, type AgentStatusPanel } from './agents'
+import { agentAdapter, forgetForeignConversation, installedAgents, mayLearn, type AgentAdapter, type AgentKind, type AgentStatusPanel } from './agents'
 import { renderDoctor, type DoctorCheck } from './doctor'
 import { InteractionRegistry } from './interaction-registry'
 import { EditablePost } from './editable-post'
@@ -2420,6 +2420,7 @@ function learnCmdline(session: SessionInfo): void {
       changed = true
     }
     if (may.agent) {
+      forgetForeignConversation(reg[k], kind)
       reg[k].agent = kind
       changed = true
     }
@@ -2794,6 +2795,7 @@ async function spawnSession(
     ? binding.sessionId
     : undefined
   const lostConversation = mode === 'resume' && !!binding.sessionId && !resumeId
+  const lostId = binding.sessionId // запомнить ДО чистки ниже: иначе в лог уедет undefined
   // Не подменяем на --continue: у общей папки он подхватит разговор соседнего топика.
   const launchMode: LaunchMode = lostConversation ? 'new' : mode
   const fresh = launchMode !== 'resume' || !resumeId
@@ -2821,7 +2823,7 @@ async function spawnSession(
     }
     const launch = adapter.buildLaunch(binding.cmdline, launchMode, resumeId)
     if (lostConversation) {
-      log(`spawn: conversation ${binding.sessionId} gone from disk — starting fresh for ${key}`)
+      log(`spawn: ${adapter.kind} conversation ${lostId} not on disk — starting fresh for ${key}`)
       say(t().conversationGone)
     }
     chatter(t().sessionFolder(codePath(binding.dir)))
@@ -3973,16 +3975,19 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
         const keepTmux = replacesAutoTopic ? undefined : binding?.tmux
         const tmux = keepTmux
           ?? (title ? await freeTmuxName(tmuxSessionName(basename(dir), key, slugFromTopicName(title))) : undefined)
-        reg[key] = {
-          ...(replacesAutoTopic ? {} : binding), dir, agent: spec.agent, ...(tmux ? { tmux } : {}),
+        // Разговор и argv переживают ребинд, но только внутри своего харнесса (см. forget…).
+        const kept = replacesAutoTopic || !binding ? undefined : { ...binding }
+        if (kept) {
+          forgetForeignConversation(kept, spec.agent)
         }
+        reg[key] = { ...kept, dir, agent: spec.agent, ...(tmux ? { tmux } : {}) }
         saveBindings(reg)
         const boundText = binding
           ? L.rebound(
               escHtml(key),
               codePath(binding.dir),
               codePath(dir),
-              binding.sessionId ? escHtml(binding.sessionId.slice(0, 8)) : undefined,
+              kept?.sessionId ? escHtml(kept.sessionId.slice(0, 8)) : undefined,
             )
           : L.bound(escHtml(key), codePath(dir))
         void bot.api

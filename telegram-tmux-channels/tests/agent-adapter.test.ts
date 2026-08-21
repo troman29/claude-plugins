@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { agentAdapter, installedAgents, mayLearn, claudeAdapter, codexAdapter } from '../src/agents'
+import { agentAdapter, forgetForeignConversation, installedAgents, mayLearn, claudeAdapter, codexAdapter } from '../src/agents'
 import {
   buildCodexLaunch, codexRollouts, codexSessionMtimes, codexTranscriptSawIncoming,
   codexSessionForIncoming, lastCodexAssistantText, recentCodexSessions,
@@ -283,4 +283,28 @@ test('streaming draft reads only agent_message snapshots, never commentary or to
     old == null ? delete process.env.CODEX_HOME : process.env.CODEX_HOME = old
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+describe('смена харнесса у биндинга (forgetForeignConversation)', () => {
+  test('claude-разговор не переезжает в codex: id и argv уходят', () => {
+    const binding: { agent?: 'claude' | 'codex'; sessionId?: string; cmdline?: string[] } =
+      { agent: 'claude', sessionId: '645fc99c', cmdline: ['claude', '--resume', '645fc99c'] }
+    forgetForeignConversation(binding, 'codex')
+    expect(binding).toEqual({ agent: 'claude' })
+  })
+
+  test('свой харнесс — разговор остаётся', () => {
+    const binding: { agent?: 'claude' | 'codex'; sessionId?: string; cmdline?: string[] } =
+      { agent: 'codex', sessionId: '01a02332', cmdline: ['codex'] }
+    forgetForeignConversation(binding, 'codex')
+    expect(binding.sessionId).toBe('01a02332')
+  })
+
+  test('пустой agent читается как claude', () => {
+    const binding: { agent?: 'claude' | 'codex'; sessionId?: string } = { sessionId: '645fc99c' }
+    forgetForeignConversation(binding, 'claude')
+    expect(binding.sessionId).toBe('645fc99c')
+    forgetForeignConversation(binding, 'codex')
+    expect(binding.sessionId).toBeUndefined()
+  })
 })

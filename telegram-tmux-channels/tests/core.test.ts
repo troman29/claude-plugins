@@ -627,52 +627,67 @@ describe('session-id', () => {
 
   test('lastAssistantText: final text of the turn, skipping tool-only entries', () => {
     const proj = join('/tmp', `cm-fb-a-${Date.now()}`)
-    mkdirSync(claudeProjectDir(proj), { recursive: true })
-    const now = Date.now()
-    const iso = (ms: number) => new Date(ms).toISOString()
-    writeFileSync(
-      join(claudeProjectDir(proj), 's.jsonl'),
-      [
-        JSON.stringify({ type: 'assistant', timestamp: iso(now - 9e4), message: { content: [{ type: 'text', text: 'previous turn' }] } }),
-        JSON.stringify({ type: 'user', timestamp: iso(now), message: { content: 'hi' } }),
-        JSON.stringify({ type: 'assistant', timestamp: iso(now + 1e3), message: { content: [{ type: 'text', text: 'Done' }] } }),
-        JSON.stringify({ type: 'assistant', timestamp: iso(now + 2e3), message: { content: [{ type: 'tool_use', name: 'Bash' }] } }),
-      ].join('\n') + '\n',
-    )
-    expect(lastAssistantText(proj, now)).toBe('Done')
+    const sessionDir = claudeProjectDir(proj)
+    try {
+      mkdirSync(sessionDir, { recursive: true })
+      const now = Date.now()
+      const iso = (ms: number) => new Date(ms).toISOString()
+      writeFileSync(
+        join(sessionDir, 's.jsonl'),
+        [
+          JSON.stringify({ type: 'assistant', timestamp: iso(now - 9e4), message: { content: [{ type: 'text', text: 'previous turn' }] } }),
+          JSON.stringify({ type: 'user', timestamp: iso(now), message: { content: 'hi' } }),
+          JSON.stringify({ type: 'assistant', timestamp: iso(now + 1e3), message: { content: [{ type: 'text', text: 'Done' }] } }),
+          JSON.stringify({ type: 'assistant', timestamp: iso(now + 2e3), message: { content: [{ type: 'tool_use', name: 'Bash' }] } }),
+        ].join('\n') + '\n',
+      )
+      expect(lastAssistantText(proj, now)).toBe('Done')
+    } finally {
+      rmSync(sessionDir, { recursive: true, force: true })
+    }
   })
 
   test('lastAssistantText: "" when the turn produced only tool calls (stale text guard)', () => {
     const proj = join('/tmp', `cm-fb-b-${Date.now()}`)
-    mkdirSync(claudeProjectDir(proj), { recursive: true })
-    const now = Date.now()
-    const iso = (ms: number) => new Date(ms).toISOString()
-    writeFileSync(
-      join(claudeProjectDir(proj), 's.jsonl'),
-      [
-        JSON.stringify({ type: 'assistant', timestamp: iso(now - 9e4), message: { content: [{ type: 'text', text: 'previous turn reply' }] } }),
-        JSON.stringify({ type: 'assistant', timestamp: iso(now + 1e3), message: { content: [{ type: 'tool_use', name: 'Bash' }] } }),
-      ].join('\n') + '\n',
-    )
-    expect(lastAssistantText(proj, now)).toBe('')
+    const sessionDir = claudeProjectDir(proj)
+    try {
+      mkdirSync(sessionDir, { recursive: true })
+      const now = Date.now()
+      const iso = (ms: number) => new Date(ms).toISOString()
+      writeFileSync(
+        join(sessionDir, 's.jsonl'),
+        [
+          JSON.stringify({ type: 'assistant', timestamp: iso(now - 9e4), message: { content: [{ type: 'text', text: 'previous turn reply' }] } }),
+          JSON.stringify({ type: 'assistant', timestamp: iso(now + 1e3), message: { content: [{ type: 'tool_use', name: 'Bash' }] } }),
+        ].join('\n') + '\n',
+      )
+      expect(lastAssistantText(proj, now)).toBe('')
+    } finally {
+      rmSync(sessionDir, { recursive: true, force: true })
+    }
   })
 
   test('lastAssistantText: sessionId picks THIS binding, not the newest file in the dir', () => {
     // Several topics bind the same project dir — "newest wins" leaked a neighbour's answer.
     const proj = join('/tmp', `cm-fb-c-${Date.now()}`)
-    mkdirSync(claudeProjectDir(proj), { recursive: true })
-    const now = Date.now()
-    const iso = (ms: number) => new Date(ms).toISOString()
-    const entry = (text: string, at: number) =>
-      JSON.stringify({ type: 'assistant', timestamp: iso(at), message: { content: [{ type: 'text', text }] } }) + '\n'
-    writeFileSync(join(claudeProjectDir(proj), 'mine.jsonl'), entry('my answer', now + 1e3))
-    writeFileSync(join(claudeProjectDir(proj), 'neighbour.jsonl'), entry('neighbour answer', now + 2e3))
-    // both files land in the same millisecond — pin mtimes so "newest" is unambiguous
-    utimesSync(join(claudeProjectDir(proj), 'mine.jsonl'), new Date(now), new Date(now))
-    utimesSync(join(claudeProjectDir(proj), 'neighbour.jsonl'), new Date(now + 5e3), new Date(now + 5e3))
-    expect(lastAssistantText(proj, now, 'mine')).toBe('my answer')
-    expect(lastAssistantText(proj, now, 'unknown-id')).toBe('neighbour answer') // no such file → newest
-    expect(lastAssistantText(proj, now)).toBe('neighbour answer') // no id (never launched) → newest
+    const sessionDir = claudeProjectDir(proj)
+    try {
+      mkdirSync(sessionDir, { recursive: true })
+      const now = Date.now()
+      const iso = (ms: number) => new Date(ms).toISOString()
+      const entry = (text: string, at: number) =>
+        JSON.stringify({ type: 'assistant', timestamp: iso(at), message: { content: [{ type: 'text', text }] } }) + '\n'
+      writeFileSync(join(sessionDir, 'mine.jsonl'), entry('my answer', now + 1e3))
+      writeFileSync(join(sessionDir, 'neighbour.jsonl'), entry('neighbour answer', now + 2e3))
+      // both files land in the same millisecond — pin mtimes so "newest" is unambiguous
+      utimesSync(join(sessionDir, 'mine.jsonl'), new Date(now), new Date(now))
+      utimesSync(join(sessionDir, 'neighbour.jsonl'), new Date(now + 5e3), new Date(now + 5e3))
+      expect(lastAssistantText(proj, now, 'mine')).toBe('my answer')
+      expect(lastAssistantText(proj, now, 'unknown-id')).toBe('neighbour answer') // no such file → newest
+      expect(lastAssistantText(proj, now)).toBe('neighbour answer') // no id (never launched) → newest
+    } finally {
+      rmSync(sessionDir, { recursive: true, force: true })
+    }
   })
 })
 
