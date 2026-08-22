@@ -46,8 +46,6 @@ export const en = {
   sessionSlowHeld: '⏳ <b>Session is still coming up</b> — the message is held and goes through the moment it connects.',
   bringUpStuck: (seconds: number) =>
     `⚠️ <b>Session still isn't up after ${seconds}s</b>\n\nThis is what its terminal shows — answer it there, or <code>/restart</code>:`,
-  quietTurn: (minutes: number) =>
-    `⏳ <b>The agent has been working ${minutes} min</b>\n\nNo answer yet — this is what its terminal shows:`,
   directiveNotDelivered: (text: string) =>
     `⚠️ <b>The branch didn't take its directive</b> — its terminal wasn't accepting input. Send it again:\n<code>${text}</code>`,
   deliveryLost:
