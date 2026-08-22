@@ -304,6 +304,8 @@ const SPAWN_LOCK = join(STATE_DIR, 'hub.spawnlock')
 const MAX_409_ATTEMPTS = 8
 const MAX_BACKOFF_MS = 15_000
 const SCREEN_POLL_MS = screenPollMs(process.env.TELEGRAM_SCREEN_POLL_MS)
+// Почему в топике нет «печатает…»: видно, дошло ли дело до вызова и на чём отсеклось.
+const TYPING_DEBUG = process.env.TELEGRAM_TYPING_DEBUG === '1'
 const CUSTOM_TIMEOUT_MS = 120_000
 
 // Заглушка вместо токена — чтобы модуль импортировался в тесте. Сам объект в сеть не ходит:
@@ -317,6 +319,9 @@ const TG_OUT_SKIP = new Set(['getUpdates', 'sendChatAction'])
 bot.api.config.use((prev, method, payload, signal) => {
   if (!TG_OUT_SKIP.has(method)) {
     logDebugEvent({ type: 'tg_out', method, payload })
+  }
+  if (TYPING_DEBUG && method === 'sendChatAction') {
+    log(`→ sendChatAction ${JSON.stringify(payload)}`)
   }
   return prev(method, payload, signal)
 })
@@ -2147,11 +2152,18 @@ async function pollScreens(): Promise<void> {
       // Fire typing on: a running subagent, a visible working footer (covers static/byte-identical
       // captures where elapsed hadn't ticked — a pure diff would miss those and the indicator lapses),
       // or any pane change. paneIsWorking is the robust "agent is busy" signal from the live TUI.
-      if (subagentBusy || adapterForSession(s).paneIsWorking(text) || (prev !== undefined && prev !== text)) {
+      const working = adapterForSession(s).paneIsWorking(text)
+      const changed = prev !== undefined && prev !== text
+      if (subagentBusy || working || changed) {
         const target = pickerChatFor(s)
         if (target) {
           typing(target.chatId, target.threadId)
         }
+        if (TYPING_DEBUG) {
+          log(`typing? pane=${s.pane} keys=[${s.bindingKeys ?? ''}] busy=${subagentBusy} working=${working} changed=${changed} target=${target ? `${target.chatId}/${target.threadId ?? ''}` : 'НЕТ'}`)
+        }
+      } else if (TYPING_DEBUG) {
+        log(`typing? pane=${s.pane} keys=[${s.bindingKeys ?? ''}] — условие не сработало (busy/working/changed = false)`)
       }
       lastPaneText.set(s.pane, text)
       return { s, text }
