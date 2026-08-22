@@ -3743,7 +3743,15 @@ async function handleInbound(inbound: Inbound): Promise<void> {
   }
   snapshotScreens(key, text, conns)
   armPending(key, { dir: binding.dir, at: Date.now() }) // armed until the agent replies or turnend forwards
-  await deliverMessage(key, binding.dir, { op: 'event', kind: 'message', content: text, meta }, text)
+  const delivered = await deliverMessage(key, binding.dir, { op: 'event', kind: 'message', content: text, meta }, text)
+  if (!delivered) {
+    // Вход у codex — та же TUI, что у человека, и посреди хода она ввод не принимает. Раньше
+    // сообщение здесь просто исчезало: 👀 на нём уже стояло, а до сессии оно не доходило и
+    // никто об этом не узнавал. Держим до конца хода — как /queue, его же flushQueued и отдаст.
+    disarmPending(key) // ничего не отправили — ждать ответа не на что
+    enqueueForTopic(key, inbound)
+    log(`deliver: ${key} — пейн занят ходом, придержал сообщение до его конца`)
+  }
 }
 
 // ── единственная точка отправки сообщения в сессию ──────────────────────────
@@ -4273,7 +4281,12 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
         ts: new Date().toISOString(), topic_id: String(newThreadId),
       }
       armPending(newKey, { dir: binding.dir, at: Date.now() })
-      await deliverMessage(newKey, binding.dir, { op: 'event', kind: 'message', content: arg, meta }, arg)
+      const delivered = await deliverMessage(newKey, binding.dir, { op: 'event', kind: 'message', content: arg, meta }, arg)
+      if (!delivered) {
+        // Придержать директиву некуда (Inbound тут нет), но молча терять её нельзя.
+        disarmPending(newKey)
+        sayFork(L.directiveNotDelivered(escHtml(arg)))
+      }
     }
     return
   }
