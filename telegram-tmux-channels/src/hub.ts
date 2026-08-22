@@ -1312,7 +1312,11 @@ function armPending(key: string, v: { dir: string; at: number }): void {
   pendingAnswer.set(key, v)
   stateRepo.setPending(key, v)
 }
-function disarmPending(key: string): void { pendingAnswer.delete(key); stateRepo.delPending(key) }
+function disarmPending(key: string): void {
+  pendingAnswer.delete(key)
+  stateRepo.delPending(key)
+  quietTurnTold.delete(key) // ход закрыт — следующий молчит со своего нуля
+}
 // Пускать ли досылку (см. src/fallback-gate.ts). Живёт в пределах хода и рестарт хаба не
 // переживает — тогда просто вернётся прежнее поведение, лишняя досылка вместо потерянной.
 const fallbackGate = new FallbackGate()
@@ -2206,6 +2210,7 @@ async function pollScreens(): Promise<void> {
   const done = Promise.all(
     captured.map(async ({ s, text }) => {
       await detectPicker(s.pane, s, text)
+      await reportQuietTurn(s, text)
       await handleCompaction(s.pane, s, text)
       await handleWorkflow(s.pane, s, text)
       await handleErrors(s.pane, s, text)
@@ -2259,6 +2264,33 @@ async function maybeIdleUnload(s: SessionInfo & { pane: string }, working: boole
   log(`idle-unload: ${key} (${s.cwd}) stopped=${ok}`)
   setTimeout(() => expectedDisconnect.delete(key), 90_000)
   unloading.delete(key)
+}
+
+// Дед-мэн на сам ход. Подъём мы уже сторожим, а вот долгий ход без единого слова в чат
+// выглядит ровно как зависший: всё, что есть у пользователя, — индикатор «печатает…», который
+// на телефоне легко не заметить. Ход, где агент только гоняет shell, не рождает ни одного
+// события: ни субагентов, ни тудушек, ни скиллов — показывать хабу нечего, и топик молчит
+// минутами. Один раз за ход показываем, чем агент занят. Не чинит — прекращает молчание.
+const QUIET_TURN_MS = 4 * 60_000
+const quietTurnTold = new Set<string>()
+
+async function reportQuietTurn(session: SessionInfo, text: string): Promise<void> {
+  for (const key of session.bindingKeys ?? []) {
+    const pending = pendingAnswer.get(key)
+    const waited = pending ? Date.now() - pending.at : 0
+    if (!pending || quietTurnTold.has(key) || waited < QUIET_TURN_MS) {
+      continue
+    }
+    quietTurnTold.add(key)
+    const minutes = Math.round(waited / 60_000)
+    log(`quiet turn: ${key} — ${minutes} мин без ответа, показываю экран`)
+    const { chat_id, thread_id } = keyToTarget(key)
+    await bot.api
+      .sendMessage(chat_id, `${t().quietTurn(minutes)}\n<pre>${escHtml(paneDigest(text, 14))}</pre>`, {
+        ...inTopic(thread_id), parse_mode: 'HTML',
+      })
+      .catch(() => {})
+  }
 }
 
 async function handlePickCallback(
