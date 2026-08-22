@@ -76,4 +76,18 @@ describe('HubStateRepository picker persistence', () => {
     const restored = new InteractionRegistry(b.interactionSnapshot(), () => {}, 20)
     expect(restored.get('skill-menu', '3')).toEqual({ bindingKey: 'g/7', dir: '/repo', names: ['review'] })
   })
+
+  test('объявленная ошибка переживает рестарт — иначе поднявшийся хаб объявит её заново', () => {
+    const dir = tmp()
+    const a = new HubStateRepository(() => {}, dir)
+    a.setError('%20', { err: 'Login expired · Please run /login', at: 1_787_426_814_555 })
+    a.flush()
+
+    const b = new HubStateRepository(() => {}, dir)
+    expect(b.errorEntries()).toEqual([['%20', { err: 'Login expired · Please run /login', at: 1_787_426_814_555 }]])
+
+    b.delError('%20')
+    b.flush()
+    expect(new HubStateRepository(() => {}, dir).errorEntries()).toEqual([])
+  })
 })

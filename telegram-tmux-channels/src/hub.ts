@@ -1915,8 +1915,34 @@ async function handleWorkflow(pane: string, session: SessionInfo, text: string):
 // ponytail: immediate re-arm can double-notify if a banner flickers in/out of the scanned
 // window; errors are rare and missing one is worse than a rare dup — add a miss-counter if it nags.
 const lastError = new Map<string, string>() // key = pane → last-notified banner
-const errorMisses = new Map<string, number>() // pane → сколько подряд проверок без баннера
-const ERROR_FORGET_TICKS = 10 // ~15с при опросе раз в 1.5с: столько ждём, прежде чем забыть баннер
+const errorCleanSince = new Map<string, number>() // pane → когда пейн впервые оказался без баннера
+// Столько ждём чистого пейна, прежде чем забыть баннер. Именно ВРЕМЯ, а не число тиков: счётчик
+// тиков молча менял смысл при каждой правке частоты опроса — «10 тиков ≈ 15 с» превратились в 3 с,
+// когда опрос ускорили с 1.5 с до 300 мс, и баннер стал переобъявляться от любого мелькания.
+const ERROR_FORGET_MS = 15_000
+// Что уже объявлено — переживает рестарт: иначе поднявшийся хаб видит ту же стоящую ошибку как
+// новую. 22.08 так и вышло: восемь рестартов подряд — восемь одинаковых «Session error» в топик.
+const ERROR_RECOVER_MAX_AGE_MS = 24 * 60 * 60_000
+for (const [pane, v] of stateRepo.errorEntries()) {
+  if (Date.now() - v.at > ERROR_RECOVER_MAX_AGE_MS) {
+    stateRepo.delError(pane)
+    continue
+  }
+  lastError.set(pane, v.err)
+}
+
+function rememberError(pane: string, err: string): void {
+  lastError.set(pane, err)
+  stateRepo.setError(pane, { err, at: Date.now() })
+}
+
+/** Ошибка ушла из пейна — забываем: ситуация разрешилась, о следующей скажем заново.
+ *  Единственный способ забыть; «пейн пропал из опроса» таким основанием НЕ является. */
+function forgetError(pane: string): void {
+  lastError.delete(pane)
+  errorCleanSince.delete(pane)
+  stateRepo.delError(pane)
+}
 
 async function handleErrors(pane: string, session: SessionInfo, text: string): Promise<void> {
   const adapter = adapterForSession(session)
@@ -1925,16 +1951,14 @@ async function handleErrors(pane: string, session: SessionInfo, text: string): P
     // Не забываем баннер мгновенно: он уезжает и приезжает обратно в просматриваемое окно,
     // пока агент печатает, и на каждом возврате слался бы дубль. Чистим после нескольких
     // подряд чистых проверок (~15с) — тогда это действительно новая ошибка, а не прокрутка.
-    const miss = (errorMisses.get(pane) ?? 0) + 1
-    if (miss >= ERROR_FORGET_TICKS) {
-      lastError.delete(pane)
-      errorMisses.delete(pane)
-    } else {
-      errorMisses.set(pane, miss)
+    const since = errorCleanSince.get(pane) ?? Date.now()
+    errorCleanSince.set(pane, since)
+    if (Date.now() - since >= ERROR_FORGET_MS) {
+      forgetError(pane)
     }
     return
   }
-  errorMisses.delete(pane)
+  errorCleanSince.delete(pane)
   if (lastError.get(pane) === err) {
     return
   }
@@ -1942,10 +1966,10 @@ async function handleErrors(pane: string, session: SessionInfo, text: string): P
   // (типичный случай: "API Error: Connection closed mid-response", после которого идёт
   // повторная попытка). Молчим: паниковать поверх работающего агента только пугает.
   if (adapter.paneIsWorking(text)) {
-    lastError.set(pane, err) // запомнить, чтобы не всплыло позже, когда агент затихнет
+    rememberError(pane, err) // запомнить, чтобы не всплыло позже, когда агент затихнет
     return
   }
-  lastError.set(pane, err)
+  rememberError(pane, err)
   const target = pickerChatFor(session)
   if (!target) {
     return
@@ -2208,7 +2232,9 @@ async function pollScreens(): Promise<void> {
   // Keep them through that transition; only ephemeral pane-scoped fallbacks follow `seen`.
   for (const pane of [...autoAcked.keys()]) if (isLivePaneKey(pane) && !seen.has(pane)) autoAcked.delete(pane)
   void ackStartupPromptsOnBoundPanes() // panes with no stub yet (stuck on a startup prompt)
-  for (const pane of [...lastError.keys()]) if (!seen.has(pane)) { lastError.delete(pane); errorMisses.delete(pane) }
+  // Пейны с ошибками НЕ чистим по «не видели в этом тике»: на старте хаба стабы ещё не
+  // подключились, и такая чистка стирала как раз то, ради чего запись и переживает рестарт.
+  // Забывает только handleErrors — когда пейн действительно чист (ERROR_FORGET_MS).
 
   // PASS 2 — detectors, parallel across panes; skip if a prior pass is still running
   if (detectorsRunning) {

@@ -28,7 +28,12 @@ export type HubState = {
   queuedMessages: Record<string, PersistedInbound[]>
   launchCaptures: Record<string, PersistedLaunchCapture>
   interactions: Record<string, PersistedInteraction>
+  errors: Record<string, PersistedError>
 }
+
+// Какой баннер ошибки уже показан в чате. Переживает рестарт хаба: иначе поднявшийся хаб
+// видит в пейне ту же стоящую ошибку как новую и объявляет её заново, на КАЖДЫЙ рестарт.
+export type PersistedError = { err: string; at: number }
 
 export type PersistedPendingMode = { cfg: TrustedGroupConfig; topicName: string; chatId: string; threadId: number; agent?: 'claude' | 'codex' }
 export type PersistedInbound = { text: string; chatId: string; threadId?: number; senderId: string; username?: string; msgId?: number; at: number; literal?: boolean; reply?: ReplyContext }
@@ -37,7 +42,7 @@ export type PersistedInbound = { text: string; chatId: string; threadId?: number
 // conversation in a shared directory.
 export type PersistedLaunchCapture = { beforeIds: string[]; at: number }
 
-const empty = (): HubState => ({ version: 1, pendingAnswer: {}, lastFallback: {}, pickers: {}, pendingModes: {}, queuedMessages: {}, launchCaptures: {}, interactions: {} })
+const empty = (): HubState => ({ version: 1, pendingAnswer: {}, lastFallback: {}, pickers: {}, pendingModes: {}, queuedMessages: {}, launchCaptures: {}, interactions: {}, errors: {} })
 
 export class HubStateRepository {
   private state: HubState = empty()
@@ -66,6 +71,7 @@ export class HubStateRepository {
           queuedMessages: raw.queuedMessages ?? {},
           launchCaptures: raw.launchCaptures ?? {},
           interactions: raw.interactions ?? {},
+          errors: raw.errors ?? {},
         }
       }
     } catch {} // no file / corrupt → start empty
@@ -78,6 +84,10 @@ export class HubStateRepository {
   setPending(key: string, v: PendingAnswer): void { this.state.pendingAnswer[key] = v; this.schedule() }
   delPending(key: string): void { delete this.state.pendingAnswer[key]; this.schedule() }
   setFallback(key: string, text: string): void { this.state.lastFallback[key] = text; this.schedule() }
+
+  errorEntries(): [string, PersistedError][] { return Object.entries(this.state.errors) }
+  setError(pane: string, v: PersistedError): void { this.state.errors[pane] = v; this.schedule() }
+  delError(pane: string): void { delete this.state.errors[pane]; this.schedule() }
 
   pickerEntries(): [string, PersistedPicker][] { return Object.entries(this.state.pickers) }
   setPicker(pane: string, v: PersistedPicker): void { this.state.pickers[pane] = v; this.schedule() }
