@@ -35,7 +35,7 @@ import { ansiToImage } from './ansi-image'
 import { deserializeStatus, emptyStatus, hasLiveWork, renderBg, renderStatus, serializeStatus, statusIsEmpty, syncBg, type BgTask, type StatusState } from './status-render'
 import { discoverGlobalSkills, discoverProjectSkills, mangleCmd, resolveSkillCommand, skillInvocation, tgDescription, type Skill } from './skills'
 import { agentPidsInDir, cmdlineOf } from './proc'
-import { rmQuiet } from './util'
+import { bySendTime, rmQuiet } from './util'
 import { parsePicker, checkedIndexes, pickerCursorIndex, parseResumeList, fnv1a, hasPickerFooter, isStartupTrustPrompt, isCodexStartupTrustScreen, isCodexHooksTrustScreen, isCodexOwnToolApproval, type Picker, type ResumeRow } from './picker'
 import { buildKeyboard, parseCallback } from './picker-drive'
 import {
@@ -3205,6 +3205,8 @@ function armMode(key: string, value: PendingModeChoice, chatId: string, threadId
   stateRepo.setPendingMode(key, { cfg: value.cfg, topicName: value.topicName, chatId, threadId, ...(value.agent ? { agent: value.agent } : {}) })
 }
 function disarmMode(key: string): void { pendingModeChoice.delete(key); stateRepo.delPendingMode(key) }
+const HELD_REACTION = '😴' // одна на все очереди: /queue, подъём, занятый ход
+
 function enqueueForTopic(key: string, inbound: Inbound): void {
   const q = queuedMessages.get(key) ?? []
   q.push(inbound)
@@ -3212,8 +3214,10 @@ function enqueueForTopic(key: string, inbound: Inbound): void {
   stateRepo.setQueued(key, q.map(persistInbound))
   const msgId = inbound.ctx.message?.message_id
   if (msgId != null) {
-    // 👌 = "held, will deliver once the session is up" (⏳ isn't in Telegram's reaction set)
-    void bot.api.setMessageReaction(String(inbound.ctx.chat!.id), msgId, [{ type: 'emoji', emoji: '👌' }]).catch(() => {})
+    // 😴 = «принято, лежит в очереди»; сменится на 👀, когда сообщение уйдёт в сессию.
+    // Часов тут быть не может: ⏳ и 🕐 Telegram отбивает как REACTION_INVALID (проверено
+    // на живом API), в наборе реакций циферблата нет вовсе.
+    void bot.api.setMessageReaction(String(inbound.ctx.chat!.id), msgId, [{ type: 'emoji', emoji: HELD_REACTION }]).catch(() => {})
   }
 }
 // Одна разборка очереди на ключ: её дёргают и подъём (runAutoTopic), и подключение стаба —
@@ -3245,6 +3249,13 @@ function liveQueue(key: string): Inbound[] {
   return live
 }
 
+/** Сложить очередь обратно в порядке ОТПРАВКИ: пока хвост ждал, могло прийти новое. */
+function holdInOrder(key: string, messages: Inbound[]): void {
+  const ordered = bySendTime(messages, inbound => inbound.ctx.message?.date)
+  queuedMessages.set(key, ordered)
+  stateRepo.setQueued(key, ordered.map(persistInbound))
+}
+
 async function flushQueued(key: string): Promise<void> {
   const q = liveQueue(key)
   if (!q.length) {
@@ -3266,8 +3277,16 @@ async function flushQueued(key: string): Promise<void> {
     queuedMessages.delete(key)
     stateRepo.delQueued(key)
     heldNotice.delete(key)
-    for (const inb of q) {
-      await handleInbound(inb) // binding now exists → normal delivery path
+    for (let i = 0; i < q.length; i++) {
+      await handleInbound(q[i]!) // binding now exists → normal delivery path
+      const requeued = queuedMessages.get(key)
+      if (!requeued?.length) {
+        continue
+      }
+      // Сообщение не отдалось и вернулось в очередь — ход ещё идёт. Остальные вперёд него
+      // не пускаем: порядок важнее скорости. Кладём хвост обратно и ждём конца хода.
+      holdInOrder(key, [...requeued, ...q.slice(i + 1)])
+      return
     }
   } finally {
     flushing.delete(key)
@@ -3539,7 +3558,7 @@ async function handleInbound(inbound: Inbound): Promise<void> {
       // иначе сообщение ждало бы конца хода, который никто не начинал.
       if (binding && keyIsWorking(key, binding.dir)) {
         log(`queue: ${key} — держу до конца хода`)
-        enqueueForTopic(key, held) // 👌 = принято, доставлю после хода
+        enqueueForTopic(key, held) // принято, доставлю после хода
         return
       }
       await handleInbound(held)

@@ -5,6 +5,7 @@ import { join } from 'path'
 import { messageKey, keyToTarget, targetFor } from '../src/bindings'
 import { keysForDir, sessionOwner, setSessionId, resolveProjectDir, parseBindSpec, validBindings, type BindingEntry } from '../src/registry'
 import { makeLineDecoder, encode } from '../src/protocol'
+import { bySendTime } from '../src/util'
 import { Router } from '../src/router'
 import { chunk, planAttachments, CAPTION_LIMIT } from '../src/chunk'
 import { fmtUntil, formatLimits } from '../src/limits'
@@ -782,5 +783,22 @@ describe('запуск сессии под лимитом', () => {
       expect(cmd).toContain('--slice=tgc-agents')
       expect(cmd).not.toContain('MemorySwapMax')
     })
+  })
+})
+
+describe('порядок разгрузки очереди', () => {
+  const msg = (id: string, date?: number) => ({ id, date })
+
+  test('по времени отправки, а не по тому, как вернулись в очередь', () => {
+    // «первое» не отдалось и вернулось в очередь ПОЗЖЕ, чем пришло «второе» — порядок держим по дате
+    const requeued = [msg('первое', 100), msg('третье', 300)]
+    const tail = [msg('второе', 200)]
+    expect(bySendTime([...requeued, ...tail], m => m.date).map(m => m.id))
+      .toEqual(['первое', 'второе', 'третье'])
+  })
+
+  test('без даты — самое старое, ровесники не меняются местами', () => {
+    const rows = [msg('c', 5), msg('без даты'), msg('a', 5), msg('b', 5)]
+    expect(bySendTime(rows, m => m.date).map(m => m.id)).toEqual(['без даты', 'c', 'a', 'b'])
   })
 })
