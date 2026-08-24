@@ -1403,9 +1403,27 @@ function disarmPicker(pane: string): void { activePickers.delete(pane); stateRep
 
 // pane -> a persisted picker awaiting confirmation that its session/pane still shows it
 const recoveredPickers = new Map<string, PersistedPicker>()
+// Протухшие (старше RECOVER_MAX_AGE_MS) не восстанавливаем — но и молча выбрасывать нельзя:
+// кнопки в чате остаются живыми на вид, а для хаба пикера уже нет, и тап отвечает «закрыт».
+// Закрываем их сообщения в start(): здесь модуль ещё только грузится, сети тут быть не должно.
+const stalePickers: PersistedPicker[] = []
 for (const [pane, v] of stateRepo.pickerEntries()) {
-  if (Date.now() - v.at > RECOVER_MAX_AGE_MS) { stateRepo.delPicker(pane); continue }
+  if (Date.now() - v.at > RECOVER_MAX_AGE_MS) {
+    stalePickers.push(v)
+    stateRepo.delPicker(pane)
+    continue
+  }
   recoveredPickers.set(pane, v)
+}
+
+/** Погасить кнопки пикеров, которые пережили рестарт и уже не подлежат восстановлению. */
+async function closeStalePickers(): Promise<void> {
+  for (const v of stalePickers.splice(0)) {
+    log(`picker stale: msg=${v.msgId} — старше ${RECOVER_MAX_AGE_MS / 60_000} мин, гашу кнопки`)
+    await bot.api
+      .editMessageText(v.chatId, v.msgId, t().pickerClosedRestart, { parse_mode: 'HTML' })
+      .catch(e => log(`picker stale close failed: msg=${v.msgId} ${e}`))
+  }
 }
 // A recovered picker whose session never came back (or moved on) after the grace: close its
 // Telegram message and forget it, so a dead button doesn't linger.
@@ -5368,6 +5386,7 @@ export async function start(): Promise<void> {
   process.on('SIGINT', shutdown)
   claimPollerSlot()
   listenForStubs()
+  void closeStalePickers() // кнопки, пережившие рестарт, гасим сразу — иначе они врут, что живы
   startScreenPoll()
   startScopeReaper()
   await pollForever()
