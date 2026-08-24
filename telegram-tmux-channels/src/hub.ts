@@ -3280,6 +3280,14 @@ const queuedMessages = new Map<string, Inbound[]>()
 // Режим уже выбран, биндинга ещё нет (worktree создаётся десятки секунд). Без этого флага
 // сообщение из этого окна уходит в late-binding, поднимает ВТОРОЙ пикер и запирает очередь:
 // flushQueued вернёт всё обратно в неё, потому что pendingModeChoice снова взведён.
+/** Сессия уже поднимается — любым из трёх путей: ждём тап по пикеру режима, идёт настройка
+ *  авто-топика, начат spawn. Состояний три, а для входящего сообщения смысл один — ждать в
+ *  очереди. Ловили только первые два, и сообщение, пришедшее третьим, уходило в ревайв, где
+ *  spawnSession отбивал его внутренним «дубликат запуска пропущен» вместо 😴. */
+function isComingUp(key: string): boolean {
+  return pendingModeChoice.has(key) || settingUp.has(key) || spawningBindings.has(key)
+}
+
 const settingUp = new Set<string>()
 // A trusted-topic launch is asynchronous (worktree/hook resolution and then tmux).  A manual
 // /bind is an explicit override, not a second competing setup request. Track the auto-owned
@@ -3731,9 +3739,8 @@ async function handleInbound(inbound: Inbound): Promise<void> {
     }
   }
 
-  // mode picker sent, waiting for a button tap — hold this message and deliver it once the
-  // session is up (flushQueued), so the first task typed before tapping isn't lost.
-  if (pendingModeChoice.has(key) || settingUp.has(key)) {
+  // Сессия уже поднимается — придерживаем и отдадим, когда она дойдёт (flushQueued).
+  if (isComingUp(key)) {
     enqueueForTopic(key, inbound)
     return
   }
