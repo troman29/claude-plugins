@@ -326,6 +326,8 @@ export const en = {
     `🔀 Branch <code>${wanted}</code> already exists (an older topic of the same name) — ` +
     `working in <code>${used}</code>, cut fresh from the base.`,
   preparingSession: (mode: string, branchNote: string) => `⏳ Preparing the session (<code>${mode}</code>${branchNote})…`,
+  hookPreparing: (seconds: number) => `🌱 The project hook is preparing the worktree… ${seconds}s`,
+  hookPrepared: (seconds: number) => `🌱 Worktree ready in ${seconds}s`,
   notAFolder: (err: string) => `⚠️ <b>Doesn't look like a folder</b>: ${err}\n\nSend it again.`,
   modeIntroFolder: '📁 <b>Default folder</b> — work right in the base.',
   modeIntroWorktree:

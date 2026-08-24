@@ -316,6 +316,8 @@ export const ru: Strings = {
     `🔀 Ветка <code>${wanted}</code> уже есть (топик с таким именем был раньше) — ` +
     `работаю в <code>${used}</code>, срезанной от свежей базы.`,
   preparingSession: (mode, branchNote) => `⏳ Готовлю сессию (<code>${mode}</code>${branchNote})…`,
+  hookPreparing: (seconds: number) => `🌱 Хук проекта готовит ворктри… ${seconds} с`,
+  hookPrepared: (seconds: number) => `🌱 Ворктри готов за ${seconds} с`,
   notAFolder: err => `⚠️ <b>Не похоже на папку</b>: ${err}\n\nПришли ещё раз.`,
   modeIntroFolder: '📁 <b>Папка по умолчанию</b> — работать прямо в базе.',
   modeIntroWorktree:

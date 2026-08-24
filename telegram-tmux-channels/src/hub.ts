@@ -3425,9 +3425,16 @@ async function runAutoTopic(
   const progress = progressPost(chatId, threadId, [t().preparingSession(escHtml(mode), branchNote)])
   settingUp.add(key)
   try {
+    // Хук проекта (ворктри, стенд, миграции) — самая долгая часть подъёма: у agentek-console
+    // это минута с лишним, и всё это время топик молчал. Строка со счётчиком показывает, что
+    // идёт работа, а не зависание.
+    const hookStartedAt = Date.now()
+    progress.running(seconds => t().hookPreparing(seconds))
     // hook comes back resolved (project config wins over the group's) — flag the binding from THAT,
     // not from `cfg.hook`, so teardown runs the same hook creation used.
     const { dir: resolvedDir, hook: usedHook, branch: usedBranch } = await resolveModeDir(mode, dir, cfg.hook, branch, base ?? worktreeBases(dir)[0])
+    const hookSeconds = Math.round((Date.now() - hookStartedAt) / 1000)
+    progress.settle(hookSeconds >= 2 ? t().hookPrepared(hookSeconds) : '')
     if (usedBranch !== branch) {
       // Имя было занято прошлым топиком — говорим вслух, иначе человек ищет ветку под старым
       // именем и правит не то (а именно так и уехал PR на месячную базу).
@@ -3463,6 +3470,7 @@ async function runAutoTopic(
   } catch (e) {
     say(t().sessionSpawnFail(escHtml(String(e))))
   } finally {
+    progress.settle('') // упали на хуке — снимаем живую строку, иначе её таймер тикает вечно
     autoTopicBindings.delete(key)
     cancelledAutoTopics.delete(key)
     settingUp.delete(key) // снять ДО flush — иначе очередь уйдёт сама в себя

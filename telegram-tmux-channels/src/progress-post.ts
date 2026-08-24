@@ -15,11 +15,15 @@ export type ProgressTransport = {
  * Telegram и так отбивает правку тем же текстом. Провалившаяся отправка не роняет операцию:
  * строки копятся и уедут следующей.
  */
+const TICK_MS = 5000
+
 export class ProgressPost {
   private lines: string[] = []
   private msgId?: number
   private delivered = ''
   private queue: Promise<void> = Promise.resolve()
+  private ticker?: ReturnType<typeof setInterval>
+  private runningIdx = -1
 
   constructor(private readonly transport: ProgressTransport, initial: string[] = []) {
     this.lines = initial.filter(Boolean)
@@ -32,8 +36,50 @@ export class ProgressPost {
     if (!line.trim()) {
       return
     }
+    this.stopTicker() // предыдущий долгий шаг кончился — его строка застывает как есть
     this.lines.push(line)
     this.flush()
+  }
+
+  /**
+   * Долгий шаг, который сам показывает, сколько уже идёт. Строка живёт и перерисовывается
+   * раз в TICK_MS, пока не придёт settle() или следующий step(). Нужен там, где операция
+   * молчит минутами (хук ворктри в проекте) — без счётчика это неотличимо от зависания.
+   */
+  running(render: (seconds: number) => string, everyMs: number = TICK_MS): void {
+    this.stopTicker()
+    const startedAt = Date.now()
+    this.runningIdx = this.lines.push(render(0)) - 1
+    this.flush()
+    this.ticker = setInterval(() => {
+      this.lines[this.runningIdx] = render(Math.round((Date.now() - startedAt) / 1000))
+      this.flush()
+    }, everyMs)
+    this.ticker.unref?.() // таймер прогресса не повод держать процесс живым
+  }
+
+  /** Долгий шаг закончился: его строка заменяется итоговой. Пустая строка — шаг оказался
+   *  мгновенным, и строку убираем совсем, чтобы не мусорить «0 с». */
+  settle(line: string): void {
+    const idx = this.runningIdx
+    this.stopTicker()
+    if (idx < 0) {
+      return
+    }
+    if (line.trim()) {
+      this.lines[idx] = line
+    } else {
+      this.lines.splice(idx, 1)
+    }
+    this.flush()
+  }
+
+  private stopTicker(): void {
+    if (this.ticker) {
+      clearInterval(this.ticker)
+      this.ticker = undefined
+    }
+    this.runningIdx = -1
   }
 
   text(): string {
