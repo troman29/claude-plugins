@@ -35,9 +35,9 @@ import { ansiToImage } from './ansi-image'
 import { deserializeStatus, emptyStatus, hasLiveWork, renderBg, renderStatus, serializeStatus, statusIsEmpty, syncBg, type BgTask, type StatusState } from './status-render'
 import { discoverGlobalSkills, discoverProjectSkills, mangleCmd, resolveSkillCommand, skillInvocation, tgDescription, type Skill } from './skills'
 import { agentPidsInDir, cmdlineOf } from './proc'
-import { bySendTime, rmQuiet } from './util'
-import { parsePicker, checkedIndexes, pickerCursorIndex, parseResumeList, fnv1a, hasPickerFooter, isStartupTrustPrompt, isCodexStartupTrustScreen, isCodexHooksTrustScreen, isCodexOwnToolApproval, type Picker, type ResumeRow } from './picker'
-import { buildKeyboard, parseCallback } from './picker-drive'
+import { bySendTime, clampLines, rmQuiet } from './util'
+import { parsePicker, CHAT_ABOUT_INDEX, checkedIndexes, pickerCursorIndex, parseResumeList, fnv1a, hasPickerFooter, isStartupTrustPrompt, isCodexStartupTrustScreen, isCodexHooksTrustScreen, isCodexOwnToolApproval, type Picker, type ResumeRow } from './picker'
+import { buildKeyboard, downsToChatAbout, parseCallback } from './picker-drive'
 import {
   loadTrustedGroups, isExcludedTopic, slugFromTopicName, modeLabel,
   type TrustedGroupConfig, type TrustedGroupMode,
@@ -790,6 +790,7 @@ type ActivePicker = {
   token: string
   picker: Picker
   key: string // binding key — reject a tap if the pane got recycled to another session post-restart
+  intro?: string // готовый HTML: что агент написал ПЕРЕД вопросом
 }
 const activePickers = new Map<string, ActivePicker>() // key = pane
 const awaitingCustom = new Map<string, { chatId: string; threadId?: number; bindingKey: string; at: number; multi: boolean }>()
@@ -1053,7 +1054,23 @@ async function relaunchForHeldMessages(key: string, binding: BindingEntry, targe
 }
 
 function pickerTitleHtml(ap: ActivePicker): string {
-  return `❓ <b>${escHtml(ap.picker.title || t().pickerDefaultTitle)}</b>`
+  const title = `❓ <b>${escHtml(ap.picker.title || t().pickerDefaultTitle)}</b>`
+  return ap.intro ? `${ap.intro}\n\n${title}` : title
+}
+
+// Вопрос без того, что агент сказал ПЕРЕД ним, читается как загадка: в терминале видно
+// «вот в чём утечка… отсюда вопрос», а в чат уезжал один заголовок пикера. Текст берём из
+// транскрипта (он авторитетен), а не из пейна, и только за текущий ход.
+const PICKER_INTRO_MAX = 1200
+
+function pickerIntro(key: string): string {
+  const binding = loadBindings()[key]
+  const pending = pendingAnswer.get(key)
+  if (!binding || !pending) {
+    return ''
+  }
+  const said = adapterForBinding(binding).lastAssistantText(binding.dir, pending.at, binding.sessionId).trim()
+  return said ? mdToHtml(clampLines(said, PICKER_INTRO_MAX)) : ''
 }
 
 function resolvedText(ap: ActivePicker, answer: string): string {
@@ -1152,7 +1169,8 @@ async function detectPicker(pane: string, session: SessionInfo, text: string): P
   // Reserve the slot synchronously before the await below — otherwise an overlapping
   // pollScreens tick for the same pane sees `existing === undefined` too and double-sends.
   // In-memory only (msgId:-1 is a transient placeholder — nothing worth persisting yet).
-  activePickers.set(pane, {
+  const intro = pickerIntro(key)
+  const reserved: ActivePicker = {
     chatId: target.chatId,
     ...(target.threadId != null ? { threadId: target.threadId } : {}),
     msgId: -1,
@@ -1160,9 +1178,11 @@ async function detectPicker(pane: string, session: SessionInfo, text: string): P
     token: picker.hash,
     picker,
     key,
-  })
+    ...(intro ? { intro } : {}),
+  }
+  activePickers.set(pane, reserved)
   const sent = await bot.api
-    .sendMessage(target.chatId, `❓ <b>${escHtml(picker.title || 'Question')}</b>`, {
+    .sendMessage(target.chatId, pickerTitleHtml(reserved), {
       ...inTopic(target.threadId),
       parse_mode: 'HTML',
       reply_markup: kbFrom(picker, picker.hash, checkedIndexes(text)),
@@ -1170,15 +1190,7 @@ async function detectPicker(pane: string, session: SessionInfo, text: string): P
     .catch(() => undefined)
   if (sent) {
     log(`picker sent: pane=${pane} mode=${picker.mode} opts=${picker.options.length} title="${picker.title.slice(0, 40)}"`)
-    armPicker(pane, {
-      chatId: target.chatId,
-      ...(target.threadId != null ? { threadId: target.threadId } : {}),
-      msgId: sent.message_id,
-      hash: picker.hash,
-      token: picker.hash,
-      picker,
-      key,
-    })
+    armPicker(pane, { ...reserved, msgId: sent.message_id })
   } else if (activePickers.get(pane)?.msgId === -1) {
     endPicker(pane, 'message-already-resolved') // отправка не удалась — гасить нечего
   }
@@ -2352,6 +2364,20 @@ async function maybeIdleUnload(s: SessionInfo & { pane: string }, working: boole
   unloading.delete(key)
 }
 
+/** «Chat about this» выбирается стрелками: номера у него нет (см. CHAT_ABOUT_INDEX). */
+async function pressChatAbout(pane: string, picker: Picker): Promise<void> {
+  const numbered = picker.options.filter(option => option.index > 0).map(option => option.index)
+  const last = numbered.length ? Math.max(...numbered) : 1
+  const cursor = pickerCursorIndex(await capturePane(pane).catch(() => '')) ?? 1
+  const downs = downsToChatAbout(cursor, last)
+  log(`pick: «Chat about this» — курсор на ${cursor}, жму ↓ ${downs} раз`)
+  for (let i = 0; i < downs; i++) {
+    await sendKeys(pane, 'Down')
+    await new Promise(resolve => setTimeout(resolve, 80))
+  }
+  await sendKeys(pane, 'Enter')
+}
+
 async function handlePickCallback(
   ctx: Context,
   pick: NonNullable<ReturnType<typeof parseCallback>>,
@@ -2387,7 +2413,11 @@ async function handlePickCallback(
     .catch(() => {})
   const labelOf = (i: number) => ap.picker.options.find(o => o.index === i)?.label ?? String(i)
   if (action.kind === 'opt' && ap.picker.mode === 'single') {
-    await selectOption(pane, action.index)
+    if (action.index === CHAT_ABOUT_INDEX) {
+      await pressChatAbout(pane, ap.picker)
+    } else {
+      await selectOption(pane, action.index)
+    }
     await resolvePickerMessage(ap, `✅ <b>${escHtml(labelOf(action.index))}</b>`)
     markPickerAnswered(pane, ap.hash)
     endPicker(pane, 'message-already-resolved')

@@ -24,3 +24,14 @@ export function safeJsonParse<T>(text: string): T | undefined {
 export function bySendTime<T>(messages: T[], dateOf: (m: T) => number | undefined): T[] {
   return [...messages].sort((a, b) => (dateOf(a) ?? 0) - (dateOf(b) ?? 0))
 }
+
+/** Обрезать текст до maxChars по границе СТРОКИ: обрыв посреди фразы читается как баг рендера.
+ *  Если ближайшая граница слишком далеко (строка длиннее половины лимита) — режем как есть. */
+export function clampLines(text: string, maxChars: number): string {
+  if (text.length <= maxChars) {
+    return text
+  }
+  const cut = text.slice(0, maxChars)
+  const lastBreak = cut.lastIndexOf('\n')
+  return `${(lastBreak > maxChars / 2 ? cut.slice(0, lastBreak) : cut).trimEnd()}…`
+}

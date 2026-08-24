@@ -5,7 +5,8 @@ import { join } from 'path'
 import { messageKey, keyToTarget, targetFor } from '../src/bindings'
 import { keysForDir, sessionOwner, setSessionId, resolveProjectDir, parseBindSpec, validBindings, type BindingEntry } from '../src/registry'
 import { makeLineDecoder, encode } from '../src/protocol'
-import { bySendTime } from '../src/util'
+import { downsToChatAbout } from '../src/picker-drive'
+import { bySendTime, clampLines } from '../src/util'
 import { Router } from '../src/router'
 import { chunk, planAttachments, CAPTION_LIMIT } from '../src/chunk'
 import { fmtUntil, formatLimits } from '../src/limits'
@@ -800,5 +801,24 @@ describe('порядок разгрузки очереди', () => {
   test('без даты — самое старое, ровесники не меняются местами', () => {
     const rows = [msg('c', 5), msg('без даты'), msg('a', 5), msg('b', 5)]
     expect(bySendTime(rows, m => m.date).map(m => m.id)).toEqual(['без даты', 'c', 'a', 'b'])
+  })
+})
+
+describe('обрезка длинного текста', () => {
+  test('короткое не трогаем, длинное режем по границе строки', () => {
+    expect(clampLines('раз\nдва', 100)).toBe('раз\nдва')
+    expect(clampLines('раз\nдва\nтри\nчетыре', 12)).toBe('раз\nдва\nтри…')
+  })
+
+  test('строка длиннее половины лимита — режем как есть, а не в ноль', () => {
+    expect(clampLines('а'.repeat(50), 10)).toBe('а'.repeat(10) + '…')
+  })
+})
+
+describe('«Chat about this» без номера', () => {
+  test('стрелок ровно столько, чтобы дойти от курсора до пункта за последней опцией', () => {
+    expect(downsToChatAbout(1, 3)).toBe(3) // курсор на 1-й из трёх → 2 опции + сам пункт
+    expect(downsToChatAbout(3, 3)).toBe(1) // курсор на последней → один шаг вниз
+    expect(downsToChatAbout(5, 3)).toBe(1) // курсор ниже списка — меньше одного не бывает
   })
 })

@@ -45,3 +45,13 @@ export function parseCallback(data: string): { token: string; action: PickAction
   }
   return { token, action: { kind: 'opt', index: Number(a.slice(1)) } }
 }
+
+/**
+ * Сколько раз нажать ↓, чтобы дойти от текущего пункта до «Chat about this».
+ *
+ * Он стоит сразу за последней нумерованной опцией и номера не имеет, поэтому цифрой его не
+ * выбрать — только навигацией. Меньше одного нажатия не бывает: курсор всегда где-то в списке.
+ */
+export function downsToChatAbout(cursorIndex: number, lastOptionIndex: number): number {
+  return Math.max(1, lastOptionIndex - cursorIndex + 1)
+}

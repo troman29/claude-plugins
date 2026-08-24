@@ -2,6 +2,8 @@
 // Grounded on real /model and AskUserQuestion renders — see tests/fixtures.
 
 const OPTION_RE = /^\s*[❯›]?\s*(\d+)\.\s+(.*)$/
+/** Пункт без номера («Chat about this» в раскладке с превью): жмётся стрелками, не цифрой. */
+export const CHAT_ABOUT_INDEX = 0
 const CHECKBOX_RE = /^\[[ ✔xX]\]\s*/
 const CUSTOM_RE = /type something|other|custom|own/i
 export const FOOTER = 'Esc to cancel' // общий признак «в пейне открыт модальный диалог»
@@ -104,6 +106,10 @@ const BOX_ONLY_RE = /^[┌┐└┘├┤─│\s]+$/
 // Подсказки TUI между списком и футером. Именно перечислением: любой НЕизвестный текст в этом
 // месте по-прежнему означает «это не пикер», иначе кнопками уедет вывод агента.
 const HINT_RE = /^(?:Notes: press n to add notes|Chat about this|Press \S+ .*)$/
+// «Chat about this» — настоящий пункт списка, а не подсказка. В обычной раскладке он приходит
+// с номером (`4. Chat about this`), а в раскладке с превью номер теряется и остаётся голая
+// строка под чертой — и до 24.08 она молча уезжала в chrome, из-за чего кнопки в чате не было.
+const CHAT_ABOUT_RE = /^Chat about this$/
 
 // UI chrome inside a picker box (not a separator — those are handled by the scan):
 // blanks, the ●-sub-control, and the header chip (`☐ Word` / multi `← ☐ … Submit →`).
@@ -202,6 +208,7 @@ export function parsePicker(text: string): Picker | undefined {
   let titleParts: string[] = []
   let titleStarted = false
   let multi = false
+  let chatAbout = false
   const prepared = joinWrappedOptions(lines)
   for (let i = footerIdx - 1; i >= 0; i--) {
     const line = prepared[i]
@@ -222,6 +229,10 @@ export function parsePicker(text: string): Picker | undefined {
       }
       continue // separator between options is internal
     }
+    if (CHAT_ABOUT_RE.test(t)) {
+      chatAbout = true
+      continue
+    }
     if (isChrome(t)) {
       continue
     }
@@ -239,6 +250,11 @@ export function parsePicker(text: string): Picker | undefined {
   }
   if (options.length < 2) {
     return undefined
+  }
+  // Добавляем ТОЛЬКО к состоявшемуся списку: голая строка сама по себе пикера не делает.
+  // Номер 0 — свободный (нумерация с 1), по нему обработчик знает, что жать надо стрелками.
+  if (chatAbout && !options.some(option => CHAT_ABOUT_RE.test(option.label))) {
+    options.push({ index: CHAT_ABOUT_INDEX, label: 'Chat about this' })
   }
   // Once text is entered inline, Claude replaces "Type something" with the
   // value itself. The following Submit control is its stable structural marker.

@@ -6,6 +6,15 @@ import { parsePicker, checkedIndexes, pickerCursorIndex, parseResumeList, paneRe
 const fx = (name: string) => readFileSync(join(import.meta.dir, 'fixtures', name), 'utf8')
 
 describe('parsePicker', () => {
+  test('«Chat about this» есть в обеих раскладках: с номером и без', () => {
+    // в раскладке с превью номер теряется — до этого пункт молча уходил в chrome
+    const preview = parsePicker(fx('picker-preview.txt'))
+    expect(preview?.options.at(-1)).toEqual({ index: 0, label: 'Chat about this' })
+    // в обычной он приходит нумерованным — и дублировать его синтетическим нельзя
+    const plain = parsePicker(fx('ask-single.txt'))
+    expect(plain?.options.filter(o => o.label === 'Chat about this')).toEqual([{ index: 4, label: 'Chat about this' }])
+  })
+
   test('стартовый гейт Codex с подвалом «Press enter to continue» — тоже пикер', () => {
     // Реальный экран из habebe-trader 21.08: codex поднялся, упёрся в предложение обновиться
     // и не подключил стаб; в чат ничего не ушло, топик молча копил придержанные сообщения.
@@ -111,6 +120,7 @@ describe('parsePicker', () => {
       { index: 1, label: 'Явное имя, иначе короткий slug' },
       { index: 2, label: 'Явное имя, иначе номер топика' },
       { index: 3, label: 'Спрашивать имя кнопкой в пикере' },
+      { index: 0, label: 'Chat about this' }, // в этой раскладке он без номера — жмётся стрелками
     ])
     expect(p.title).not.toContain('│') // левая планка рамки в заголовок не попадает
   })
