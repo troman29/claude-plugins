@@ -6,7 +6,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { resolveModeDir, worktreeHook, freeBranchName, worktreeDirFor } from '../src/dir-resolve'
+import { resolveModeDir, worktreeHook, freeBranchName, worktreeDirFor, runStandCommand } from '../src/dir-resolve'
 
 const projectHook = { create: 'echo project-create', delete: 'echo project-delete' }
 const groupHook = { create: 'echo group-create', delete: 'echo group-delete' }
@@ -130,5 +130,21 @@ describe('имя ветки при совпадении топиков', () => {
     expect(res.branch).toBe('feat-x-2')
     // и это НОВАЯ ветка от текущей базы, а не переиспользованная старая
     expect(git(res.dir, 'rev-parse', '--abbrev-ref', 'HEAD').stdout.toString().trim()).toBe('feat-x-2')
+  })
+})
+
+describe('stand hooks: сон и пробуждение', () => {
+  test('sleep и wake читаются из конфига проекта наравне с up/down', async () => {
+    const dir = projectDir({
+      stand: { up: 'echo up', down: 'echo down', sleep: 'echo slept', wake: 'echo woke' },
+    })
+    expect((await runStandCommand(dir, 'sleep'))?.out.trim()).toBe('slept')
+    expect((await runStandCommand(dir, 'wake'))?.out.trim()).toBe('woke')
+  })
+
+  test('проект без этих хуков просто ничего не делает — сон не обязателен', async () => {
+    const dir = projectDir({ stand: { up: 'echo up' } })
+    expect(await runStandCommand(dir, 'sleep')).toBeUndefined()
+    expect(await runStandCommand(dir, 'wake')).toBeUndefined()
   })
 })

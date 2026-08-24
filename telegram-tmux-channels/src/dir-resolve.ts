@@ -195,7 +195,7 @@ export async function resolveModeDir(
 // if the project has no such command (in which case there should be no chat buttons/commands either).
 export async function runStandCommand(
   dir: string,
-  kind: 'up' | 'down' | 'status',
+  kind: 'up' | 'down' | 'status' | 'sleep' | 'wake',
 ): Promise<{ ok: boolean; out: string; err: string } | undefined> {
   const cmd = loadProjectConfig(dir)?.stand?.[kind]
   if (!cmd) {

@@ -4,7 +4,8 @@
 // hub's group config; a folder without the file simply has no stand commands.
 //
 // {
-//   "stand": { "up": "…", "down": "…", "status": "…" },   // status: exit 0 = up
+//   "stand": { "up": "…", "down": "…", "status": "…",     // status: exit 0 = up
+//              "sleep": "…", "wake": "…" },                // засыпает и просыпается вместе с сессией
 //   "worktree": { "create": "…", "delete": "…",           // create prints the path on its last line
 //                 "deleteForce": "…",                     // снос без вопросов — для `/delete force`
 //                 "base": "dev" | ["dev", "master"] }     // откуда резать ветку; несколько — кнопками
@@ -15,7 +16,7 @@ import { safeJsonParse } from './util'
 
 export const PROJECT_CONFIG_FILE = '.tmux-channels.json'
 
-export type StandConfig = { up?: string; down?: string; status?: string }
+export type StandConfig = { up?: string; down?: string; status?: string; sleep?: string; wake?: string }
 export type ProjectConfig = {
   stand?: StandConfig
   // create необязателен: база может быть задана и без хука — обычному `git worktree add` она

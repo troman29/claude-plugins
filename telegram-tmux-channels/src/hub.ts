@@ -2350,6 +2350,14 @@ async function maybeIdleUnload(s: SessionInfo & { pane: string }, working: boole
       idleUnloaded.add(k)
     }
     persistUnloaded(keys, true)
+    // Стенд спит вместе с сессией: пока агент выгружен, его backend/frontend только едят
+    // память. Отдельного порога у сна НЕТ намеренно — момент один и тот же.
+    const standDir = s.cwd
+    if (standDir) {
+      void runStandCommand(standDir, 'sleep')
+        .then(res => res && log(`idle-unload: стенд усыплён (${standDir}) ok=${res.ok}`))
+        .catch(e => log(`idle-unload: стенд усыпить не вышло: ${e}`))
+    }
   } else {
     markActivity(keys) // stop failed (busy/picker open) → treat as active, retry after another idle window
   }
@@ -3866,7 +3874,16 @@ async function handleInbound(inbound: Inbound): Promise<void> {
         })
         .catch(() => {})
     }
+    // Стенд будим ПАРАЛЛЕЛЬНО подъёму агента: и то и другое занимает секунды, а последовательно
+    // это сложение задержек на каждом первом сообщении после простоя.
+    const waking = wasIdle ? runStandCommand(binding.dir, 'wake').catch(() => undefined) : undefined
     await spawnSession(key, binding, binding.sessionId ? 'resume' : 'new', { say, quiet: wasIdle })
+    if (waking) {
+      const woken = await waking
+      if (woken) {
+        log(`wake: стенд поднят (${binding.dir}) ok=${woken.ok}`)
+      }
+    }
     conns = await waitForBinding(key, 30_000)
     if (conns.length === 0) {
       // Подъём бывает и минутами (стартовая модалка, тяжёлый резюм). Сообщение не теряем:

@@ -355,6 +355,16 @@ its full history (`--resume`), announced by one quiet line.
 
 `/pin` exempts a topic. Unset (the default) means the plugin never stops anything.
 
+**The stand sleeps with the session.** If the project declares `stand.sleep` / `stand.wake`
+in `.tmux-channels.json`, unloading an idle session also stops its stand, and the first message
+after the pause starts it back up — in parallel with the agent, so the two waits overlap. There is
+deliberately **no second threshold**: the stand sleeps exactly when the session does, so one knob
+(`TELEGRAM_IDLE_UNLOAD_MINUTES`) governs both.
+
+Make those hooks `stop`/`start`, not `down`/`up`: stopping a container frees the same memory (it
+was the process holding it) but keeps the container, so waking costs a second instead of a rebuild.
+A project without the hooks keeps its stand running, as before.
+
 ## Configuration
 
 Environment, in `~/.claude/channels/telegram/.env`:
