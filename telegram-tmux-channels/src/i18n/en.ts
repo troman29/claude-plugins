@@ -64,6 +64,9 @@ export const en = {
     `⚠️ <b>The bound folder no longer exists</b>: ${path}\nRebind this chat with <code>/bind &lt;folder&gt;</code>.`,
   adminOnly: (command: string) => `🔒 <code>/${command}</code> is available to the hub admin only.`,
   sessionSpawnFail: (err: string) => `⚠️ <b>Couldn't bring the session up</b>: ${err}`,
+  retrySetup: '🔁 Retry',
+  toastRetrying: 'Retrying…',
+  toastRetryGone: 'This retry has expired — send any message to start over',
 
   // ── pickers ──
   pickerDefaultTitle: 'Question',

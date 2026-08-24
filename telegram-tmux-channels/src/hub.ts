@@ -3350,6 +3350,7 @@ function armMode(key: string, value: PendingModeChoice, chatId: string, threadId
   stateRepo.setPendingMode(key, { cfg: value.cfg, topicName: value.topicName, chatId, threadId, ...(value.agent ? { agent: value.agent } : {}) })
 }
 function disarmMode(key: string): void { pendingModeChoice.delete(key); stateRepo.delPendingMode(key) }
+const TOPIC_RETRY_TTL_MS = 24 * 60 * 60_000
 const HELD_REACTION = '😴' // одна на все очереди: /queue, подъём, занятый ход
 
 function enqueueForTopic(key: string, inbound: Inbound): void {
@@ -3516,14 +3517,38 @@ async function runAutoTopic(
     }
     await spawnSession(key, reg[key], 'new', { say, progress })
   } catch (e) {
-    say(t().sessionSpawnFail(escHtml(String(e))))
+    // Причина почти всегда снаружи и чинится руками (заняты слоты, нет места, сеть). Кнопка
+    // повтора возвращает тот же подъём с теми же аргументами — иначе пользователь упирается
+    // в тупик: причину устранил, а продолжить нечем.
+    if (threadId != null) {
+      interactions.set({
+        kind: 'topic-retry', key, updatedAt: Date.now(), expiresAt: Date.now() + TOPIC_RETRY_TTL_MS,
+        data: {
+          cfg, dir, branch, mode, chatId, threadId,
+          ...(base ? { base } : {}), ...(agent ? { agent } : {}),
+        },
+      })
+    }
+    void bot.api
+      .sendMessage(chatId, t().sessionSpawnFail(escHtml(String(e))), {
+        ...inTopic(threadId),
+        parse_mode: 'HTML',
+        // Кнопка только там, где есть куда вернуться повтором — то есть в топике.
+        ...(threadId != null
+          ? { reply_markup: new InlineKeyboard().text(t().retrySetup, `topicretry:${key}`) }
+          : {}),
+      })
+      .catch(() => {})
   } finally {
     progress.settle('') // упали на хуке — снимаем живую строку, иначе её таймер тикает вечно
     autoTopicBindings.delete(key)
     cancelledAutoTopics.delete(key)
     settingUp.delete(key) // снять ДО flush — иначе очередь уйдёт сама в себя
-    // always drain the hold queue — deliver on success, or tell the user + clear it on failure
-    await flushQueued(key)
+    // Биндинга нет — подъём не состоялся: отдавать очередь некуда, а ждать её 30 секунд
+    // впустую тем более незачем. Она дождётся кнопки повтора.
+    if (loadBindings()[key]) {
+      await flushQueued(key)
+    }
   }
 }
 
@@ -5311,6 +5336,28 @@ bot.on('callback_query:data', async ctx => {
       ? worktreeBases(pending.cfg.dir)[Number(baseIdx)]
       : undefined
     beginTopicSession(key, pending.cfg, mode, pending.topicName, pending.say, base, pending.agent)
+    return
+  }
+  const tr = /^topicretry:(.+)$/.exec(ctx.callbackQuery.data)
+  if (tr) {
+    const [, key] = tr
+    const saved = interactions.get('topic-retry', key)
+    if (!saved) {
+      await ctx.answerCallbackQuery({ text: t().toastRetryGone }).catch(() => {})
+      return
+    }
+    if (!isAdmin(String(ctx.from.id))) {
+      await ctx.answerCallbackQuery({ text: t().toastNoRights }).catch(() => {})
+      return
+    }
+    interactions.delete('topic-retry', key)
+    await ctx.answerCallbackQuery({ text: t().toastRetrying }).catch(() => {})
+    await ctx.editMessageReplyMarkup().catch(() => {}) // кнопку снимаем: повтор уже идёт
+    log(`topic-retry: ${key} — повтор подъёма (${saved.mode}, ветка ${saved.branch})`)
+    void runAutoTopic(
+      key, saved.cfg, saved.dir, saved.mode, saved.branch,
+      sayFor(saved.chatId, saved.threadId), saved.base, saved.agent,
+    )
     return
   }
   const td = /^topicdir:(.+)$/.exec(ctx.callbackQuery.data)

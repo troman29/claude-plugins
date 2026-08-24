@@ -73,4 +73,26 @@ describe('InteractionRegistry restart contract', () => {
     expect(registry.get('skill-menu', '1')).toBeUndefined()
     expect(registry.get('skill-menu', '2')).toBeDefined()
   })
+
+  test('повтор подъёма переживает рестарт хаба и протухает по сроку', () => {
+    // причину чинят руками и минутами (освободить слот, место, сеть) — запись обязана дожить
+    const retry = {
+      kind: 'topic-retry' as const, key: 'chat/8505', updatedAt: 100, expiresAt: 500,
+      data: {
+        cfg: { modes: ['worktree' as const], dir: '/repo' },
+        dir: '/repo', branch: 'console-promocode', mode: 'worktree' as const,
+        chatId: 'chat', threadId: 8505, base: 'dev',
+      },
+    }
+    let snapshot: Record<string, unknown> = {}
+    const a = new InteractionRegistry({}, value => { snapshot = value }, 100)
+    a.set(retry)
+
+    const alive = new InteractionRegistry(JSON.parse(JSON.stringify(snapshot)), () => {}, 400)
+    expect(alive.get('topic-retry', 'chat/8505')?.branch).toBe('console-promocode')
+    expect(alive.get('topic-retry', 'chat/8505')?.base).toBe('dev')
+
+    const expired = new InteractionRegistry(JSON.parse(JSON.stringify(snapshot)), () => {}, 600)
+    expect(expired.get('topic-retry', 'chat/8505')).toBeUndefined()
+  })
 })

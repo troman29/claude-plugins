@@ -65,6 +65,9 @@ export const ru: Strings = {
     `⚠️ <b>Привязанной папки больше нет</b>: ${path}\nПерепривяжи этот чат: <code>/bind &lt;папка&gt;</code>.`,
   adminOnly: command => `🔒 <code>/${command}</code> — только для администратора хаба.`,
   sessionSpawnFail: err => `⚠️ <b>Не удалось поднять сессию</b>: ${err}`,
+  retrySetup: '🔁 Повторить',
+  toastRetrying: 'Повторяю…',
+  toastRetryGone: 'Повтор протух — напиши что угодно, подъём начнётся заново',
 
   // ── pickers ──
   pickerDefaultTitle: 'Вопрос',

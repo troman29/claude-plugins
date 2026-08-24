@@ -50,6 +50,15 @@ const schemas = {
     chatId: z.string().min(1), threadId: z.number().int().optional(), bindingDir: z.string().min(1),
     turnAt: z.number().finite(), draftId: z.number().int().positive(), text: z.string(), updatedAt: z.number().finite(),
   })),
+  // Подъём топика упал на внешней причине (хук проекта: заняты слоты, нет места, недоступна
+  // сеть). Пользователь чинит её у себя и должен продолжить одним тапом — для этого храним
+  // ровно те аргументы, с которыми подъём запускался.
+  'topic-retry': envelope('topic-retry', z.object({
+    cfg: trustedGroupConfig, dir: z.string().min(1), branch: z.string(),
+    mode: z.enum(['folder', 'worktree', 'worktree-plain']),
+    chatId: z.string().min(1), threadId: z.number().int(),
+    base: z.string().optional(), agent: z.enum(['claude', 'codex']).optional(),
+  })),
   'pending-topic': envelope('pending-topic', z.object({
     cfg: trustedGroupConfig, mode: z.enum(['folder', 'worktree', 'worktree-plain']), topicName: z.string(),
     chatId: z.string().min(1), threadId: z.number().int(), base: z.string().optional(), agent: z.enum(['claude', 'codex']).optional(),
