@@ -953,23 +953,19 @@ async function reportStuckBringUp(key: string, text: string): Promise<void> {
 /** Пикер осиротел вместе с сессией: гасим его сообщение, а не только слежение за ним. */
 function closeAbandonedPicker(pane: string): void {
   const ap = activePickers.get(pane)
-  disarmPicker(pane)
-  if (!ap || ap.msgId < 0) {
-    return
+  if (ap && ap.msgId >= 0) {
+    log(`picker abandoned: pane=${pane} msg=${ap.msgId} — сессия ушла, гашу кнопки`)
   }
-  log(`picker abandoned: pane=${pane} msg=${ap.msgId} — сессия ушла, гашу кнопки`)
-  void resolvePickerMessage(ap, t().pickerSessionGone)
+  endPicker(pane, { close: t().pickerSessionGone })
 }
 
 /** Закрыть кнопки модалки, которую показали до подъёма стаба: ответ уже дан, в пейне её нет. */
 function closePrestartPicker(tmuxName: string): void {
   const target = prestartTarget(tmuxName)
-  const ap = activePickers.get(target)
-  if (!ap) {
+  if (!activePickers.has(target)) {
     return
   }
-  void resolvePickerMessage(ap, t().pickerAnsweredInTerminal)
-  disarmPicker(target)
+  endPicker(target, { close: t().pickerAnsweredInTerminal })
 }
 
 // Один проход за раз. Скан зовут каждый тик (по умолчанию раз в 300 мс), а сам он спавнит
@@ -1111,8 +1107,7 @@ async function detectPicker(pane: string, session: SessionInfo, text: string): P
     }
     if (existing) {
       // closed without a TG tap (answered in the TUI) — the answer is unknown to us
-      void resolvePickerMessage(existing, t().pickerAnsweredInTerminal)
-      disarmPicker(pane)
+      endPicker(pane, { close: t().pickerAnsweredInTerminal })
     }
     return
   }
@@ -1180,7 +1175,7 @@ async function detectPicker(pane: string, session: SessionInfo, text: string): P
       key,
     })
   } else if (activePickers.get(pane)?.msgId === -1) {
-    disarmPicker(pane) // send failed — don't leave a permanently-unresolvable placeholder
+    endPicker(pane, 'message-already-resolved') // отправка не удалась — гасить нечего
   }
 }
 
@@ -1410,7 +1405,24 @@ function justAnswered(pane: string, hash: string): boolean {
   return true
 }
 
-function disarmPicker(pane: string): void { activePickers.delete(pane); stateRepo.delPicker(pane); disarmCustom(pane) }
+/** Чем кончилось для СООБЩЕНИЯ пикера: его уже поправил вызывающий (тап, свой текст) или его
+ *  надо погасить этой строкой. */
+type PickerEnd = 'message-already-resolved' | { close: string }
+
+/** Единственный выход из пикера. Решение про сообщение обязательно — «просто снять слежение»
+ *  написать нельзя: молчаливое снятие оставляет в чате живые на вид кнопки, а тап по ним
+ *  отвечает «пикер закрыт». Так повисли confirm выхода после idle-unload и пикер после
+ *  рестарта — два раза одна и та же ошибка в разных местах. */
+function endPicker(pane: string, end: PickerEnd): void {
+  const ap = activePickers.get(pane)
+  activePickers.delete(pane)
+  stateRepo.delPicker(pane)
+  disarmCustom(pane)
+  if (end === 'message-already-resolved' || !ap || ap.msgId < 0) {
+    return
+  }
+  void resolvePickerMessage(ap, end.close)
+}
 
 // pane -> a persisted picker awaiting confirmation that its session/pane still shows it
 const recoveredPickers = new Map<string, PersistedPicker>()
@@ -2348,7 +2360,10 @@ async function handlePickCallback(
   // Post-restart safety: never send keys to a pane that has been recycled to a different session
   // than the one this picker belongs to (would answer the wrong agent).
   if (!paneBelongsToKey(pane, ap.key)) {
-    disarmPicker(pane)
+    // Пейн уехал под другую сессию — отвечать в него нельзя. Кнопки гасим: иначе тап и дальше
+    // возвращает «пикер закрыт», а сообщение выглядит живым.
+    log(`picker recycled: pane=${pane} msg=${ap.msgId} — пейн уже не принадлежит ${ap.key}`)
+    endPicker(pane, { close: t().pickerSessionGone })
     await ctx.answerCallbackQuery({ text: t().toastPickerClosed }).catch(() => {})
     return
   }
@@ -2370,7 +2385,7 @@ async function handlePickCallback(
     await selectOption(pane, action.index)
     await resolvePickerMessage(ap, `✅ <b>${escHtml(labelOf(action.index))}</b>`)
     markPickerAnswered(pane, ap.hash)
-    disarmPicker(pane)
+    endPicker(pane, 'message-already-resolved')
     typing(ap.chatId, ap.threadId) // agent resumes on the answer
     await ctx.answerCallbackQuery({ text: t().toastChosen }).catch(() => {})
   } else if (action.kind === 'opt') {
@@ -2398,7 +2413,7 @@ async function handlePickCallback(
     }
     await resolvePickerMessage(ap, `✅ <b>${chosen.length ? escHtml(chosen.join(', ')) : '—'}</b>`)
     markPickerAnswered(pane, ap.hash)
-    disarmPicker(pane)
+    endPicker(pane, 'message-already-resolved')
     typing(ap.chatId, ap.threadId) // agent resumes on the submitted answers
     await ctx.answerCallbackQuery({ text: t().toastSent }).catch(() => {})
   } else {
@@ -3708,7 +3723,7 @@ async function handleInbound(inbound: Inbound): Promise<void> {
         typing(chat_id, threadId) // agent now processes the custom answer
         if (ap) {
           await resolvePickerMessage(ap, `✅ <b>${escHtml(text)}</b>`)
-          disarmPicker(pane)
+          endPicker(pane, 'message-already-resolved')
         }
       }
       disarmCustom(pane)
