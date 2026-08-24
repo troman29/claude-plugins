@@ -1,11 +1,44 @@
 import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'fs'
 import { join } from 'path'
-import { parsePicker, checkedIndexes, pickerCursorIndex, parseResumeList, paneReady, isStartupTrustPrompt, isCodexStartupTrustScreen, isCodexHooksTrustScreen, isCodexOwnToolApproval } from '../src/picker'
+import { parsePicker, textBeforePicker, checkedIndexes, pickerCursorIndex, parseResumeList, paneReady, isStartupTrustPrompt, isCodexStartupTrustScreen, isCodexHooksTrustScreen, isCodexOwnToolApproval } from '../src/picker'
 
 const fx = (name: string) => readFileSync(join(import.meta.dir, 'fixtures', name), 'utf8')
 
 describe('parsePicker', () => {
+  test('вариант со словом owner/other/custom внутри — обычный пункт, а не «впиши свой»', () => {
+    // подстрочный /own/ съедал «общий — owner/admin» и подменял рекомендованный вариант
+    // кнопкой «впиши свой ответ»: у живого вопроса 24.08 пункт 1 просто исчез из чата
+    const p = parsePicker(fx('ask-with-preamble.txt'))!
+    expect(p.customIndex).toBeUndefined()
+    expect(p.options.find(o => o.index === 1)?.label).toContain('Рабочий — любой участник')
+    // а настоящий пункт «впиши свой» по-прежнему находится
+    expect(parsePicker(fx('ask-single.txt'))?.customIndex).toBe(3)
+  })
+
+  test('текст агента ПЕРЕД вопросом достаётся с пейна целиком', () => {
+    // живой снимок сессии: пояснение «● Зафиксировал…» стоит над рамкой вопроса
+    const intro = textBeforePicker(fx('ask-with-preamble.txt'))
+    expect(intro.startsWith('Зафиксировал: три типа')).toBe(true)
+    expect(intro.endsWith('распадается надвое — типы-то разные.')).toBe(true)
+    expect(intro).not.toContain('│') // рамка и колонки в текст не попадают
+    expect(intro).not.toContain('☐')
+  })
+
+  test('над рамкой нет реплики агента — интро пустое, а не мусор с экрана', () => {
+    expect(textBeforePicker(fx('ask-single.txt'))).toBe('') // экран начинается сразу с рамки
+  })
+
+  test('реплика агента над рамкой берётся целиком, со своим списком внутри', () => {
+    // тот же снимок, что охраняет «нумерованный список сверху не течёт в опции»: список —
+    // часть текста агента, и в интро он приехать ДОЛЖЕН, а в опции — нет
+    const intro = textBeforePicker(fx('scrollback-noise.txt'))
+    expect(intro.startsWith('Here are the migration steps:')).toBe(true)
+    expect(intro).toContain('1. First back up the DB')
+    expect(parsePicker(fx('scrollback-noise.txt'))?.options.map(o => o.label))
+      .toEqual(['Migrate', 'Roll back', 'Type something.'])
+  })
+
   test('«Chat about this» есть в обеих раскладках: с номером и без', () => {
     // в раскладке с превью номер теряется — до этого пункт молча уходил в chrome
     const preview = parsePicker(fx('picker-preview.txt'))

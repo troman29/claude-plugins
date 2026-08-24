@@ -36,7 +36,7 @@ import { deserializeStatus, emptyStatus, hasLiveWork, renderBg, renderStatus, se
 import { discoverGlobalSkills, discoverProjectSkills, mangleCmd, resolveSkillCommand, skillInvocation, tgDescription, type Skill } from './skills'
 import { agentPidsInDir, cmdlineOf } from './proc'
 import { bySendTime, clampLines, rmQuiet } from './util'
-import { parsePicker, CHAT_ABOUT_INDEX, checkedIndexes, pickerCursorIndex, parseResumeList, fnv1a, hasPickerFooter, isStartupTrustPrompt, isCodexStartupTrustScreen, isCodexHooksTrustScreen, isCodexOwnToolApproval, type Picker, type ResumeRow } from './picker'
+import { parsePicker, CHAT_ABOUT_INDEX, checkedIndexes, pickerCursorIndex, textBeforePicker, parseResumeList, fnv1a, hasPickerFooter, isStartupTrustPrompt, isCodexStartupTrustScreen, isCodexHooksTrustScreen, isCodexOwnToolApproval, type Picker, type ResumeRow } from './picker'
 import { buildKeyboard, downsToChatAbout, parseCallback } from './picker-drive'
 import {
   loadTrustedGroups, isExcludedTopic, slugFromTopicName, modeLabel,
@@ -1059,17 +1059,11 @@ function pickerTitleHtml(ap: ActivePicker): string {
 }
 
 // Вопрос без того, что агент сказал ПЕРЕД ним, читается как загадка: в терминале видно
-// «вот в чём утечка… отсюда вопрос», а в чат уезжал один заголовок пикера. Текст берём из
-// транскрипта (он авторитетен), а не из пейна, и только за текущий ход.
+// «вот в чём дело… отсюда вопрос», а в чат уезжал один заголовок пикера.
 const PICKER_INTRO_MAX = 1200
 
-function pickerIntro(key: string): string {
-  const binding = loadBindings()[key]
-  const pending = pendingAnswer.get(key)
-  if (!binding || !pending) {
-    return ''
-  }
-  const said = adapterForBinding(binding).lastAssistantText(binding.dir, pending.at, binding.sessionId).trim()
+function pickerIntroHtml(paneText: string): string {
+  const said = textBeforePicker(paneText)
   return said ? mdToHtml(clampLines(said, PICKER_INTRO_MAX)) : ''
 }
 
@@ -1169,7 +1163,7 @@ async function detectPicker(pane: string, session: SessionInfo, text: string): P
   // Reserve the slot synchronously before the await below — otherwise an overlapping
   // pollScreens tick for the same pane sees `existing === undefined` too and double-sends.
   // In-memory only (msgId:-1 is a transient placeholder — nothing worth persisting yet).
-  const intro = pickerIntro(key)
+  const intro = pickerIntroHtml(text)
   const reserved: ActivePicker = {
     chatId: target.chatId,
     ...(target.threadId != null ? { threadId: target.threadId } : {}),

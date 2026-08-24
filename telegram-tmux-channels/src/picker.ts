@@ -5,7 +5,11 @@ const OPTION_RE = /^\s*[❯›]?\s*(\d+)\.\s+(.*)$/
 /** Пункт без номера («Chat about this» в раскладке с превью): жмётся стрелками, не цифрой. */
 export const CHAT_ABOUT_INDEX = 0
 const CHECKBOX_RE = /^\[[ ✔xX]\]\s*/
-const CUSTOM_RE = /type something|other|custom|own/i
+// Пункт «впиши свой ответ» — распознаём ЦЕЛИКОМ по подписи, а не по подстроке: прежнее
+// /type something|other|custom|own/ ловило «owner/admin», «another», «customer» и съедало
+// настоящий вариант ответа — вместо него в чат уезжала кнопка «впиши свой». 24.08 так пропал
+// рекомендованный пункт у живого вопроса.
+const CUSTOM_RE = /^(?:type something\b.*|other|custom(?: answer| option)?|(?:my )?own(?: answer)?)\.?$/i
 export const FOOTER = 'Esc to cancel' // общий признак «в пейне открыт модальный диалог»
 const FOOTER_RE = /esc to (?:cancel|go back)/i
 // Стартовые гейты Codex (доверие каталогу, доверие хукам, «вышло обновление») — та же
@@ -347,4 +351,56 @@ export function pickerCursorIndex(text: string): number | undefined {
     if (m) return Number(m[1])
   }
   return undefined
+}
+
+// Claude помечает свои реплики маркером в начале блока; после него идут строки с отступом.
+const BULLET_RE = /^\s*[●⏺]\s+/
+const PREAMBLE_MAX_LINES = 25
+
+/**
+ * Что агент сказал ПЕРЕД вопросом — блок его реплики прямо над рамкой пикера.
+ *
+ * В терминале человек видит «вот в чём дело… отсюда вопрос», а в чат уезжал один заголовок
+ * пикера. Берём с пейна, а не из транскрипта: транскрипт не знает, дошёл ли текст до чата
+ * другим путём, и привязка к «ждём ответа» промахивалась — метку снимает первый же reply
+ * агента в этом ходе, а пояснение он пишет после него.
+ */
+export function textBeforePicker(text: string): string {
+  const lines = text.split('\n')
+  let footerIdx = -1
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (isPickerFooterLine(lines[i])) {
+      footerIdx = i
+      break
+    }
+  }
+  if (footerIdx < 0 || hasLiveInputBelow(lines, footerIdx)) {
+    return ''
+  }
+  // Верх рамки — черта, выше которой опций уже нет (нижняя черта отделяет «Chat about this»).
+  let boxTop = -1
+  let sawOption = false
+  for (let i = footerIdx - 1; i >= 0; i--) {
+    if (OPTION_RE.test(lines[i])) {
+      sawOption = true
+      continue
+    }
+    if (sawOption && isSeparator(lines[i].trim())) {
+      boxTop = i
+      break
+    }
+  }
+  if (boxTop <= 0) {
+    return ''
+  }
+  const block: string[] = []
+  for (let i = boxTop - 1; i >= 0 && block.length < PREAMBLE_MAX_LINES; i--) {
+    const line = lines[i]
+    if (BULLET_RE.test(line)) {
+      block.unshift(line.replace(BULLET_RE, ''))
+      return block.join('\n').trim()
+    }
+    block.unshift(line.replace(/^ {1,4}/, ''))
+  }
+  return '' // маркера реплики над рамкой нет — значит там не текст агента, а что-то ещё
 }
