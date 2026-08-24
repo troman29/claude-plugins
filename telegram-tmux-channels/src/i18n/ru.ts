@@ -240,7 +240,9 @@ export const ru: Strings = {
   stopFail: err => `⚠️ Стоп не удался: ${err}`,
   restartNoProc: '⚠️ Рестарт недоступен — не опознал процесс claude.',
   restarting: '♻️ <b>Перезапускаю</b> сессию…',
-  restartSent: '♻️ Перезапуск отправлен.',
+  restartWaiting: (seconds: number) => `⏳ Жду, пока поднимется… ${seconds} с`,
+  restartReady: (seconds: number) => `✅ <b>Сессия перезапущена</b> за ${seconds} с`,
+  restartNotReady: (seconds: number) => `⚠️ <b>За ${seconds} с не подключилась</b> — посмотри <code>/last</code>`,
   restartFail: err => `⚠️ Рестарт не удался: ${err}`,
   cmdFail: (cmd, err) => `⚠️ <b>${cmd} не удалось</b>: ${err}`,
 

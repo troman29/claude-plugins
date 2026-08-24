@@ -250,7 +250,9 @@ export const en = {
   stopFail: (err: string) => `⚠️ Stop failed: ${err}`,
   restartNoProc: '⚠️ Restart unavailable — couldn\'t identify the claude process.',
   restarting: '♻️ <b>Restarting</b> the session…',
-  restartSent: '♻️ Restart sent.',
+  restartWaiting: (seconds: number) => `⏳ Waiting for it to come back… ${seconds}s`,
+  restartReady: (seconds: number) => `✅ <b>Session restarted</b> in ${seconds}s`,
+  restartNotReady: (seconds: number) => `⚠️ <b>No connection after ${seconds}s</b> — check <code>/last</code>`,
   restartFail: (err: string) => `⚠️ Restart failed: ${err}`,
   cmdFail: (cmd: string, err: string) => `⚠️ <b>${cmd} failed</b>: ${err}`,
 

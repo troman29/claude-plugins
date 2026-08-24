@@ -1041,6 +1041,11 @@ async function relaunchForHeldMessages(key: string, binding: BindingEntry, targe
     return // агент на месте — просто ещё не подключился
   }
   log(`prestart: ${key} — очередь ждёт, агента в пейне нет (${command || '?'}); поднимаю`)
+  // Сторож взводим ЗДЕСЬ, а не надеемся на spawnSession: она может отказаться ещё до набора
+  // запуска (чужой агент в пейне, нет каталога, упал reapDeadScopes) — и тогда не взводила
+  // ничего. Скан видел ту же очередь и тот же пустой пейн и повторял попытку каждый тик:
+  // 18 сообщений «resume failed» в чат за несколько секунд (поймано в стенде 24.08).
+  armBringUp(key)
   const { chat_id, thread_id } = keyToTarget(key)
   const say = (html: string) =>
     void bot.api.sendMessage(chat_id, html, { ...inTopic(thread_id), parse_mode: 'HTML' }).catch(() => {})
@@ -2637,6 +2642,25 @@ function safeName(s: string | undefined): string | undefined {
 // (handleInbound) instead of hijacking the terminal one. `dir` kept for call-site symmetry.
 function connsForBinding(key: string, _dir: string): Socket<undefined>[] {
   return router.byBindingKey(key)
+}
+
+const RESTART_WAIT_MS = 90_000
+
+/** Дождаться НОВОГО подключения стаба. Старое висит в роутере ещё миллисекунды после смерти
+ *  процесса, и обычный waitForBinding вернул бы его — рестарт отчитался бы готовностью,
+ *  не дождавшись поднявшейся сессии. */
+async function waitForNewBinding(
+  key: string, exclude: Set<Socket<undefined>>, timeoutMs: number,
+): Promise<Socket<undefined>[]> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const fresh = router.byBindingKey(key).filter(conn => !exclude.has(conn))
+    if (fresh.length > 0) {
+      return fresh
+    }
+    await new Promise(resolve => setTimeout(resolve, 500))
+  }
+  return []
 }
 
 async function waitForBinding(key: string, timeoutMs: number): Promise<Socket<undefined>[]> {
@@ -4748,8 +4772,17 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
               void say(L.restartNoProc)
               continue
             }
-            void say(L.restarting)
+            if (spawningBindings.has(key)) {
+              void say(L.spawnInProgress) // рестарт уже идёт — второй набор в тот же пейн не нужен
+              continue
+            }
+            // Пока идёт рестарт, ключ считается поднимающимся: входящие встают в очередь, а не
+            // уходят в ревайв — иначе он не видел живой сессии и печатал ВТОРОЙ запуск в пейн.
+            spawningBindings.add(key)
             expectedDisconnect.add(key)
+            const post = progressPost(chat_id, threadId, [L.restarting])
+            const startedAt = Date.now()
+            const oldConns = new Set(connsForBinding(key, binding.dir))
             const restartKeys = s.bindingKeys?.length ? s.bindingKeys : [key]
             const adapter = adapterForSession(s)
             const restart = adapter.capabilities.nativeInboundTransport
@@ -4759,10 +4792,23 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
                   await new Promise(r => setTimeout(r, 1000))
                   await typeLine(s.pane!, adapter.launchEnvPrefix(restartKeys) + ' ' + memoryCapPrefix() + adapter.buildLaunch(s.cmdline, 'resume', binding.sessionId))
                 })
-            void restart
-              .then(() => say(L.restartSent))
-              .catch(e => say(L.restartFail(escHtml(String(e)))))
-              .finally(() => setTimeout(() => expectedDisconnect.delete(key), 90_000))
+            // Пост живёт до РЕАЛЬНОГО подключения стаба, а не до «команда набрана»: раньше
+            // приходило «Restart sent», и было непонятно, поднялась сессия или нет.
+            post.running(seconds => L.restartWaiting(seconds))
+            void (async () => {
+              try {
+                await restart
+                const conns = await waitForNewBinding(key, oldConns, RESTART_WAIT_MS)
+                const seconds = Math.round((Date.now() - startedAt) / 1000)
+                post.settle(conns.length ? L.restartReady(seconds) : L.restartNotReady(seconds))
+              } catch (e) {
+                post.settle(L.restartFail(escHtml(String(e))))
+              } finally {
+                spawningBindings.delete(key)
+                setTimeout(() => expectedDisconnect.delete(key), 90_000)
+                await flushQueued(key) // всё, что придержали, пока сессия перезапускалась
+              }
+            })()
           }
         } catch (e) {
           void say(L.cmdFail(escHtml(cmd), escHtml(String(e))))
