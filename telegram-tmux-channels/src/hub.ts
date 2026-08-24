@@ -950,6 +950,17 @@ async function reportStuckBringUp(key: string, text: string): Promise<void> {
     .catch(() => {})
 }
 
+/** Пикер осиротел вместе с сессией: гасим его сообщение, а не только слежение за ним. */
+function closeAbandonedPicker(pane: string): void {
+  const ap = activePickers.get(pane)
+  disarmPicker(pane)
+  if (!ap || ap.msgId < 0) {
+    return
+  }
+  log(`picker abandoned: pane=${pane} msg=${ap.msgId} — сессия ушла, гашу кнопки`)
+  void resolvePickerMessage(ap, t().pickerSessionGone)
+}
+
 /** Закрыть кнопки модалки, которую показали до подъёма стаба: ответ уже дан, в пейне её нет. */
 function closePrestartPicker(tmuxName: string): void {
   const target = prestartTarget(tmuxName)
@@ -2244,7 +2255,14 @@ async function pollScreens(): Promise<void> {
   }
   // Только пейны: предстартовый пикер живёт под ключом «=имя-сессии:», его `seen` не содержит
   // никогда — снос по этому условию убивал бы кнопки каждый тик и слал их заново.
-  for (const pane of [...activePickers.keys()]) if (isLivePaneKey(pane) && !seen.has(pane)) disarmPicker(pane)
+  // Пейн ушёл из опроса — сессию остановили (idle-unload, /stop, смерть). Снять слежение мало:
+  // без правки сообщения кнопки в чате остаются живыми на вид, а тап по ним отвечает «пикер
+  // закрыт». Ровно так 22.08 повис confirm выхода — его в терминале дожал сам stopSession.
+  for (const pane of [...activePickers.keys()]) {
+    if (isLivePaneKey(pane) && !seen.has(pane)) {
+      closeAbandonedPicker(pane)
+    }
+  }
   for (const pane of [...lastPaneText.keys()]) if (!seen.has(pane)) lastPaneText.delete(pane)
   // Binding-scoped startup acknowledgements bridge the pre-stub tmux target and post-stub pane.
   // Keep them through that transition; only ephemeral pane-scoped fallbacks follow `seen`.

@@ -71,6 +71,7 @@ export const en = {
   modalUnparsed: '⚠️ The session is waiting on a dialog I could not turn into buttons. Here is its screen — answer in the terminal, or send <code>/esc</code> to dismiss it.',
   pickerClosedRestart: '❓ <i>Picker closed (restart)</i>',
   pickerClosedNoRevive: '❓ <i>Picker closed (session did not recover)</i>',
+  pickerSessionGone: '<i>closed — the session was stopped</i>',
   sendAnswerMsg: '✍️ <b>Send the answer</b> as a message.',
   pkCustomSavedSubmit: 'Custom option saved. Press Submit to send the full selection.',
 

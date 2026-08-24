@@ -72,6 +72,7 @@ export const ru: Strings = {
   modalUnparsed: '⚠️ Сессия ждёт ответа в диалоге, который я не смог разобрать в кнопки. Вот его экран — ответь в терминале или пришли <code>/esc</code>, чтобы закрыть.',
   pickerClosedRestart: '❓ <i>Пикер закрыт (рестарт)</i>',
   pickerClosedNoRevive: '❓ <i>Пикер закрыт (сессия не восстановилась)</i>',
+  pickerSessionGone: '<i>закрыт — сессию остановили</i>',
   sendAnswerMsg: '✍️ <b>Пришли ответ</b> сообщением.',
   pkCustomSavedSubmit: 'Свой вариант сохранён. Нажми Submit, чтобы отправить весь выбор.',
 
