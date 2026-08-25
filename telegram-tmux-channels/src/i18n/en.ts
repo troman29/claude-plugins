@@ -45,7 +45,9 @@ export const en = {
   sessionNotConnectedInTime: '⚠️ Session did not connect in time — message not delivered, try again.',
   sessionSlowHeld: '⏳ <b>Session is still coming up</b> — the message is held and goes through the moment it connects.',
   bringUpStuck: (seconds: number) =>
-    `⚠️ <b>Session still isn't up after ${seconds}s</b>\n\nThis is what its terminal shows — answer it there, or <code>/restart</code>:`,
+    `⚠️ <b>Session still isn't up after ${seconds}s</b>
+
+Send <code>/last</code> to see its terminal, or <code>/restart</code>.`,
   directiveNotDelivered: (text: string) =>
     `⚠️ <b>The branch didn't take its directive</b> — its terminal wasn't accepting input. Send it again:\n<code>${text}</code>`,
   deliveryLost:

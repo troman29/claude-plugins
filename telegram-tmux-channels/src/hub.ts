@@ -942,12 +942,12 @@ async function reportStuckBringUp(key: string, text: string): Promise<void> {
   }
   pending.told = true
   const seconds = Math.round(waited / 1000)
-  log(`bring-up stuck: ${key} — ${seconds} c без стаба, показываю экран`)
+  // Экран — в лог, а не в чат: простыня терминала в переписке читается как мусор, а нужен
+  // из неё один факт — подъём встал. Разбирать её всё равно по логу.
+  log(`bring-up stuck: ${key} — ${seconds} c без стаба | ${paneDigest(text, 8).replace(/\n/g, ' ⏎ ').slice(0, 300)}`)
   const { chat_id, thread_id } = keyToTarget(key)
   await bot.api
-    .sendMessage(chat_id, `${t().bringUpStuck(seconds)}\n<pre>${escHtml(paneDigest(text, 20))}</pre>`, {
-      ...inTopic(thread_id), parse_mode: 'HTML',
-    })
+    .sendMessage(chat_id, t().bringUpStuck(seconds), { ...inTopic(thread_id), parse_mode: 'HTML' })
     .catch(() => {})
 }
 

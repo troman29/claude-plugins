@@ -486,6 +486,12 @@ async function stopScope(scope: string, log: (s: string) => void): Promise<void>
   log(`stop: гашу scope ${scope} — вместе со всем, что сессия оставила после себя`)
   const proc = Bun.spawn(['systemctl', '--user', 'stop', scope], { stdout: 'ignore', stderr: 'ignore' })
   await proc.exited
+  // Погашенного мало: упавший scope остаётся ЗАГРУЖЕННЫМ, и `systemd-run --unit=<то же имя>`
+  // отбивается «already loaded or has a fragment file» — то есть имя занято навсегда, а с ним
+  // и подъём этого топика. Освобождает имя только reset-failed. 25.08 так намертво встал
+  // топик 8100: запуск печатался снова и снова и падал на одной и той же строке.
+  const reset = Bun.spawn(['systemctl', '--user', 'reset-failed', scope], { stdout: 'ignore', stderr: 'ignore' })
+  await reset.exited
 }
 
 async function scopeCommands(unit: string): Promise<string[]> {

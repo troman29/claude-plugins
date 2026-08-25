@@ -46,7 +46,9 @@ export const ru: Strings = {
   sessionNotConnectedInTime: '⚠️ Сессия не подключилась вовремя — сообщение не доставлено, попробуй ещё раз.',
   sessionSlowHeld: '⏳ <b>Сессия ещё поднимается</b> — сообщение придержал, уйдёт сразу как подключится.',
   bringUpStuck: (seconds: number) =>
-    `⚠️ <b>Сессия так и не поднялась за ${seconds} с</b>\n\nВот что в её терминале — ответь там или <code>/restart</code>:`,
+    `⚠️ <b>Сессия так и не поднялась за ${seconds} с</b>
+
+Пришли <code>/last</code>, чтобы увидеть её терминал, или <code>/restart</code>.`,
   directiveNotDelivered: (text: string) =>
     `⚠️ <b>Ветка не приняла директиву</b> — её терминал не принимал ввод. Отправь её ещё раз:\n<code>${text}</code>`,
   deliveryLost:
