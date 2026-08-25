@@ -52,6 +52,7 @@ export const en = {
     '⚠️ <b>The session never received that message</b> — sent it twice, nothing reached the conversation. ' +
     'Try <code>/restart</code>, then send it again.',
   notInTmuxSlash: '⚠️ Session is not in tmux — can\'t type the slash command.',
+  commandRejected: (line: string) => `⚠️ <b>The CLI did not take that command</b>\n\n<code>${line}</code>`,
   sessionFolder: (path: string) => `📁 ${path}`,
   tmuxForeignAgent: (command: string) => `⚠️ An unconnected <code>${command}</code> is already active in this tmux pane; refusing to type a launch into it.`,
   spawnInProgress: '⏳ This session is already starting; the duplicate launch was skipped.',

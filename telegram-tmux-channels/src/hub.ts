@@ -1538,6 +1538,44 @@ function opsCommands(): { command: string; description: string }[] {
 }
 const TG_CMD_MAX = 100 // Telegram's hard cap on bot commands
 let globalSkillMap = new Map<string, string>() // mangled command → real skill name
+const SKILL_RESCAN_MIN_GAP_MS = 30_000
+let lastSkillRescan = 0
+
+/**
+ * Таблица «манглированное имя → настоящее». Список команд Telegram ограничен сотней, а вот
+ * разворачивание имени ограничивать нечем: 87-й скилл на диске такой же настоящий, как первый.
+ * Раньше и то и другое строилось одним циклом, и всё, что не влезло в кап, не разворачивалось
+ * вовсе — `/foo_bar` уходил в пейн как есть и получал «Unknown command».
+ */
+function buildSkillMap(skills: Skill[]): Map<string, string> {
+  const map = new Map<string, string>()
+  for (const skill of skills) {
+    const cmd = mangleCmd(skill.name)
+    if (!cmd || OPS_NAMES.has(cmd) || map.has(cmd)) {
+      continue
+    }
+    map.set(cmd, skill.name)
+  }
+  return map
+}
+
+/** Скилл могли поставить уже после старта хаба: карта строится на старте, установка — нет.
+ *  Промах — повод пересканировать, а не отправлять в пейн заведомо неизвестную команду. */
+async function resolveSkillFresh(name: string, projectSkills: Skill[]): Promise<string> {
+  const known = resolveSkillCommand(name, globalSkillMap, projectSkills)
+  if (known !== name || Date.now() - lastSkillRescan < SKILL_RESCAN_MIN_GAP_MS) {
+    return known
+  }
+  lastSkillRescan = Date.now()
+  const scanned = await discoverGlobalSkills().catch(() => undefined)
+  if (scanned?.skills.length) {
+    globalSkillMap = buildSkillMap(scanned.skills)
+  }
+  const fresh = resolveSkillCommand(name, globalSkillMap, projectSkills)
+  log(`skill map rescanned on miss: ${name} → ${fresh}${fresh === name ? ' (так и не нашёлся)' : ''}`)
+  return fresh
+}
+
 let lastSkillCount = 0
 let cmdRetryTimer: ReturnType<typeof setTimeout> | undefined
 const CMD_RETRY_MS = 60_000
@@ -1557,18 +1595,18 @@ async function refreshCommands(): Promise<string> {
     log(`refreshCommands: discover failed: ${e}`)
     return L.skillsScanFail
   }
-  const map = new Map<string, string>()
+  const map = buildSkillMap(skills)
   const cmds: { command: string; description: string }[] = []
   let dropped = 0
   for (const s of skills) {
     const cmd = mangleCmd(s.name)
-    // empty, clashes with an ops command, a mangling clash, or over Telegram's cap —
-    // skip. Overflow skills stay runnable: typing "/name" still routes to the pane.
-    if (!cmd || OPS_NAMES.has(cmd) || map.has(cmd) || ops.length + cmds.length >= TG_CMD_MAX) {
+    // Не попал в список Telegram: пустое имя, столкновение с ops-командой или с чужим
+    // манглингом, либо кончился кап. На РАЗВОРАЧИВАНИЕ имени это больше не влияет — оно
+    // живёт в map, которую кап не трогает.
+    if (!cmd || OPS_NAMES.has(cmd) || map.get(cmd) !== s.name || ops.length + cmds.length >= TG_CMD_MAX) {
       dropped++
       continue
     }
-    map.set(cmd, s.name)
     cmds.push({ command: cmd, description: tgDescription(s.description) })
   }
   // `plugin details` fan-out times out when a boot-time revive burst loads the box; publishing
@@ -1663,6 +1701,34 @@ function skillMenuKeyboard(token: string, names: string[], page: number): Inline
 // Type an agent-native skill invocation into every live pane, ack, and arm reply fallback.
 // Claude needs its slash-autocomplete escape dance; Codex gets a normal explicit instruction
 // so the supported 0.147 Docker CLI does not strand a `$skill` selector in its input field.
+// Отклонённая CLI слэш-команда не начинает ход: хук Stop не приходит, досылка ответа не
+// срабатывает, и в чат не уезжает ничего — пользователь видит пустоту. Смотрим пейн сами и
+// говорим то, что сказал CLI (он ещё и подсказывает правильное имя).
+const REJECT_CHECK_MS = 2500
+const UNKNOWN_CMD_RE = /^.*unknown command:.*$/im
+
+async function reportRejectedCommand(
+  conns: Socket<undefined>[], cmdText: string, key: string, chatId: string, threadId?: number,
+): Promise<void> {
+  const pane = conns.map(conn => router.get(conn)?.pane).find(Boolean)
+  if (!pane) {
+    return
+  }
+  const typedCmd = cmdText.trim().split(/\s+/)[0]!
+  await new Promise(resolve => setTimeout(resolve, REJECT_CHECK_MS))
+  const screen = await capturePane(pane).catch(() => '')
+  const line = UNKNOWN_CMD_RE.exec(screen)?.[0]?.trim()
+  // Строка обязана называть ИМЕННО нашу команду: отказ от прошлой попытки остаётся на экране.
+  if (!line || !line.includes(typedCmd)) {
+    return
+  }
+  disarmPending(key) // хода не будет — ждать ответа не на что
+  log(`skill inject rejected: ${key} ${typedCmd} → ${line.slice(0, 90)}`)
+  void bot.api
+    .sendMessage(chatId, t().commandRejected(escHtml(line)), { ...inTopic(threadId), parse_mode: 'HTML' })
+    .catch(() => {})
+}
+
 async function injectSkillToPanes(
   conns: Socket<undefined>[], cmdText: string, key: string, dir: string,
   chat_id: string, threadId: number | undefined, msgId: number | undefined, agent: AgentKind,
@@ -1688,6 +1754,7 @@ async function injectSkillToPanes(
     typing(chat_id, threadId)
     snapshotScreens(key, cmdText, conns)
     armPending(key, { dir, at: Date.now() }) // reply-fallback armed
+    void reportRejectedCommand(conns, cmdText, key, chat_id, threadId)
   }
   return typed
 }
@@ -3913,7 +3980,7 @@ async function handleInbound(inbound: Inbound): Promise<void> {
     const [head, ...rest] = text.trim().split(/\s+/)
     const name = head!.slice(1).replace(/@\w+$/, '').toLowerCase() // drop leading "/" and "@bot"
     // глобальные И проектные скиллы: /add_model → /add-model (Telegram не даёт дефис)
-    const real = resolveSkillCommand(name, globalSkillMap, discoverProjectSkills(binding.dir, binding.agent))
+    const real = await resolveSkillFresh(name, discoverProjectSkills(binding.dir, binding.agent))
     const agent = binding.agent ?? 'claude'
     const cmd = skillInvocation(agent, real, rest)
     const ok = await injectSkillToPanes(conns, cmd, key, binding.dir, chat_id, threadId, msgId, agent)

@@ -53,6 +53,7 @@ export const ru: Strings = {
     '⚠️ <b>Сессия не получила это сообщение</b> — отправил дважды, до разговора не дошло ни разу. ' +
     'Попробуй <code>/restart</code> и пришли ещё раз.',
   notInTmuxSlash: '⚠️ Сессия не в tmux — слэш-команду не набрать.',
+  commandRejected: (line: string) => `⚠️ <b>CLI не принял команду</b>\n\n<code>${line}</code>`,
   sessionFolder: path => `📁 ${path}`,
   tmuxForeignAgent: command => `⚠️ В этом tmux-pane уже работает неподключённый <code>${command}</code>; не впечатываю запуск ему в prompt.`,
   spawnInProgress: '⏳ Сессия уже запускается; повторный запуск пропущен.',
