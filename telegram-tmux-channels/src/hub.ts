@@ -1094,15 +1094,10 @@ async function tellAboutUnparsedModal(pane: string, session: SessionInfo, text: 
     return
   }
   seen.told = true
-  const target = pickerChatFor(session)
-  if (!target) {
-    return
-  }
-  await bot.api
-    .sendMessage(target.chatId, `${t().modalUnparsed}\n<pre>${escHtml(paneDigest(text, 20))}</pre>`, {
-      ...inTopic(target.threadId), parse_mode: 'HTML',
-    })
-    .catch(() => {})
+  // В чат не выносим: сообщение било ложно чаще, чем по делу — стартовые гейты, которые хаб
+  // дожимает сам, приходили сюда стеной терминального текста. След в логе оставляем: по нему
+  // видно, что модалку не разобрали, если топик всё-таки замолчал.
+  log(`modal not parsed: pane=${pane} keys=[${session.bindingKeys ?? ''}] ${paneDigest(text, 6).replace(/\n/g, ' ⏎ ').slice(0, 200)}`)
 }
 
 async function detectPicker(pane: string, session: SessionInfo, text: string): Promise<void> {
