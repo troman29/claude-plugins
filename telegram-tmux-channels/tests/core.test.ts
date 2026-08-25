@@ -774,7 +774,7 @@ describe('запуск сессии под лимитом', () => {
 
   test('кап есть, slice не задан — запуск в своём scope', () => {
     withEnv({ TELEGRAM_MEMORY_MAX: '6G', TELEGRAM_MEMORY_SLICE: undefined }, () => {
-      expect(memoryCapPrefix('-100/7')).toBe('systemd-run --user --scope --quiet --unit=tgc-100-7.scope -p MemoryMax=6G ')
+      expect(memoryCapPrefix('-100/7')).toBe('systemd-run --user --scope --quiet --unit=tgc-100-7.scope -p MemoryMax=6G -p ManagedOOMPreference=avoid ')
     })
   })
 
