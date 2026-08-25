@@ -4235,8 +4235,10 @@ async function deleteTopicFlow(
   } catch (e) {
     delNote = L.topicDeleteFail(escHtml(e instanceof Error ? e.message : String(e)))
   }
-  // Отчёт уходит в General: топика к этому моменту уже нет.
-  void bot.api.sendMessage(chatId, `${note}\n${delNote}`, { parse_mode: 'HTML' }).catch(() => {})
+  // Отчёт уходит в General: топика к этому моменту уже нет — вместе с ним умер и живой пост,
+  // поэтому длительность уборки повторяем здесь, иначе она исчезает бесследно.
+  const spent = binding ? `${L.cleanupDone(Math.round((Date.now() - startedAt) / 1000))}\n` : ''
+  void bot.api.sendMessage(chatId, `${spent}${note}\n${delNote}`, { parse_mode: 'HTML' }).catch(() => {})
 }
 
 async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: OpsRequest): Promise<void> {
