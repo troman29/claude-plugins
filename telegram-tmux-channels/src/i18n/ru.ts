@@ -167,6 +167,9 @@ export const ru: Strings = {
   dirStillInUse: tids => `\n📌 Папку оставил — её ещё держит ${tids}.`,
   topicDeletedCleanup: note => `🗑 <b>Топик удалён</b> — прибрал за ним.\n\n${note}`,
   deleteOnlyInTopic: '❌ <code>/delete</code> — только в топике форума (General/обычную группу так не удалить).',
+  deleting: '🗑 <b>Удаляю топик</b>…',
+  deletingCleanup: (seconds: number) => `🧹 Убираю ворктри и стенд… ${seconds} с`,
+  cleanupDone: (seconds: number) => `🧹 Убрано за ${seconds} с`,
   noBindingInTopic: (tid, title) => `🔓 <i>Бинда в топике <code>#${tid}</code>${title ? ` «${title}»` : ''} не было.</i>`,
   topicDeletedShort: tid => `🗑 Топик <code>#${tid}</code> удалён.`,
   topicDeleteFail: err =>

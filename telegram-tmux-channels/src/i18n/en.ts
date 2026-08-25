@@ -175,6 +175,9 @@ export const en = {
   dirStillInUse: (tids: string) => `\n📌 Folder kept — still bound in ${tids}.`,
   topicDeletedCleanup: (note: string) => `🗑 <b>Topic deleted</b> — cleaned up after it.\n\n${note}`,
   deleteOnlyInTopic: '❌ <code>/delete</code> — only in a forum topic (can\'t delete General/a plain group this way).',
+  deleting: '🗑 <b>Deleting the topic</b>…',
+  deletingCleanup: (seconds: number) => `🧹 Removing the worktree and stand… ${seconds}s`,
+  cleanupDone: (seconds: number) => `🧹 Cleaned up in ${seconds}s`,
   noBindingInTopic: (tid: number, title: string) =>
     `🔓 <i>No binding in topic <code>#${tid}</code>${title ? ` «${title}»` : ''}.</i>`,
   topicDeletedShort: (tid: number) => `🗑 Topic <code>#${tid}</code> deleted.`,

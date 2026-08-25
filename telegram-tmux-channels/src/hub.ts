@@ -3719,6 +3719,9 @@ async function handleInbound(inbound: Inbound): Promise<void> {
 
   // explicit commands always win — never swallowed by an auto-topic prompt waiting for text
   const ops = inbound.literal ? undefined : parseOpsCommand(text)
+  // След на входе. Без него исчезнувшее сообщение неотличимо от неполученного: 25.08 `/delete`
+  // не сделал ни единого вызова и не оставил ни строки, и разобрать было нечем.
+  log(`inbound: ${key} from=${senderId}${ops ? ` ops=/${ops.cmd}${ops.bot ? `@${ops.bot}` : ''}` : ''} ${JSON.stringify(text.slice(0, 40))}`)
   if (ops && (!ops.bot || ops.bot.toLowerCase() === botUsername.toLowerCase())) {
     if (ops.cmd === 'send') {
       const body = literalSendText(ops.arg, replyTo?.text, replyTo?.caption)
@@ -4189,6 +4192,53 @@ type OpsRequest = {
   msgId?: number // the user's command message — /screen deletes it to keep history clean
 }
 
+/**
+ * Удаление топика: сначала уборка (ворктри и стенд проекта — это минуты), потом сам топик.
+ *
+ * Живой пост со этапами и секундами, потому что молчащая минута неотличима от зависания. На
+ * провале уборки топик НЕ удаляем (иначе ворктри со стендом остаётся жить, а жалоба уезжает
+ * в General, где её никто не читает — так и набились слоты) и даём кнопку повтора: причина
+ * почти всегда внешняя и чинится руками.
+ */
+async function deleteTopicFlow(
+  opts: { key: string; chatId: string; threadId: number; force: boolean },
+): Promise<void> {
+  const { key, chatId, threadId, force } = opts
+  const L = t()
+  const binding = loadBindings()[key]
+  const post = progressPost(chatId, threadId, [L.deleting])
+  const startedAt = Date.now()
+  if (binding) {
+    post.running(seconds => L.deletingCleanup(seconds))
+  }
+  const title = topicTitle(chatId, threadId)
+  const { note, failed } = binding
+    ? await teardownBinding(key, binding, { force })
+    : { note: L.noBindingInTopic(threadId, title ? escHtml(title) : ''), failed: false }
+  post.settle(binding ? L.cleanupDone(Math.round((Date.now() - startedAt) / 1000)) : '')
+  post.step(note)
+  await post.settled()
+  if (failed) {
+    void bot.api
+      .sendMessage(chatId, L.deleteKeptOnCleanupFail, {
+        ...inTopic(threadId),
+        parse_mode: 'HTML',
+        reply_markup: new InlineKeyboard().text(L.retrySetup, `topicdel:${key}:${force ? 'f' : 'n'}`),
+      })
+      .catch(() => {})
+    return
+  }
+  let delNote: string
+  try {
+    await bot.api.deleteForumTopic(chatId, threadId)
+    delNote = L.topicDeletedShort(threadId)
+  } catch (e) {
+    delNote = L.topicDeleteFail(escHtml(e instanceof Error ? e.message : String(e)))
+  }
+  // Отчёт уходит в General: топика к этому моменту уже нет.
+  void bot.api.sendMessage(chatId, `${note}\n${delNote}`, { parse_mode: 'HTML' }).catch(() => {})
+}
+
 async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: OpsRequest): Promise<void> {
   const L = t()
   const threadOpt = inTopic(threadId)
@@ -4292,24 +4342,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
         void say(L.deleteOnlyInTopic)
         return
       }
-      const force = arg?.trim().toLowerCase() === 'force'
-      const { note, failed } = binding
-        ? await teardownBinding(key, binding, { force })
-        : { note: L.noBindingInTopic(threadId, topicTitle(chat_id, threadId) ? escHtml(topicTitle(chat_id, threadId)!) : ''), failed: false }
-      // Уборка провалилась — не разбираем ничего и топик не удаляем: иначе воркри со стендом
-      // остаются жить, а жалоба уезжает в General, где её никто не читает (так и набились слоты).
-      if (failed) {
-        void say(`${note}\n${L.deleteKeptOnCleanupFail}`)
-        return
-      }
-      let delNote: string
-      try {
-        await bot.api.deleteForumTopic(chat_id, threadId)
-        delNote = L.topicDeletedShort(threadId)
-      } catch (e) {
-        delNote = L.topicDeleteFail(escHtml(e instanceof Error ? e.message : String(e)))
-      }
-      void bot.api.sendMessage(chat_id, `${note}\n${delNote}`, { parse_mode: 'HTML' }).catch(() => {})
+      await deleteTopicFlow({ key, chatId: chat_id, threadId, force: arg?.trim().toLowerCase() === 'force' })
       return
     }
     if (cmd === 'bind') {
@@ -5375,6 +5408,24 @@ bot.on('callback_query:data', async ctx => {
       key, saved.cfg, saved.dir, saved.mode, saved.branch,
       sayFor(saved.chatId, saved.threadId), saved.base, saved.agent,
     )
+    return
+  }
+  const tdl = /^topicdel:(.+):(f|n)$/.exec(ctx.callbackQuery.data)
+  if (tdl) {
+    const [, key, forceFlag] = tdl
+    if (!isAdmin(String(ctx.from.id))) {
+      await ctx.answerCallbackQuery({ text: t().toastNoRights }).catch(() => {})
+      return
+    }
+    const target = keyToTarget(key)
+    if (target.thread_id == null) {
+      await ctx.answerCallbackQuery({ text: t().deleteOnlyInTopic }).catch(() => {})
+      return
+    }
+    await ctx.answerCallbackQuery({ text: t().toastRetrying }).catch(() => {})
+    await ctx.editMessageReplyMarkup().catch(() => {}) // кнопку снимаем: повтор уже идёт
+    log(`topic-delete-retry: ${key} (force=${forceFlag === 'f'})`)
+    void deleteTopicFlow({ key, chatId: target.chat_id, threadId: target.thread_id, force: forceFlag === 'f' })
     return
   }
   const td = /^topicdir:(.+)$/.exec(ctx.callbackQuery.data)
