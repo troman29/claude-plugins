@@ -2570,6 +2570,13 @@ function verifyClaimedKeys(session: SessionInfo): SessionInfo {
 // (captureNewSessionId). `/clear` and an in-TUI `/resume` switch the conversation with no spawn at
 // all, so the binding silently kept a stale id (or none) and the next restart resumed the wrong
 // conversation. Hook events carry the live id every turn — persist it whenever it drifts.
+/** Разовый прогон (`claude -p`) — не сессия биндинга: он умирает вместе со своим ходом. */
+function isHeadlessSession(sock: Socket<undefined>): boolean {
+  const session = router.get(sock)
+  const cmdline = session?.cmdline
+  return !!cmdline?.length && adapterForSession(session!).isHeadlessArgv(cmdline)
+}
+
 function syncSessionId(bindingKeys: string[], sessionId: string): void {
   const reg = loadBindings()
   let changed = false
@@ -2650,7 +2657,18 @@ async function handleStubMessage(sock: Socket<undefined>, msg: StubToHub): Promi
   }
   // Every hook event carries the live session id — one chokepoint keeps bindings.json honest.
   if ('bindingKeys' in msg && msg.sessionId) {
-    const reliableKeys = msg.bindingKeys.filter(key => adapterForKey(key).capabilities.hookSessionIdReliable)
+    // Одноразовый `claude -p`, запущенный в каталоге биндинга (сторож, cron, ручной прогон),
+    // подключается как обычная сессия и несёт в хуках СВОЙ sessionId. learnCmdline такую
+    // сессию отбивает явно, а здесь её пускали — и биндинг начинал указывать на разговор,
+    // который закончился в ту же секунду: следующий подъём резюмил бы не то. 25.08 так
+    // переписало топик 2336 четырежды за семь минут.
+    const headless = isHeadlessSession(sock)
+    if (headless) {
+      log(`sessionId hook ignored for ${msg.bindingKeys.join(',')}: headless (-p) session`)
+    }
+    const reliableKeys = headless
+      ? []
+      : msg.bindingKeys.filter(key => adapterForKey(key).capabilities.hookSessionIdReliable)
     if (reliableKeys.length) syncSessionId(reliableKeys, msg.sessionId)
     if (reliableKeys.length !== msg.bindingKeys.length) {
       log(`sessionId hook ignored for ${msg.bindingKeys.filter(key => !reliableKeys.includes(key)).join(',')}: adapter requires transcript correlation`)
