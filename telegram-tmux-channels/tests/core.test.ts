@@ -778,6 +778,14 @@ describe('запуск сессии под лимитом', () => {
     })
   })
 
+  // Без systemd (macOS, docker-стенд) префикс превращал запуск в «systemctl not found»,
+  // и топик молча оставался без сессии — capability нет, значит и обёртки нет.
+  test('systemd-run недоступен — кап молча отключается, а не ломает запуск', () => {
+    withEnv({ TELEGRAM_MEMORY_MAX: '6G', TELEGRAM_MEMORY_SLICE: 'tgc-agents' }, () => {
+      expect(memoryCapPrefix('-100/7', null)).toBe('')
+    })
+  })
+
   test('со slice сессии делят общий бюджет, своп не запрещаем', () => {
     withEnv({ TELEGRAM_MEMORY_MAX: '6G', TELEGRAM_MEMORY_SLICE: 'tgc-agents' }, () => {
       const cmd = memoryCapPrefix('-100/7')

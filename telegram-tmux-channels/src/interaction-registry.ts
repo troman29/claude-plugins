@@ -41,11 +41,13 @@ const schemas = {
   'live-screen': envelope('live-screen', messageRef.extend({
     pane: z.string().min(1), bindingKey: z.string().min(1), lastText: z.string(), viewKind: z.enum(['png', 'text']), refreshUntil: z.number().finite(),
   })),
-  compaction: envelope('compaction', messageRef.extend({ bindingKey: z.string().min(1), lastPct: z.number(), misses: z.number().int().nonnegative() })),
+  compaction: envelope('compaction', messageRef.extend({
+    bindingKey: z.string().min(1), bindingDir: z.string().min(1), pane: z.string().min(1).optional(),
+    lastPct: z.number(), misses: z.number().int().nonnegative(),
+  })),
   workflow: envelope('workflow', messageRef.extend({
     bindingKey: z.string().min(1), last: z.string(), name: z.string(), total: z.number().int().nonnegative(), misses: z.number().int().nonnegative(),
   })),
-  'hook-compaction': envelope('hook-compaction', messageRef.extend({ bindingDir: z.string().min(1) })),
   'answer-stream': envelope('answer-stream', z.object({
     chatId: z.string().min(1), threadId: z.number().int().optional(), bindingDir: z.string().min(1),
     turnAt: z.number().finite(), draftId: z.number().int().positive(), text: z.string(), updatedAt: z.number().finite(),
@@ -126,7 +128,7 @@ export class InteractionRegistry {
     for (const [storageKey, record] of Object.entries(this.records)) {
       const nested = record.data as { bindingKey?: unknown }
       const keyOwned = (record.kind === 'status' || record.kind === 'background' ||
-        record.kind === 'hook-compaction' || record.kind === 'answer-stream' || record.kind === 'pending-topic') && record.key === bindingKey
+        record.kind === 'answer-stream' || record.kind === 'pending-topic') && record.key === bindingKey
       if (keyOwned || nested.bindingKey === bindingKey) {
         delete this.records[storageKey]
         changed = true

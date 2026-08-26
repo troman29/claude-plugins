@@ -54,6 +54,7 @@ import { agentAdapter, forgetForeignConversation, installedAgents, mayLearn, typ
 import { renderDoctor, type DoctorCheck } from './doctor'
 import { InteractionRegistry } from './interaction-registry'
 import { EditablePost } from './editable-post'
+import { CompactionPosts } from './compaction'
 import { ProgressPost } from './progress-post'
 import { AnswerStream } from './answer-stream'
 import { literalSendText } from './literal-send'
@@ -1881,18 +1882,11 @@ async function handleSubagentEvent(msg: Extract<StubToHub, { op: 'subagent' }>):
   }
 }
 
-// Compaction progress, scraped from the pane (no hook exposes the %): Claude Code renders
-// "✻ Compacting conversation… (elapsed)" + a "▰▱… NN%" bar during /compact and auto-compact.
-// Mirror it into one self-editing Telegram message per pane. capturePane occasionally catches
-// a mid-redraw frame WITHOUT the line, so finalize only after 2 consecutive misses (anti-flicker).
-type CompactState = { chatId: string; threadId?: number; msgId: number; bindingKey: string; lastPct: number; misses: number }
-const compactMessages = new Map<string, CompactState>(interactions.entries('compaction')) // key = pane
+// Компакция: один пост на сеанс, два источника (см. src/compaction.ts). Скрейп пейна даёт
+// проценты — Claude Code рисует "✻ Compacting conversation… (elapsed)" + бар "▰▱… NN%";
+// хук даёт точные старт и финиш. capturePane изредка ловит кадр посреди перерисовки, БЕЗ
+// этой строки, поэтому финал — только после двух промахов подряд (анти-мерцание).
 const PROGRESS_TTL_MS = 60 * 60 * 1000
-function persistCompaction(pane: string, state: CompactState): void {
-  if (state.msgId < 1) return
-  interactions.set({ kind: 'compaction', key: pane, updatedAt: Date.now(), expiresAt: Date.now() + PROGRESS_TTL_MS, data: state })
-}
-function forgetCompaction(pane: string): void { compactMessages.delete(pane); interactions.delete('compaction', pane) }
 
 function renderCompactBar(pct: number, elapsed?: string): string {
   const filled = Math.max(0, Math.min(10, Math.round(pct / 10)))
@@ -1900,56 +1894,46 @@ function renderCompactBar(pct: number, elapsed?: string): string {
   return t().compaction(bar, String(pct), elapsed ? escHtml(elapsed) : '')
 }
 
+const compactions = new CompactionPosts(
+  {
+    send: (target, html) => bot.api
+      .sendMessage(target.chatId, html, { ...inTopic(target.threadId), parse_mode: 'HTML' })
+      .then(sent => sent.message_id)
+      .catch(() => undefined),
+    edit: async (post, html) => {
+      await bot.api.editMessageText(post.chatId, post.msgId, html, { parse_mode: 'HTML' }).catch(() => {})
+    },
+    render: {
+      started: trigger => t().compactionStarted(trigger),
+      bar: renderCompactBar,
+      done: () => t().compactionDone,
+    },
+    persist: post => interactions.set({
+      kind: 'compaction', key: post.bindingKey, updatedAt: Date.now(), expiresAt: Date.now() + PROGRESS_TTL_MS, data: post,
+    }),
+    forget: key => interactions.delete('compaction', key),
+  },
+  interactions.entries('compaction')
+    .filter(([key, post]) => loadBindings()[key]?.dir === post.bindingDir) // топик перевязали — пост чужой
+    .map(([, post]) => post),
+)
+
 async function handleCompaction(pane: string, session: SessionInfo, text: string): Promise<void> {
-  const prog = adapterForSession(session).parseCompaction(text)
   const bindingKey = session.bindingKeys?.[0]
-  let existing = compactMessages.get(pane)
-  if (existing && existing.bindingKey !== bindingKey) {
-    forgetCompaction(pane)
-    existing = undefined
+  if (!bindingKey) {
+    return
   }
-  if (prog) {
-    if (!existing) {
-      const target = pickerChatFor(session)
-      if (!target) {
-        return
-      }
-      // reserve the slot synchronously so an overlapping tick doesn't double-send
-      if (!bindingKey) return
-      compactMessages.set(pane, { chatId: target.chatId, ...(target.threadId != null ? { threadId: target.threadId } : {}), msgId: -1, bindingKey, lastPct: prog.pct, misses: 0 })
-      const sent = await bot.api
-        .sendMessage(target.chatId, renderCompactBar(prog.pct, prog.elapsed), {
-          ...inTopic(target.threadId),
-          parse_mode: 'HTML',
-        })
-        .catch(() => undefined)
-      if (sent) {
-        const state = { chatId: target.chatId, ...(target.threadId != null ? { threadId: target.threadId } : {}), msgId: sent.message_id, bindingKey, lastPct: prog.pct, misses: 0 }
-        compactMessages.set(pane, state)
-        persistCompaction(pane, state)
-      } else if (compactMessages.get(pane)?.msgId === -1) {
-        compactMessages.delete(pane)
-      }
-      return
-    }
-    existing.misses = 0
-    if (existing.msgId === -1 || prog.pct === existing.lastPct) {
-      return // still sending, or bar hasn't moved — skip the edit (Telegram rate-limits edits)
-    }
-    existing.lastPct = prog.pct
-    await bot.api
-      .editMessageText(existing.chatId, existing.msgId, renderCompactBar(prog.pct, prog.elapsed), { parse_mode: 'HTML' })
-      .catch(() => {})
-    persistCompaction(pane, existing)
-  } else if (existing && existing.msgId !== -1) {
-    if (++existing.misses < 2) {
-      return // tolerate a single flicker frame before declaring it done
-    }
-    forgetCompaction(pane)
-    await bot.api
-      .editMessageText(existing.chatId, existing.msgId, t().compactionDone, { parse_mode: 'HTML' })
-      .catch(() => {})
+  const bindingDir = loadBindings()[bindingKey]?.dir
+  const prog = adapterForSession(session).parseCompaction(text)
+  if (!prog || !bindingDir) {
+    await compactions.missed(bindingKey)
+    return
   }
+  const target = pickerChatFor(session)
+  if (!target) {
+    return
+  }
+  await compactions.progress({ bindingKey, bindingDir, pane, target, pct: prog.pct, ...(prog.elapsed ? { elapsed: prog.elapsed } : {}) })
 }
 
 // Running-workflow status, scraped from the pane — hooks expose only "workflow-subagent" with
@@ -2197,35 +2181,25 @@ async function handleBgEvent(msg: Extract<StubToHub, { op: 'bg' }>): Promise<voi
   }
 }
 
-// Unlike Claude's TUI bar, Codex hooks expose an exact compaction lifecycle but no numeric
-// progress. One message per binding gives start → completion visibility without inventing a
-// percentage from an unstable transcript.
-const hookCompactions = new Map<string, { chatId: string; threadId?: number; msgId: number; bindingDir: string }>(
-  interactions.entries('hook-compaction').filter(([key, value]) => loadBindings()[key]?.dir === value.bindingDir),
-)
+// Хук знает точные старт и финиш, но не проценты; проценты дорисовывает скрейп пейна
+// в ТОТ ЖЕ пост (CompactionPosts). У Codex бара нет — там хук единственный источник.
 async function handleCompactionEvent(msg: Extract<StubToHub, { op: 'compaction' }>): Promise<void> {
   for (const key of msg.bindingKeys) {
-    const existing = hookCompactions.get(key)
-    if (msg.phase === 'start') {
-      if (existing) continue
-      const bindingDir = loadBindings()[key]?.dir
-      if (!bindingDir) continue
-      const target = keyToTarget(key)
-      const sent = await bot.api.sendMessage(target.chat_id, t().compactionStarted(msg.trigger ?? ''), {
-        ...inTopic(target.thread_id), parse_mode: 'HTML',
-      }).catch(() => undefined)
-      if (sent) {
-        const state = { chatId: target.chat_id, ...(target.thread_id != null ? { threadId: target.thread_id } : {}), msgId: sent.message_id, bindingDir }
-        hookCompactions.set(key, state)
-        interactions.set({ kind: 'hook-compaction', key, updatedAt: Date.now(), expiresAt: Date.now() + PROGRESS_TTL_MS, data: state })
-      }
+    if (msg.phase !== 'start') {
+      await compactions.finished(key)
       continue
     }
-    hookCompactions.delete(key)
-    interactions.delete('hook-compaction', key)
-    if (existing) {
-      await bot.api.editMessageText(existing.chatId, existing.msgId, t().compactionDone, { parse_mode: 'HTML' }).catch(() => {})
+    const bindingDir = loadBindings()[key]?.dir
+    if (!bindingDir) {
+      continue
     }
+    const target = keyToTarget(key)
+    await compactions.started({
+      bindingKey: key,
+      bindingDir,
+      target: { chatId: target.chat_id, ...(target.thread_id != null ? { threadId: target.thread_id } : {}) },
+      trigger: msg.trigger ?? '',
+    })
   }
 }
 
@@ -3346,11 +3320,10 @@ function purgeBindingInteractions(key: string): void {
   statusState.delete(key)
   bgPost.forget(key)
   bgState.delete(key)
-  hookCompactions.delete(key)
+  compactions.drop(key)
   disarmPendingTopic(key)
   for (const [token, menu] of skillMenus) if (menu.key === key) skillMenus.delete(token)
   for (const [pane, custom] of awaitingCustom) if (custom.bindingKey === key) awaitingCustom.delete(pane)
-  for (const [pane, state] of compactMessages) if (state.bindingKey === key) compactMessages.delete(pane)
   for (const [pane, state] of workflowMessages) if (state.bindingKey === key) workflowMessages.delete(pane)
   for (const [token, state] of [...liveScreens]) if (state.bindingKey === key) closeLiveScreen(token)
   interactions.deleteBinding(key)

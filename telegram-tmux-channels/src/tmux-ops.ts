@@ -232,9 +232,26 @@ export const RESUME_PROMPT_OFF = 'CLAUDE_CODE_RESUME_THRESHOLD_MINUTES=999999999
 // Своп сессиям НЕ запрещаем. `MemorySwapMax=0` выглядел защитой от трэшинга, а на деле делал
 // их память неизымаемой: ядро оставляло спящую сессию в RAM и выдавливало на диск hermes,
 // стенды и сам хаб (замер 2026-08-18: 8 ГБ свопа при живых сессиях в RAM).
-export const memoryCapPrefix = (key?: string): string => {
+// Нет systemd-run — значит нет и systemd (macOS, контейнер): всё, что через него, отключается,
+// а не падает. Живая грабля: в docker-стенде `TELEGRAM_MEMORY_MAX` из env превращал КАЖДЫЙ запуск
+// агента в «Executable not found in $PATH: systemctl», и топик молча вис без сессии.
+const SYSTEMD_RUN = Bun.which('systemd-run')
+const SYSTEMCTL = Bun.which('systemctl')
+
+/** `systemctl --user …`; без systemd молча ничего не делает и отдаёт пустой вывод. */
+async function systemctlUser(args: string[], capture = false): Promise<string> {
+  if (!SYSTEMCTL) {
+    return ''
+  }
+  const proc = Bun.spawn([SYSTEMCTL, '--user', ...args], { stdout: capture ? 'pipe' : 'ignore', stderr: 'ignore' })
+  const out = capture ? await new Response(proc.stdout).text() : ''
+  await proc.exited
+  return out
+}
+
+export const memoryCapPrefix = (key?: string, systemdRun: string | null = SYSTEMD_RUN): string => {
   const cap = process.env.TELEGRAM_MEMORY_MAX?.trim()
-  if (!cap) {
+  if (!cap || !systemdRun) {
     return ''
   }
   const slice = process.env.TELEGRAM_MEMORY_SLICE?.trim()
@@ -404,19 +421,16 @@ export async function ensureTmuxSession(name: string, dir: string): Promise<bool
   return true
 }
 
-// A first `tmux new-session` for a brand-new server is a direct child of this
-// process — left alone it inherits OUR systemd cgroup, so a hub restart/crash
-// (KillMode=control-group, the default) takes down the tmux server and every
-// session/pane hanging off it, hub-unrelated work included. systemd-run --scope
-// gives the server its own cgroup, independent of ours. No systemd-run (e.g.
-// macOS) — plain spawn; launchd doesn't cgroup-kill children this way, so the
-// risk this guards against doesn't apply there.
-const SYSTEMD_RUN = Bun.which('systemd-run')
-
 // detached tmux defaults to 80×24 — TUI pickers (e.g. /resume) get squeezed onto 1 line;
 // set a sane size; on attach the client's size takes over anyway
 const DETACHED_SIZE = ['-x', '200', '-y', '100']
 
+// A first `tmux new-session` for a brand-new server is a direct child of this process — left
+// alone it inherits OUR systemd cgroup, so a hub restart/crash (KillMode=control-group, the
+// default) takes down the tmux server and every session/pane hanging off it, hub-unrelated work
+// included. systemd-run --scope gives the server its own cgroup, independent of ours. Without it
+// (e.g. macOS) — plain spawn; launchd doesn't cgroup-kill children this way, so the risk this
+// guards against doesn't apply there.
 async function spawnDetachedTmuxServer(name: string, dir: string): Promise<void> {
   if (!SYSTEMD_RUN) {
     await tmux('new-session', '-d', ...DETACHED_SIZE, '-s', name, '-c', dir)
@@ -489,20 +503,16 @@ export function alive(pid: number): boolean {
 // exit hangs forever on the confirm unless answered — hence the pane polling.
 async function stopScope(scope: string, log: (s: string) => void): Promise<void> {
   log(`stop: гашу scope ${scope} — вместе со всем, что сессия оставила после себя`)
-  const proc = Bun.spawn(['systemctl', '--user', 'stop', scope], { stdout: 'ignore', stderr: 'ignore' })
-  await proc.exited
+  await systemctlUser(['stop', scope])
   // Погашенного мало: упавший scope остаётся ЗАГРУЖЕННЫМ, и `systemd-run --unit=<то же имя>`
   // отбивается «already loaded or has a fragment file» — то есть имя занято навсегда, а с ним
   // и подъём этого топика. Освобождает имя только reset-failed. 25.08 так намертво встал
   // топик 8100: запуск печатался снова и снова и падал на одной и той же строке.
-  const reset = Bun.spawn(['systemctl', '--user', 'reset-failed', scope], { stdout: 'ignore', stderr: 'ignore' })
-  await reset.exited
+  await systemctlUser(['reset-failed', scope])
 }
 
 async function scopeCommands(unit: string): Promise<string[]> {
-  const show = Bun.spawn(['systemctl', '--user', 'show', unit, '-p', 'ControlGroup', '--value'],
-    { stdout: 'pipe', stderr: 'ignore' })
-  const path = (await new Response(show.stdout).text()).trim()
+  const path = (await systemctlUser(['show', unit, '-p', 'ControlGroup', '--value'], true)).trim()
   if (!path) {
     return []
   }
@@ -523,9 +533,7 @@ async function scopeCommands(unit: string): Promise<string[]> {
 
 /** Погасить НАШИ scope'ы, где агента уже нет: сессия умерла, а её браузер/сервер держит cgroup. */
 export async function reapDeadScopes(log: (s: string) => void): Promise<string[]> {
-  const list = Bun.spawn(['systemctl', '--user', 'list-units', '--plain', '--no-legend', '--all', 'tgc-*.scope'],
-    { stdout: 'pipe', stderr: 'ignore' })
-  const names = (await new Response(list.stdout).text())
+  const names = (await systemctlUser(['list-units', '--plain', '--no-legend', '--all', 'tgc-*.scope'], true))
     .split('\n').map(l => l.trim().split(/\s+/)[0]).filter(n => n?.endsWith('.scope')) as string[]
   const scopes = await Promise.all(names.map(async name => ({ name, commands: await scopeCommands(name) })))
   const dead = deadScopes(scopes)
