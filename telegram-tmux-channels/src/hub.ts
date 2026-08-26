@@ -43,7 +43,7 @@ import {
   type TrustedGroupConfig, type TrustedGroupMode,
 } from './trusted-groups'
 import { t, getLang, setLang, type Lang } from './i18n'
-import { resolveModeDir, gitBranch, runHookDelete, removePlainWorktree, runStandCommand, worktreeHook, isLinkedWorktree } from './dir-resolve'
+import { resolveModeDir, gitBranch, runHookDelete, removePlainWorktree, runStandCommand, worktreeHook, isLinkedWorktree, isPlainWorktreeDir } from './dir-resolve'
 import { PROJECT_CONFIG_FILE, parseStandLinks, standLogTail, worktreeBases } from './project-config'
 import { watchDelivery as watchDeliveryCore, type DeliveryDeps } from './delivery'
 import { FallbackGate } from './fallback-gate'
@@ -3266,9 +3266,13 @@ async function teardownBinding(
   // стоит на последней ветке цепочки, хук такой ветки не знает и отказывается сносить.
   // Gated on isLinkedWorktree: a folder binding points at the MAIN repo, and running the removal hook
   // there would tear down the real checkout.
+  // ...но НЕ для голого ворктри (worktree-plain): его хук проекта не создавал и снести не может.
   const hookBranch =
     binding.hookBranch ??
-    (hook?.delete && (await isLinkedWorktree(binding.dir)) ? basename(binding.dir) : undefined)
+    (hook?.delete && !(groupCfg?.dir && isPlainWorktreeDir(groupCfg.dir, binding.dir)) &&
+      (await isLinkedWorktree(binding.dir))
+      ? basename(binding.dir)
+      : undefined)
   // Уборка ПЕРВЫМ делом, до отвязки и убийства tmux: провалилась — не разбираем ничего,
   // иначе топик остаётся с мёртвой сессией над живым воркри (и следующее сообщение поднимает
   // сессию в полуразобранном состоянии).
@@ -4276,7 +4280,11 @@ async function deleteTopicFlow(
       .sendMessage(chatId, L.deleteKeptOnCleanupFail, {
         ...inTopic(threadId),
         parse_mode: 'HTML',
-        reply_markup: new InlineKeyboard().text(L.retrySetup, `topicdel:${key}:${force ? 'f' : 'n'}`),
+        // Вторая кнопка обязательна: причина отказа бывает неустранимой (уборки просто нет),
+        // и тогда один Retry — тупик, из которого юзер выбирается только знанием про `/delete force`.
+        reply_markup: force
+          ? new InlineKeyboard().text(L.retrySetup, `topicdel:${key}:f`)
+          : new InlineKeyboard().text(L.retrySetup, `topicdel:${key}:n`).text(L.deleteAnyway, `topicdel:${key}:f`),
       })
       .catch(() => {})
     return

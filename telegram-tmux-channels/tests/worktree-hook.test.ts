@@ -6,7 +6,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { resolveModeDir, worktreeHook, freeBranchName, worktreeDirFor, runStandCommand } from '../src/dir-resolve'
+import { resolveModeDir, worktreeHook, freeBranchName, worktreeDirFor, isPlainWorktreeDir, runStandCommand } from '../src/dir-resolve'
 
 const projectHook = { create: 'echo project-create', delete: 'echo project-delete' }
 const groupHook = { create: 'echo group-create', delete: 'echo group-delete' }
@@ -116,6 +116,18 @@ describe('имя ветки при совпадении топиков', () => {
     expect(res.dir).toBe(worktreeDirFor(dir, 'feat-plain'))
     expect(res.hook).toBeUndefined() // иначе снос погонит хук по несуществующему стенду
     expect(git(res.dir, 'branch', '--show-current').stdout.toString().trim()).toBe('feat-plain')
+  })
+
+  // Снос обязан идти тем же путём, что создание: голый ворктри — голым `git worktree remove`.
+  // Пока это не различали, `/delete` такого топика гонял хук проекта, тот отвечал «сносить
+  // нечего», хаб объявлял уборку упавшей — и топик не удалялся вовсе (26.08, «Console: Скилы»).
+  test('голый ворктри отличается от хукового по имени папки', () => {
+    const base = '/home/user/projects/agentek-console'
+    expect(isPlainWorktreeDir(base, '/home/user/projects/agentek-console--console-skily')).toBe(true)
+    expect(isPlainWorktreeDir(base, `${base}/.claude/worktrees/console-skily`)).toBe(false)
+    expect(isPlainWorktreeDir(base, base)).toBe(false) // сам чекаут — не ворктри
+    expect(isPlainWorktreeDir(base, '/home/user/projects/other--feat')).toBe(false) // чужой проект
+    expect(isPlainWorktreeDir(base, '/srv/elsewhere/agentek-console--feat')).toBe(false) // не сосед
   })
 
   test('база: несуществующее имя — падаем внятно, а не режем от чего попало', async () => {

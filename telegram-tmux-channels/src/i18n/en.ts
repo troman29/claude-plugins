@@ -68,6 +68,7 @@ Send <code>/last</code> to see its terminal, or <code>/restart</code>.`,
   adminOnly: (command: string) => `🔒 <code>/${command}</code> is available to the hub admin only.`,
   sessionSpawnFail: (err: string) => `⚠️ <b>Couldn't bring the session up</b>: ${err}`,
   retrySetup: '🔁 Retry',
+  deleteAnyway: '🗑 Delete anyway',
   toastRetrying: 'Retrying…',
   toastRetryGone: 'This retry has expired — send any message to start over',
 
@@ -187,7 +188,7 @@ Send <code>/last</code> to see its terminal, or <code>/restart</code>.`,
     `⚠️ Topic not deleted (does the bot have can_delete_messages?): ${err}\n` +
     'The topic is still open; its next message will offer setup again.',
   deleteKeptOnCleanupFail:
-    '🛑 <b>Nothing was touched</b> — the cleanup failed, and tearing the topic down over a live worktree would kill the session and leave the stand running. Fix the cause and run <code>/delete</code> again, or force it: <code>/delete force</code>.',
+    '🛑 <b>Nothing was touched</b> — the cleanup failed, and tearing the topic down over a live worktree would kill the session and leave the stand running. Fix the cause and retry, or delete anyway — the worktree and its stand then stay on disk.',
   teardownForced: '\n⚠️ Forced: the cleanup failed, so the worktree and its stand are still on disk — remove them by hand.',
 
   // ── stand up/down ──

@@ -26,6 +26,17 @@ export function worktreeDirFor(baseDir: string, branch: string): string {
   return join(dirname(baseDir), `${basename(baseDir)}--${branch.replace(/\//g, '+')}`)
 }
 
+/** Папка сделана голым `git worktree add` (режим worktree-plain), а не хуком проекта.
+ *
+ * Снос обязан идти тем же путём, что и создание. Хук проекта ищет ворктри у себя
+ * (`.claude/worktrees/<slug>`), голого соседа `<проект>--<ветка>` он не знает: зовёшь его на
+ * такую папку — он отвечает «сносить нечего», хаб считает уборку упавшей и топик не удаляется
+ * ВООБЩЕ, а Retry повторяет тот же отказ.
+ */
+export function isPlainWorktreeDir(baseDir: string, dir: string): boolean {
+  return dirname(dir) === dirname(baseDir) && basename(dir).startsWith(`${basename(baseDir)}--`)
+}
+
 /** Свободно ли имя: нет такой ветки И нет папки ворктри под неё. */
 export async function branchNameTaken(baseDir: string, branch: string): Promise<boolean> {
   const ref = await run(['git', '-C', baseDir, 'rev-parse', '--verify', '--quiet', branch])
