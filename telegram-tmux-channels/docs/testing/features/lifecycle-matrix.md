@@ -297,6 +297,8 @@ Telegram переживают `/bind` `/unbind` `/delete` `/resume` `/new` `/res
   `~/projects/sandbox--plain-del` без `hookBranch`; `/delete` → «🗑 Worktree removed (git worktree
   remove)» → `deleteForumTopic`. Delete-хук стенда специально сделан падающим на чужих ворктри
   (`wt-del.sh`, мимикрия `wt.py rm`) — до правки на нём и воспроизводился отказ.
+  Повторный прогон (топик 1709) подтвердил, что новый биндинг ПОМНИТ режим: в `bindings.json`
+  лежит `"mode": "worktree-plain"`, и снос идёт по нему, а не по имени папки.
 
 **LM56. Уборка упала — из отказа есть выход в один тап.** P1 🤖
 - Ожидаемо: сообщение отказа несёт ДВЕ кнопки — «Повторить» и «Удалить всё равно» (force).

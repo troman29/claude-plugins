@@ -3267,10 +3267,13 @@ async function teardownBinding(
   // Gated on isLinkedWorktree: a folder binding points at the MAIN repo, and running the removal hook
   // there would tear down the real checkout.
   // ...но НЕ для голого ворктри (worktree-plain): его хук проекта не создавал и снести не может.
+  // Новые биндинги помнят режим создания; у старых он выводится по имени папки.
+  const plainWorktree = binding.mode
+    ? binding.mode === 'worktree-plain'
+    : !!groupCfg?.dir && isPlainWorktreeDir(groupCfg.dir, binding.dir)
   const hookBranch =
     binding.hookBranch ??
-    (hook?.delete && !(groupCfg?.dir && isPlainWorktreeDir(groupCfg.dir, binding.dir)) &&
-      (await isLinkedWorktree(binding.dir))
+    (hook?.delete && !plainWorktree && (await isLinkedWorktree(binding.dir))
       ? basename(binding.dir)
       : undefined)
   // Уборка ПЕРВЫМ делом, до отвязки и убийства tmux: провалилась — не разбираем ничего,
@@ -3573,6 +3576,7 @@ async function runAutoTopic(
       // и сам отбросит, но хранить в биндинге запуск claude под codex — врать состоянием.
       ...(cfg.cmdline && agentAdapter(usedAgent).isProcessArgv(cfg.cmdline) ? { cmdline: cfg.cmdline } : {}),
       ...(usedHook ? { hookBranch: usedBranch } : {}), // именно ту, что создали, — её же сносить
+      mode, // разбирать обязаны тем же путём, каким создали
     }
     saveBindings(reg)
     autoTopicBindings.add(key)

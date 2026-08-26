@@ -7,6 +7,7 @@ import { STATE_DIR } from './paths'
 import { safeJsonParse } from './util'
 import { keyToTarget } from './bindings'
 import type { AgentKind } from './agents/types'
+import type { TrustedGroupMode } from './trusted-groups'
 
 export const BINDINGS_FILE = join(STATE_DIR, 'bindings.json')
 // Polling calls loadBindings often. Remember the malformed version so one
@@ -22,6 +23,10 @@ export type BindingEntry = {
   cmdline?: string[]
   sessionId?: string // claude conversation id — --resume target when this binding's dir is shared
   hookBranch?: string // set for auto-topic worktree bindings created via a group hook — /unbind runs hook.delete on this
+  // Как папку СОЗДАЛИ. Разбирать её обязаны тем же путём, а угадывание по имени папки —
+  // ровно то, на чём `/delete` голого ворктри гонял хук проекта и топик не удалялся вовсе.
+  // Старые биндинги поля не имеют: для них путь по-прежнему выводится (isPlainWorktreeDir).
+  mode?: TrustedGroupMode
   tmux?: string // имя tmux-сессии. Пишется при создании биндинга: имя собрано из проекта и слага
   // топика, а раньше выводилось из id чата и топика — те в имени никому не нужны. Старые
   // биндинги поля не имеют и продолжают жить под прежним именем.
