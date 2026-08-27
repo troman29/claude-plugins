@@ -249,7 +249,7 @@ async function systemctlUser(args: string[], capture = false): Promise<string> {
   return out
 }
 
-export const memoryCapPrefix = (key?: string, systemdRun: string | null = SYSTEMD_RUN): string => {
+export const memoryCapPrefix = (unit?: string, systemdRun: string | null = SYSTEMD_RUN): string => {
   const cap = process.env.TELEGRAM_MEMORY_MAX?.trim()
   if (!cap || !systemdRun) {
     return ''
@@ -257,7 +257,7 @@ export const memoryCapPrefix = (key?: string, systemdRun: string | null = SYSTEM
   const slice = process.env.TELEGRAM_MEMORY_SLICE?.trim()
   const parts = [
     'systemd-run', '--user', '--scope', '--quiet',
-    ...(key ? [`--unit=${scopeUnitName(key)}`] : []),
+    ...(unit ? [`--unit=${unit}`] : []),
     ...(slice ? [`--slice=${slice}`] : []),
     '-p', `MemoryMax=${cap}`,
     // Убивает сессии не этот потолок, а systemd-oomd — по давлению свопа, задолго до него
@@ -274,6 +274,36 @@ export const memoryCapPrefix = (key?: string, systemdRun: string | null = SYSTEM
 // С меткой уборка тривиальна и безопасна: `tgc-*` — наши, всё остальное не трогаем.
 export function scopeUnitName(key: string): string {
   return `tgc-${key.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '')}.scope`
+}
+
+/** Свободное имя scope'а под этот биндинг: занятое — с суффиксом -2, -3, …
+ *
+ * Мёртвый scope имя НЕ освобождает: зомби-процесс в его cgroup держит unit загруженным, а
+ * `stop` и `reset-failed` на такой husk не действуют (проверено на хосте 27.08). Занятое имя
+ * валит `systemd-run --unit=…`, а с ним и подъём топика — 25.08 так намертво встал топик 8100.
+ * Подняться под именем -2 лучше, чем не подняться: метка нужна уборщику, а не пользователю.
+ */
+export async function freeScopeUnitName(
+  key: string,
+  opts: { limit?: number; isLoaded?: (unit: string) => Promise<boolean> } = {},
+): Promise<string> {
+  const base = scopeUnitName(key)
+  const isLoaded = opts.isLoaded ?? unitIsLoaded
+  const limit = opts.limit ?? 20
+  for (let n = 1; n <= limit; n++) {
+    const name = n === 1 ? base : base.replace(/\.scope$/, `-${n}.scope`)
+    if (!(await isLoaded(name))) {
+      return name
+    }
+  }
+  return base
+}
+
+async function unitIsLoaded(unit: string): Promise<boolean> {
+  if (!SYSTEMCTL) {
+    return false
+  }
+  return (await systemctlUser(['show', unit, '-p', 'LoadState', '--value'], true)).trim() === 'loaded'
 }
 
 /** Имена НАШИХ scope'ов, внутри которых уже нет живого агента (чистая функция). */
@@ -533,7 +563,9 @@ async function scopeCommands(unit: string): Promise<string[]> {
 
 /** Погасить НАШИ scope'ы, где агента уже нет: сессия умерла, а её браузер/сервер держит cgroup. */
 export async function reapDeadScopes(log: (s: string) => void): Promise<string[]> {
-  const names = (await systemctlUser(['list-units', '--plain', '--no-legend', '--all', 'tgc-*.scope'], true))
+  // Без --all: гасить нечего в scope'е, который уже inactive. Такой husk (зомби в cgroup) стопом
+  // не убирается, и с --all жнец докладывал об одном и том же каждые 5 минут до перезапуска хаба.
+  const names = (await systemctlUser(['list-units', '--plain', '--no-legend', '--state=active', 'tgc-*.scope'], true))
     .split('\n').map(l => l.trim().split(/\s+/)[0]).filter(n => n?.endsWith('.scope')) as string[]
   const scopes = await Promise.all(names.map(async name => ({ name, commands: await scopeCommands(name) })))
   const dead = deadScopes(scopes)

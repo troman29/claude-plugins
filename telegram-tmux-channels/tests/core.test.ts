@@ -25,6 +25,7 @@ import {
   tmuxSessionName,
   transientScopeOf,
   scopeUnitName,
+  freeScopeUnitName,
   deadScopes,
   memoryCapPrefix,
 } from '../src/tmux-ops'
@@ -768,27 +769,40 @@ describe('запуск сессии под лимитом', () => {
 
   test('без TELEGRAM_MEMORY_MAX префикса нет вовсе', () => {
     withEnv({ TELEGRAM_MEMORY_MAX: undefined, TELEGRAM_MEMORY_SLICE: undefined }, () => {
-      expect(memoryCapPrefix('-100/7')).toBe('')
+      expect(memoryCapPrefix('tgc-100-7.scope')).toBe('')
     })
   })
 
   test('кап есть, slice не задан — запуск в своём scope', () => {
     withEnv({ TELEGRAM_MEMORY_MAX: '6G', TELEGRAM_MEMORY_SLICE: undefined }, () => {
-      expect(memoryCapPrefix('-100/7')).toBe('systemd-run --user --scope --quiet --unit=tgc-100-7.scope -p MemoryMax=6G -p ManagedOOMPreference=avoid ')
+      expect(memoryCapPrefix(scopeUnitName('-100/7'))).toBe('systemd-run --user --scope --quiet --unit=tgc-100-7.scope -p MemoryMax=6G -p ManagedOOMPreference=avoid ')
     })
   })
 
   // Без systemd (macOS, docker-стенд) префикс превращал запуск в «systemctl not found»,
   // и топик молча оставался без сессии — capability нет, значит и обёртки нет.
+  // Мёртвый scope имя не освобождает: зомби в его cgroup держит unit, а stop/reset-failed на
+  // такой husk не действуют (хост, 27.08). Занятое имя валило подъём топика целиком.
+  test('имя scope занято husk-ой — берём соседнее, а не падаем', async () => {
+    const taken = new Set(['tgc-100-7.scope', 'tgc-100-7-2.scope'])
+    const isLoaded = async (unit: string) => taken.has(unit)
+    expect(await freeScopeUnitName('-100/7', { isLoaded })).toBe('tgc-100-7-3.scope')
+    expect(await freeScopeUnitName('-100/7', { isLoaded: async () => false })).toBe('tgc-100-7.scope')
+  })
+
+  test('все имена заняты — возвращаем базовое, запуск решает systemd', async () => {
+    expect(await freeScopeUnitName('-100/7', { isLoaded: async () => true, limit: 3 })).toBe('tgc-100-7.scope')
+  })
+
   test('systemd-run недоступен — кап молча отключается, а не ломает запуск', () => {
     withEnv({ TELEGRAM_MEMORY_MAX: '6G', TELEGRAM_MEMORY_SLICE: 'tgc-agents' }, () => {
-      expect(memoryCapPrefix('-100/7', null)).toBe('')
+      expect(memoryCapPrefix('tgc-100-7.scope', null)).toBe('')
     })
   })
 
   test('со slice сессии делят общий бюджет, своп не запрещаем', () => {
     withEnv({ TELEGRAM_MEMORY_MAX: '6G', TELEGRAM_MEMORY_SLICE: 'tgc-agents' }, () => {
-      const cmd = memoryCapPrefix('-100/7')
+      const cmd = memoryCapPrefix(scopeUnitName('-100/7'))
       expect(cmd).toContain('--slice=tgc-agents')
       expect(cmd).not.toContain('MemorySwapMax')
     })

@@ -29,6 +29,7 @@ import {
   type LaunchMode,
   memoryCapPrefix,
   reapDeadScopes,
+  freeScopeUnitName,
   capturePane, capturePaneAnsi, type OpsCommand,
 } from './tmux-ops'
 import { ansiToImage } from './ansi-image'
@@ -3134,7 +3135,10 @@ async function spawnSession(
     chatter(t().sessionFolder(codePath(binding.dir)))
     const envPrefix = adapter.launchEnvPrefix([key])
     await reapDeadScopes(log) // тёзка мог остаться от прошлой сессии — systemd-run на занятое имя не встанет
-    await typeLine(`=${name}:`, `cd ${shellQuote([binding.dir])} && ${envPrefix} ${memoryCapPrefix(key)}${launch}`)
+    // ...а если тёзку не погасить (зомби в cgroup держит unit), берём соседнее имя: подняться
+    // под `-2` лучше, чем не подняться вовсе.
+    const scopeUnit = await freeScopeUnitName(key)
+    await typeLine(`=${name}:`, `cd ${shellQuote([binding.dir])} && ${envPrefix} ${memoryCapPrefix(scopeUnit)}${launch}`)
     launchIssued = true
     armBringUp(key) // с этой секунды подъём под сторожем — снимет его handshake стаба
     // A broken launch must not wedge future retries forever. Successful launches
