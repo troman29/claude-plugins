@@ -189,6 +189,7 @@ Send <code>/last</code> to see its terminal, or <code>/restart</code>.`,
     'The topic is still open; its next message will offer setup again.',
   deleteKeptOnCleanupFail:
     '🛑 <b>Nothing was touched</b> — the cleanup failed, and tearing the topic down over a live worktree would kill the session and leave the stand running. Fix the cause and retry, or delete anyway — the worktree and its stand then stay on disk.',
+  queuedDropped: (n: number) => `\n💤 ${n} held message(s) never reached the session — they are gone with the binding.`,
   teardownForced: '\n⚠️ Forced: the cleanup failed, so the worktree and its stand are still on disk — remove them by hand.',
 
   // ── stand up/down ──

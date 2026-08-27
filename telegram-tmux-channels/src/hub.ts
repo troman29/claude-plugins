@@ -3314,8 +3314,11 @@ async function teardownBinding(
   }
   delete reg[key]
   saveBindings(reg)
+  // Придержанное считаем ДО чистки: доставить его больше некуда, но и молча терять сообщение
+  // Ромы нельзя — он о нём помнит и ждёт ответа.
+  const held = liveQueue(key).length
   purgeBindingInteractions(key)
-  note = cleanup + (cleanup ? '\n' : '') + note
+  note = cleanup + (cleanup ? '\n' : '') + note + (held ? L.queuedDropped(held) : '')
   // The hub created this tmux session (spawnSession) — it owns tearing it down, any mode.
   const name = sessionName(key, binding)
   if (await hasTmuxSession(name)) {
@@ -3327,6 +3330,10 @@ async function teardownBinding(
 
 
 function purgeBindingInteractions(key: string): void {
+  // Очередь принадлежит биндингу: переживёт его — при следующем `/bind` этого же топика сядет
+  // в чужую сессию. Чистим и в памяти, и на диске: иначе она вернётся рестартом хаба.
+  queuedMessages.delete(key)
+  stateRepo.delQueued(key)
   statusPost.forget(key)
   statusState.delete(key)
   bgPost.forget(key)
@@ -3743,6 +3750,13 @@ function reviveInbound(value: PersistedInbound): Inbound {
 }
 
 for (const [key, values] of stateRepo.queuedEntries()) {
+  // Очередь отвязанного топика доставлять некуда: биндинга нет, а при повторном `/bind` этого
+  // же топика она села бы в чужую сессию. Такое остаётся от подъёма, упавшего перед `/delete`.
+  if (!loadBindings()[key]) {
+    log(`queue: ${key} — биндинга нет, выбрасываю ${values.length} придержанных сообщ.`)
+    stateRepo.delQueued(key)
+    continue
+  }
   queuedMessages.set(key, values.map(reviveInbound))
   liveQueue(key) // протухшее с прошлого запуска не воскрешаем — топик уехал дальше без него
 }
