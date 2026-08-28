@@ -9,6 +9,31 @@ import { InteractionRegistry } from '../src/interaction-registry'
 const picker: Picker = { title: 'Pick one', options: [{ index: 0, label: 'A' }, { index: 1, label: 'B' }], hash: 'abc123', mode: 'single' }
 const tmp = () => mkdtempSync(join(tmpdir(), 'hubstate-'))
 
+// Очередь — единственная структура, чей смысл в переживании рестарта. С обычной отложенной
+// записью сообщение, положенное перед подъёмом сессии, терялось, если хаб перезапускали внутри
+// окна задержки (28.08, топик 8505: раскат совпал с подъёмом).
+describe('очередь придержанных сообщений', () => {
+  const inbound = (text: string) => ({ text, chatId: '-100', threadId: 7, senderId: '1', at: 1_787_000_000_000 })
+
+  test('пишется на диск сразу, без ожидания flush', () => {
+    const dir = tmp()
+    const a = new HubStateRepository(() => {}, dir)
+    a.setQueued('-100/7', [inbound('не потеряй меня')])
+
+    // второй репозиторий читает файл — никакого flush между ними не было
+    const b = new HubStateRepository(() => {}, dir)
+    expect(Object.fromEntries(b.queuedEntries())['-100/7']?.[0]?.text).toBe('не потеряй меня')
+  })
+
+  test('удаление тоже уходит на диск сразу', () => {
+    const dir = tmp()
+    const a = new HubStateRepository(() => {}, dir)
+    a.setQueued('-100/7', [inbound('доставлено')])
+    a.delQueued('-100/7')
+    expect(new HubStateRepository(() => {}, dir).queuedEntries()).toEqual([])
+  })
+})
+
 describe('HubStateRepository picker persistence', () => {
   test('pickers survive a flush→reload round-trip', () => {
     const dir = tmp()

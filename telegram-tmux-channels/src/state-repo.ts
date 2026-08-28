@@ -97,8 +97,10 @@ export class HubStateRepository {
   setPendingMode(key: string, v: PersistedPendingMode): void { this.state.pendingModes[key] = v; this.schedule() }
   delPendingMode(key: string): void { delete this.state.pendingModes[key]; this.schedule() }
   queuedEntries(): [string, PersistedInbound[]][] { return Object.entries(this.state.queuedMessages) }
-  setQueued(key: string, v: PersistedInbound[]): void { this.state.queuedMessages[key] = v; this.schedule() }
-  delQueued(key: string): void { delete this.state.queuedMessages[key]; this.schedule() }
+  // Очередь пишем СРАЗУ, без обычной задержки в 300 мс: она и существует ради «не потерять
+  // сообщение при рестарте», а внутри окна задержки рестарт теряет ровно то, что положили.
+  setQueued(key: string, v: PersistedInbound[]): void { this.state.queuedMessages[key] = v; this.flush() }
+  delQueued(key: string): void { delete this.state.queuedMessages[key]; this.flush() }
   launchCaptureEntries(): [string, PersistedLaunchCapture][] { return Object.entries(this.state.launchCaptures) }
   setLaunchCapture(key: string, v: PersistedLaunchCapture): void { this.state.launchCaptures[key] = v; this.schedule() }
   delLaunchCapture(key: string): void { delete this.state.launchCaptures[key]; this.schedule() }

@@ -3947,6 +3947,16 @@ async function handleInbound(inbound: Inbound): Promise<void> {
   let conns = connsForBinding(key, binding.dir)
   if (conns.length === 0) {
     log(`reviving: key=${key} dir=${binding.dir} — no live session for an inbound message`)
+    // Кладём в очередь ДО подъёма. Подъём — это секунды, а бывает и минуты, и всё это время
+    // сообщение жило ТОЛЬКО в этом обработчике: рестарт хаба посреди подъёма терял его молча
+    // и без следа (28.08, топик 8505 — раскат совпал с подъёмом). Очередь лежит на диске и
+    // переживает рестарт, а доставит её тот же путь, что и всегда — flushQueued.
+    // Кроме случая, когда flushQueued нас и позвал: сообщение уже его, вторая копия в очереди
+    // прочитается разгрузчиком как «не отдалось, верните в очередь» — и доставится ДВАЖДЫ.
+    const queuedByFlush = flushing.has(key)
+    if (!queuedByFlush) {
+      enqueueForTopic(key, inbound)
+    }
     // Idle-unloaded sessions wake with ONE quiet line (no spawnSession chatter); a genuine
     // cold revive keeps the normal verbose say so the user sees what's happening.
     if (wasIdle) {
@@ -3970,11 +3980,19 @@ async function handleInbound(inbound: Inbound): Promise<void> {
     if (conns.length === 0) {
       // Подъём бывает и минутами (стартовая модалка, тяжёлый резюм). Сообщение не теряем:
       // придерживаем, стаб на подключении сам вызовет flushQueued.
-      enqueueForTopic(key, inbound)
+      if (queuedByFlush) {
+        enqueueForTopic(key, inbound)
+      }
       if (!heldNotice.has(key)) {
         heldNotice.add(key)
         say(t().sessionSlowHeld)
       }
+      return
+    }
+    if (!queuedByFlush) {
+      // Сессия поднялась — отдаём очередь целиком (в ней и это сообщение, и всё, что пришло
+      // следом). Гонки с flushQueued от подключившегося стаба нет: у него одиночный замок.
+      await flushQueued(key)
       return
     }
     // Ждать пейн и перерезолвить conn не нужно — это делает deliverMessage перед самой отправкой.
