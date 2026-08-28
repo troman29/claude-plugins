@@ -5229,22 +5229,56 @@ bot.on('my_chat_member', ctx => {
   recordChat(String(ctx.chat.id), ctx.chat.type, chatLabel(ctx.chat), new Date().toISOString())
 })
 
-bot.on('message:forum_topic_created', ctx => {
-  const chat_id = String(ctx.chat.id)
-  const cfg = loadTrustedGroups()[chat_id]
-  if (!cfg) {
-    return
+// Свежесозданный топик Telegram отдаёт не сразу готовым к записи: первый `sendMessage` в него
+// изредка отбивается. Молча проглоченная ошибка выглядела как «на этот топик почему-то вопроса
+// не пришло» — одна попытка через паузу и запись в лог в любом исходе.
+const TOPIC_PROMPT_RETRY_MS = 2_000
+
+async function askTopicMode(
+  opts: { chatId: string; threadId: number; key: string; cfg: TrustedGroupConfig },
+): Promise<void> {
+  const { chatId, threadId, key, cfg } = opts
+  const send = () => bot.api.sendMessage(chatId, modePromptText(cfg, t().howRaiseTopic), {
+    message_thread_id: threadId,
+    parse_mode: 'HTML',
+    reply_markup: modeKeyboard(key, cfg),
+  })
+  try {
+    await send()
+  } catch (first) {
+    log(`topic created: ${key} — вопрос не ушёл (${first}), повторяю через ${TOPIC_PROMPT_RETRY_MS} мс`)
+    await new Promise(r => setTimeout(r, TOPIC_PROMPT_RETRY_MS))
+    try {
+      await send()
+    } catch (second) {
+      // Дальше сторожа нет: топик останется без вопроса, и следующий месседж Ромы поднимет
+      // его поздним путём. Строка в логе — единственный след, по которому это видно.
+      log(`topic created: ${key} — вопрос не ушёл и со второй попытки: ${second}`)
+    }
   }
+}
+
+bot.on('message:forum_topic_created', async ctx => {
+  const chat_id = String(ctx.chat.id)
   const threadId = ctx.message.message_thread_id ?? ctx.message.message_id
   const topicName = ctx.message.forum_topic_created.name
+  const cfg = loadTrustedGroups()[chat_id]
   recordTopic(chat_id, threadId, topicName, new Date().toISOString())
-  if (isExcludedTopic(cfg, threadId, topicName)) {
+  const key = messageKey({ chatType: ctx.chat.type, chatId: chat_id, threadId })
+  // Эта ветка — единственный источник «вопроса сразу при создании топика», и до 28.08 она не
+  // писала в лог НИЧЕГО: почему в конкретном топике вопроса не было, восстановить было нечем.
+  if (!cfg) {
+    log(`topic created: ${key} «${topicName}» — группа не в доверенных, режим не спрашиваю`)
     return
   }
-  const key = messageKey({ chatType: ctx.chat.type, chatId: chat_id, threadId })
+  if (isExcludedTopic(cfg, threadId, topicName)) {
+    log(`topic created: ${key} «${topicName}» — в exclude группы, режим не спрашиваю`)
+    return
+  }
   // Топик мог создать сам хаб уже с папкой (/fork) — спрашивать нечего. Гонки нет: /fork
   // пишет binding без единого await после createForumTopic, апдейт обрабатывается позже.
   if (loadBindings()[key]) {
+    log(`topic created: ${key} «${topicName}» — уже привязан, режим не спрашиваю`)
     return
   }
   const say = (html: string) =>
@@ -5254,14 +5288,9 @@ bot.on('message:forum_topic_created', ctx => {
 
   // Always ask, even with a single mode: otherwise the topic silently starts in the default folder
   // and there's no way to pick another (and autostart also races with a manual /resume).
+  log(`topic created: ${key} «${topicName}» — спрашиваю режим`)
   armMode(key, { cfg, topicName, say }, chat_id, threadId)
-  void bot.api
-    .sendMessage(chat_id, modePromptText(cfg, t().howRaiseTopic), {
-      message_thread_id: threadId,
-      parse_mode: 'HTML',
-      reply_markup: modeKeyboard(key, cfg),
-    })
-    .catch(() => {})
+  await askTopicMode({ chatId: chat_id, threadId, key, cfg })
 })
 
 // renames — group title arrives as a service message, a topic's only ever here
