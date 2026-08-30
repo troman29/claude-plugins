@@ -1557,19 +1557,33 @@ function buildSkillMap(skills: Skill[]): Map<string, string> {
 }
 
 /** Скилл могли поставить уже после старта хаба: карта строится на старте, установка — нет.
- *  Промах — повод пересканировать, а не отправлять в пейн заведомо неизвестную команду. */
+ *  Промах — повод пересканировать, а не отправлять в пейн заведомо неизвестную команду.
+ *
+ *  Но ЖДАТЬ скан на пути доставки нельзя: он спрашивает `claude plugin details` про каждый
+ *  плагин, по 20 с таймаута на каждый. 30.08 `/subtask` (встроенная команда агента, хабу она
+ *  неизвестна в принципе) пролежал так 37 секунд, и это выглядело как зависший агент. Ждём
+ *  коротко; не успел — печатаем имя как есть, карта дообновится в фоне к следующей команде. */
+const SKILL_RESCAN_WAIT_MS = 2_000
+
 async function resolveSkillFresh(name: string, projectSkills: Skill[]): Promise<string> {
   const known = resolveSkillCommand(name, globalSkillMap, projectSkills)
   if (known !== name || Date.now() - lastSkillRescan < SKILL_RESCAN_MIN_GAP_MS) {
     return known
   }
   lastSkillRescan = Date.now()
-  const scanned = await discoverGlobalSkills().catch(() => undefined)
-  if (scanned?.skills.length) {
-    globalSkillMap = buildSkillMap(scanned.skills)
-  }
-  const fresh = resolveSkillCommand(name, globalSkillMap, projectSkills)
-  log(`skill map rescanned on miss: ${name} → ${fresh}${fresh === name ? ' (так и не нашёлся)' : ''}`)
+  const rescan = discoverGlobalSkills()
+    .then(scanned => {
+      if (scanned.skills.length) {
+        globalSkillMap = buildSkillMap(scanned.skills)
+      }
+      return true
+    })
+    .catch(() => false)
+  const inTime = await Promise.race([rescan, new Promise<false>(r => setTimeout(() => r(false), SKILL_RESCAN_WAIT_MS))])
+  const fresh = inTime ? resolveSkillCommand(name, globalSkillMap, projectSkills) : name
+  log(`skill map rescan on miss: ${name} → ${fresh}${
+    !inTime ? ' (скан не успел, печатаю как есть)' : fresh === name ? ' (так и не нашёлся)' : ''
+  }`)
   return fresh
 }
 
