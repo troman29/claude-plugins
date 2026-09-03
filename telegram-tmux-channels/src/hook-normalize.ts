@@ -65,8 +65,14 @@ export function normalizeHookMessage(
       agentType: String(data.agent_type ?? 'agent'),
     }
   } else {
+    // SubagentStop приходит НЕ только на конец агента: пока сабагент работает, Claude Code шлёт
+    // то же событие каждые ~30 с как отметку прогресса — со свежим случайным `agent_id`, ПУСТЫМ
+    // `agent_type` и промежуточной строкой в `last_assistant_message` («Reading AGENTS.md…»).
+    // Настоящий конец отличается непустым типом (замер 03.09: 5 тиков и 1 настоящий стоп).
+    // Тики стоили 445 событий в час на одного живого агента: сокет и процесс хука на каждое.
     const agentId = String(data.agent_id ?? '')
-    if (agentId) msg = { op: 'subagent', action: 'stop', bindingKeys, agentId }
+    const agentType = String(data.agent_type ?? '')
+    if (agentId && agentType) msg = { op: 'subagent', action: 'stop', bindingKeys, agentId }
   }
 
   const sessionId = String(data.session_id ?? '')

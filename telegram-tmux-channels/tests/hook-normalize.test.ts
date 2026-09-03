@@ -24,6 +24,21 @@ describe('cross-agent hook normalization', () => {
     expect(normalizeHookMessage('codex-skill', { prompt: 'ordinary prompt' }, keys)).toBeUndefined()
   })
 
+  // Пока сабагент работает, Claude Code шлёт SubagentStop каждые ~30 с как отметку прогресса:
+  // свежий случайный agent_id, пустой agent_type, промежуточная last_assistant_message. Такие
+  // тики давали 445 событий в час на одного агента — по сокету и процессу хука на каждое.
+  test('тик прогресса (пустой agent_type) не считается остановкой агента', () => {
+    expect(normalizeHookMessage('stop', { session_id: 's9', agent_id: 'ad28e971ec2ee0f20', agent_type: '' }, keys))
+      .toBeUndefined()
+    expect(normalizeHookMessage('stop', { session_id: 's9', agent_id: 'ad28e971ec2ee0f20' }, keys))
+      .toBeUndefined()
+  })
+
+  test('настоящая остановка — с типом агента', () => {
+    expect(normalizeHookMessage('stop', { session_id: 's9', agent_id: 'abf77a16ad73aec95', agent_type: 'general-purpose' }, keys))
+      .toEqual({ op: 'subagent', action: 'stop', bindingKeys: keys, agentId: 'abf77a16ad73aec95', sessionId: 's9' })
+  })
+
   test('Codex compaction hooks retain deterministic lifecycle and trigger', () => {
     expect(normalizeHookMessage('compaction-start', { session_id: 's4', trigger: 'auto' }, keys))
       .toEqual({ op: 'compaction', phase: 'start', bindingKeys: keys, trigger: 'auto', sessionId: 's4' })
