@@ -37,7 +37,7 @@ import { deserializeStatus, emptyStatus, hasLiveWork, renderBg, renderStatus, se
 import { discoverGlobalSkills, discoverProjectSkills, mangleCmd, resolveSkillCommand, skillInvocation, tgDescription, type Skill } from './skills'
 import { agentPidsInDir, cmdlineOf } from './proc'
 import { bySendTime, clampLines, rmQuiet } from './util'
-import { parsePicker, CHAT_ABOUT_INDEX, checkedIndexes, pickerCursorIndex, textBeforePicker, parseResumeList, fnv1a, hasPickerFooter, isStartupTrustPrompt, isCodexStartupTrustScreen, isCodexHooksTrustScreen, isCodexOwnToolApproval, type Picker, type ResumeRow } from './picker'
+import { parsePicker, CHAT_ABOUT_INDEX, checkedIndexes, pickerCursorIndex, textBeforePicker, parseResumeList, fnv1a, hasPickerFooter, isStartupTrustPrompt, trustOptionIndex, isCodexStartupTrustScreen, isCodexHooksTrustScreen, isCodexOwnToolApproval, type Picker, type ResumeRow } from './picker'
 import { buildKeyboard, downsToChatAbout, parseCallback } from './picker-drive'
 import {
   loadTrustedGroups, isExcludedTopic, slugFromTopicName, modeLabel,
@@ -871,7 +871,14 @@ async function ackStartupPrompt(pane: string, picker: Picker, identity = pane): 
     return
   }
   autoAcked.set(identity, { hash: picker.hash, at: Date.now() })
-  log(`startup prompt auto-acked on ${pane}: ${picker.title.slice(0, 48)}`)
+  // Голый Enter жмёт то, на чём стоит курсор. В безномерном гейте Claude Code курсор стоит на
+  // «No, exit» — такой «ack» закрыл бы запуск вместо подтверждения. Встаём на нужный пункт.
+  const trust = trustOptionIndex(picker)
+  const downs = picker.cursorIndex != null && trust != null ? trust - picker.cursorIndex : 0
+  log(`startup prompt auto-acked on ${pane}: ${picker.title.slice(0, 48)}${downs > 0 ? ` (вниз ${downs})` : ''}`)
+  for (let i = 0; i < downs; i++) {
+    await sendKeys(pane, 'Down').catch(() => {})
+  }
   await sendKeys(pane, 'Enter').catch(() => {})
 }
 

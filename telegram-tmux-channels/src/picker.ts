@@ -27,6 +27,8 @@ export type Picker = {
   options: PickerOption[]
   mode: 'single' | 'multi'
   customIndex?: number
+  /** Где стоит курсор — только у безномерной раскладки: жать её можно лишь стрелками. */
+  cursorIndex?: number
   hash: string
 }
 
@@ -192,7 +194,87 @@ export function joinWrappedOptions(lines: string[]): string[] {
 // Parse only the picker box: scan UPWARD from the footer, collecting the option
 // block and (up to MAX_TITLE_LINES of) the title above it. Content further up the
 // screen (scrollback, prior agent output with its own numbered lists) is ignored.
+// Стартовый гейт доверия Claude Code рисует варианты БЕЗ номеров — только курсором:
+//   ❯ No, exit
+//     Yes, I trust this folder
+// Нумерованный разбор такой экран не видит вовсе, и 05.09 топик ion-wallet не поднялся ни разу:
+// ни кнопок в чате, ни авто-ответа, а пейн держал незапустившийся claude. Разбираем такой блок
+// отдельно и НАРОЧНО узко: строки идут подряд прямо над футером, ровно одна помечена курсором.
+const CURSOR_LINE_RE = /^(\s*)[❯›]\s+(\S.*)$/
+const PLAIN_LINE_RE = /^(\s*)(\S.*)$/
+const CURSOR_OPTS_MAX = 8
+const CURSOR_LABEL_MAX = 120
+
+function parseCursorPicker(text: string): Picker | undefined {
+  const lines = text.split('\n')
+  let footerIdx = -1
+  for (let n = lines.length - 1; n >= 0; n--) {
+    if (isPickerFooterLine(lines[n]!)) {
+      footerIdx = n
+      break
+    }
+  }
+  if (footerIdx < 0 || hasLiveInputBelow(lines, footerIdx)) {
+    return undefined
+  }
+  let i = footerIdx - 1
+  while (i >= 0 && !lines[i]!.trim()) {
+    i-- // между футером и вариантами бывает пустая строка
+  }
+  const block: { label: string; cursor: boolean }[] = []
+  for (; i >= 0 && block.length < CURSOR_OPTS_MAX; i--) {
+    const line = lines[i]!
+    const trimmed = line.trim()
+    if (!trimmed) {
+      break // пустая строка отделяет варианты от текста над ними
+    }
+    if (isSeparator(trimmed) || isChrome(trimmed)) {
+      break
+    }
+    const cursor = CURSOR_LINE_RE.exec(line)
+    const label = (cursor?.[2] ?? trimmed).trim()
+    if (!label || label.length > CURSOR_LABEL_MAX) {
+      return undefined
+    }
+    block.unshift({ label, cursor: !!cursor })
+  }
+  const withCursor = block.filter(o => o.cursor)
+  if (block.length < 2 || withCursor.length !== 1) {
+    return undefined
+  }
+  const titleParts: string[] = []
+  for (; i >= 0 && titleParts.length < MAX_TITLE_LINES; i--) {
+    const trimmed = lines[i]!.trim()
+    if (!trimmed) {
+      if (titleParts.length) break
+      continue
+    }
+    if (isSeparator(trimmed) || isChrome(trimmed)) {
+      break
+    }
+    titleParts.unshift(trimmed.replace(TITLE_GUTTER_RE, ''))
+  }
+  const options = block.map((o, index) => ({ index: index + 1, label: o.label }))
+  return {
+    title: titleParts.join(' ').trim(),
+    options,
+    mode: 'single',
+    cursorIndex: block.findIndex(o => o.cursor) + 1,
+    hash: fnv1a(options.map(o => o.label).join('|')),
+  }
+}
+
+/** Пункт «доверяю этой папке» — на него надо ВСТАТЬ курсором: по умолчанию он не выбран. */
+export function trustOptionIndex(picker: Picker): number | undefined {
+  return picker.options.find(o => /I trust this folder|I am using this for local development|^Yes, (proceed|continue)$/i.test(o.label))?.index
+}
+
+/** Разбор списка выбора: сперва обычный нумерованный, затем безномерной (стартовый гейт). */
 export function parsePicker(text: string): Picker | undefined {
+  return parseNumberedPicker(text) ?? parseCursorPicker(text)
+}
+
+function parseNumberedPicker(text: string): Picker | undefined {
   const lines = text.split('\n')
   let lastIdx = lines.length - 1
   while (lastIdx >= 0 && !lines[lastIdx].trim()) {

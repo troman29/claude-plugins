@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'fs'
 import { join } from 'path'
-import { parsePicker, textBeforePicker, checkedIndexes, pickerCursorIndex, parseResumeList, paneReady, isStartupTrustPrompt, isCodexStartupTrustScreen, isCodexHooksTrustScreen, isCodexOwnToolApproval } from '../src/picker'
+import { parsePicker, trustOptionIndex, textBeforePicker, checkedIndexes, pickerCursorIndex, parseResumeList, paneReady, isStartupTrustPrompt, isCodexStartupTrustScreen, isCodexHooksTrustScreen, isCodexOwnToolApproval } from '../src/picker'
 
 const fx = (name: string) => readFileSync(join(import.meta.dir, 'fixtures', name), 'utf8')
 
@@ -266,5 +266,26 @@ describe('разрешение на свой MCP-тул', () => {
 
   test('без пункта «Always allow» не жмём вслепую', () => {
     expect(isCodexOwnToolApproval(ask.split('\n').filter(l => !l.includes('3. Always allow')).join('\n'))).toBe(false)
+  })
+})
+
+// Стартовый гейт доверия Claude Code рисует варианты БЕЗ номеров, только курсором. Нумерованный
+// разбор его не видел вовсе: 05.09 топик ion-wallet не поднялся — ни кнопок в чате, ни авто-ответа,
+// а пейн держал незапустившийся claude, и все сообщения Ромы уходили в очередь.
+describe('безномерной стартовый гейт', () => {
+  const picker = parsePicker(fx('claude-trust-unnumbered.txt'))
+
+  test('разбирается в два варианта с курсором на первом', () => {
+    expect(picker?.options.map(o => o.label)).toEqual(['No, exit', 'Yes, I trust this folder'])
+    expect(picker?.cursorIndex).toBe(1)
+  })
+
+  test('опознаётся как trust-промпт, а доверие — ВТОРОЙ пункт', () => {
+    expect(isStartupTrustPrompt(picker!)).toBe(true)
+    expect(trustOptionIndex(picker!)).toBe(2)
+  })
+
+  test('обычный текст под футером пикером не становится', () => {
+    expect(parsePicker('Готово.\nВсё сделано.\n\n Enter to confirm · Esc to cancel')).toBeUndefined()
   })
 })
