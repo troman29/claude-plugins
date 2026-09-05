@@ -34,6 +34,13 @@ describe('cross-agent hook normalization', () => {
       .toBeUndefined()
   })
 
+  // Агентов воркфлоу хаб не отслеживает (старт пропускает, имя берёт из пейна) — их остановка
+  // доезжала только чтобы лечь строкой «found=false»: 144 за час на один прогон (05.09).
+  test('остановка агента воркфлоу до хаба не едет', () => {
+    expect(normalizeHookMessage('stop', { session_id: 's9', agent_id: 'aa19564dc2a6ed2e2', agent_type: 'workflow-subagent' }, keys))
+      .toBeUndefined()
+  })
+
   test('настоящая остановка — с типом агента', () => {
     expect(normalizeHookMessage('stop', { session_id: 's9', agent_id: 'abf77a16ad73aec95', agent_type: 'general-purpose' }, keys))
       .toEqual({ op: 'subagent', action: 'stop', bindingKeys: keys, agentId: 'abf77a16ad73aec95', sessionId: 's9' })

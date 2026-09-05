@@ -61,6 +61,7 @@ import { AnswerStream } from './answer-stream'
 import { literalSendText } from './literal-send'
 import { isHeldTooLong, isLivePaneKey, screenPollMs, uniqueByPane } from './screen-poll'
 import { startupAckKey } from './startup-ack'
+import { WORKFLOW_SUBAGENT } from './hook-normalize'
 import { replyContext, type ReplyContext } from './reply-context'
 
 const log = (s: string) => process.stderr.write(`telegram hub: ${s}\n`)
@@ -1867,7 +1868,7 @@ async function handleSubagentEvent(msg: Extract<StubToHub, { op: 'subagent' }>):
   // workflow agents carry no name in the hook (only "workflow-subagent") — their status comes
   // from the pane-scraped workflow line (handleWorkflow) with the real name, so skip them here
   // to avoid a duplicate generic "🤖 Agents" message.
-  if (msg.action === 'start' && msg.agentType === 'workflow-subagent') {
+  if (msg.action === 'start' && msg.agentType === WORKFLOW_SUBAGENT) {
     return
   }
   for (const key of msg.bindingKeys) {

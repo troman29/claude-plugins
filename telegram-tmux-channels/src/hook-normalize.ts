@@ -5,6 +5,9 @@ export type HookMode =
   | 'task-create' | 'task-update' | 'skill' | 'todo' | 'bg'
   | 'codex-plan' | 'codex-skill' | 'compaction-start' | 'compaction-done'
 
+/** Тип агента, которого поднимает Workflow: хаб их не отслеживает — статус берётся из пейна. */
+export const WORKFLOW_SUBAGENT = 'workflow-subagent'
+
 export function normalizeHookMessage(
   mode: HookMode,
   data: Record<string, unknown>,
@@ -72,7 +75,12 @@ export function normalizeHookMessage(
     // Тики стоили 445 событий в час на одного живого агента: сокет и процесс хука на каждое.
     const agentId = String(data.agent_id ?? '')
     const agentType = String(data.agent_type ?? '')
-    if (agentId && agentType) msg = { op: 'subagent', action: 'stop', bindingKeys, agentId }
+    // Агентов воркфлоу хаб не отслеживает вовсе (их старт он пропускает — имя приходит скрейпом
+    // пейна), значит и остановку сопоставлять не с чем: она доезжает до хаба только чтобы лечь
+    // строкой «found=false». Один прогон воркфлоу давал 144 таких за час (05.09, habebe-trader).
+    if (agentId && agentType && agentType !== WORKFLOW_SUBAGENT) {
+      msg = { op: 'subagent', action: 'stop', bindingKeys, agentId }
+    }
   }
 
   const sessionId = String(data.session_id ?? '')
