@@ -607,10 +607,13 @@ function scopeOfPid(pid: number): string | undefined {
   }
 }
 
+/** `unattended` — остановку затеял сам хаб, человека у чата нет: на вопрос о фоновых задачах
+ *  отвечаем сразу, без окна на кнопки. Пикер для такого пейна хаб в чат не выносит. */
 export async function stopSession(
   pane: string,
   pid: number,
   log: (s: string) => void,
+  opts: { unattended?: boolean } = {},
 ): Promise<boolean> {
   log(`stop: pane=${pane} pid=${pid}`)
   const scope = scopeOfPid(pid) // читаем ДО убийства: у мёртвого pid cgroup уже не спросишь
@@ -630,7 +633,8 @@ export async function stopSession(
   // anyway / Move to background / Stay") is surfaced to Telegram as buttons by
   // the hub's picker bridge — give the user EXIT_CONFIRM_GRACE_S to answer it
   // (and see what's running); unanswered → Enter confirms the preselected
-  // "1. Exit anyway".
+  // "1. Exit anyway". An unattended stop has nobody to wait for.
+  const graceS = opts.unattended ? 0 : EXIT_CONFIRM_GRACE_S
   let confirmSeenAt: number | undefined
   for (let i = 0; i < 30 && alive(pid); i++) {
     await sleep(1000)
@@ -645,8 +649,8 @@ export async function stopSession(
     }
     if (isExitConfirm(text)) {
       confirmSeenAt ??= i
-      if (i - confirmSeenAt >= EXIT_CONFIRM_GRACE_S) {
-        log('stop: confirm unanswered → Enter')
+      if (i - confirmSeenAt >= graceS) {
+        log(opts.unattended ? 'stop: unattended exit, background tasks → Enter' : 'stop: confirm unanswered → Enter')
         await sendKeys(pane, 'Enter')
         confirmSeenAt = undefined // reappearing dialog gets a fresh grace window
       }

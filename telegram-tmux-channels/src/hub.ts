@@ -1114,6 +1114,11 @@ async function tellAboutUnparsedModal(pane: string, session: SessionInfo, text: 
 }
 
 async function detectPicker(pane: string, session: SessionInfo, text: string): Promise<void> {
+  // Выгрузку по простою никто не ждёт: вопрос о выходе она отвечает сама, а кнопки в тихом
+  // топике только сделали бы его непрочитанным.
+  if (session.bindingKeys?.some(k => unloading.has(k))) {
+    return
+  }
   // Разрешение на наш собственный telegram-тул отвечаем сами и в чат не выносим: без него
   // агент не может ответить вовсе, а пользователь получал бы вопрос на каждую реплику.
   if (isCodexOwnToolApproval(text)) {
@@ -2431,7 +2436,7 @@ async function maybeIdleUnload(s: SessionInfo & { pane: string }, working: boole
   }
   unloading.add(key)
   expectedDisconnect.add(key) // so the stub close isn't reported as a 💀 death
-  const ok = await stopSession(s.pane, s.pid, log).catch(() => false)
+  const ok = await stopSession(s.pane, s.pid, log, { unattended: true }).catch(() => false)
   if (ok) {
     // no suspend message by design (any new message marks the topic unread) — only the wake
     // line is sent, on revive. State stays visible in /status and on the dashboard.

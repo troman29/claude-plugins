@@ -356,6 +356,10 @@ An idle Claude session still holds ~0.5 GB with its MCP children. Set
 no messages, no terminal activity, not mid-turn. Your next message brings the session back with
 its full history (`--resume`), announced by one quiet line.
 
+Background shells still running at that moment stop with the session: the bot answers Claude
+Code's "Background work is running" question itself instead of posting it to a topic nobody is
+watching. A manual `/stop` still shows you that question as buttons.
+
 `/pin` exempts a topic. Unset (the default) means the plugin never stops anything.
 
 **A session with a live cron or loop is kept awake by itself.** Claude Code reports the
