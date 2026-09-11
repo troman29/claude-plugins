@@ -384,6 +384,8 @@ export async function paneCurrentCommand(pane: string): Promise<string> {
 const TYPE_ENTER_GAP_MS = 500
 // Seconds the user gets to answer the exit-confirm via Telegram buttons.
 export const EXIT_CONFIRM_GRACE_S = 10
+// Сколько строк пейна печатать в лог, когда остановка не удалась: хватает, чтобы узнать модалку.
+const STOP_FAIL_TAIL_LINES = 6
 
 // Claude Code 2.1.233 renamed the first choice from "Exit anyway" to
 // "Exit and stop tasks".  Both mean that Enter accepts the safe default and
@@ -391,6 +393,14 @@ export const EXIT_CONFIRM_GRACE_S = 10
 // revision's wording.
 export function isExitConfirm(text: string): boolean {
   return text.includes('Exit anyway') || text.includes('Exit and stop tasks')
+}
+
+/** Модалка выхода «You have 1 unsent feedback draft — Enter to review & send · Esc to discard
+ *  and exit». Выход затевает хаб, у терминала никого нет, а отправлять фидбэк без человека
+ *  нельзя — значит единственный допустимый ответ Esc. Без него сессия застывает в модалке:
+ *  сообщения рисуются в пейне, ход не начинается, а хаб честно пишет «доставлено». */
+export function isFeedbackDraftPrompt(text: string): boolean {
+  return text.includes('unsent feedback draft')
 }
 
 export async function typeLine(pane: string, text: string): Promise<void> {
@@ -627,6 +637,11 @@ export async function stopSession(
       break
     }
     const text = await capturePane(pane).catch(() => '')
+    if (isFeedbackDraftPrompt(text)) {
+      log('stop: unsent feedback draft on exit → Esc (discard)')
+      await sendKeys(pane, 'Escape')
+      continue
+    }
     if (isExitConfirm(text)) {
       confirmSeenAt ??= i
       if (i - confirmSeenAt >= EXIT_CONFIRM_GRACE_S) {
@@ -644,6 +659,10 @@ export async function stopSession(
     await sleep(6000)
   }
   if (alive(pid)) {
+    // Неудачная остановка оставляет пейн посреди сценария выхода: пусть лог сразу покажет, на
+    // чём встало, — иначе «stopped=false» приходится разбирать по живому пейну.
+    const tail = (await capturePane(pane).catch(() => '')).trim().split('\n').slice(-STOP_FAIL_TAIL_LINES).join(' ⏎ ')
+    log(`stop: still alive after exit sequence, pane tail: ${tail}`)
     return false
   }
   if (scope) {

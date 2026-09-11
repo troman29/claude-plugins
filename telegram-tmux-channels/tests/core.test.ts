@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { mkdtempSync, mkdirSync, rmSync } from 'fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync } from 'fs'
 import { tmpdir, homedir } from 'os'
 import { join } from 'path'
 import { messageKey, keyToTarget, targetFor } from '../src/bindings'
@@ -22,6 +22,7 @@ import {
   isHeadlessArgv,
   isIdleToUnload,
   isExitConfirm,
+  isFeedbackDraftPrompt,
   tmuxSessionName,
   transientScopeOf,
   scopeUnitName,
@@ -248,6 +249,15 @@ describe('tmux-ops', () => {
     expect(isExitConfirm('1. Exit anyway\n2. Stay')).toBe(true)
     expect(isExitConfirm('Background work is running\n1. Exit and stop tasks\n2. Stay')).toBe(true)
     expect(isExitConfirm('Would you like to run the following command?')).toBe(false)
+  })
+
+  // 11.09: хаб выгружал сессию по простою, Claude Code встал на выходе с вопросом про черновик
+  // фидбэка — и топик застыл на 20 минут: сообщения рисовались в пейне, ход не начинался.
+  test('isFeedbackDraftPrompt recognizes the exit modal that froze a topic', () => {
+    const pane = readFileSync(join(import.meta.dir, 'fixtures/claude-exit-feedback-draft.txt'), 'utf8')
+    expect(isFeedbackDraftPrompt(pane)).toBe(true)
+    expect(isExitConfirm(pane)).toBe(false) // это не диалог фоновых задач: Enter тут отправил бы фидбэк
+    expect(isFeedbackDraftPrompt('1. Exit anyway\n2. Stay')).toBe(false)
   })
 
   test('parseOpsCommand: commands, @botname, args, garbage', () => {
