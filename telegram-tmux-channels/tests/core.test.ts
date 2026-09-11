@@ -278,7 +278,8 @@ describe('tmux-ops', () => {
     expect(parseOpsCommand('/model')).toEqual({ cmd: 'model' })
     expect(parseOpsCommand('/stop')).toEqual({ cmd: 'stop' })
     expect(parseOpsCommand('/screen')).toEqual({ cmd: 'screen' })
-    expect(parseOpsCommand('/last')).toEqual({ cmd: 'last' })
+    expect(parseOpsCommand('/tui')).toEqual({ cmd: 'tui' })
+    expect(parseOpsCommand('/last')).toEqual({ cmd: 'tui' }) // прежнее имя /tui — привычка работает
     expect(parseOpsCommand('/pin')).toEqual({ cmd: 'pin' })
     expect(parseOpsCommand('/unpin')).toEqual({ cmd: 'unpin' })
     expect(parseOpsCommand('/stand_up')).toEqual({ cmd: 'stand_up' })

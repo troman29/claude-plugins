@@ -69,7 +69,7 @@ Code's TUI has room to render and `/screen` isn't a squashed 80×24 snapshot. Yo
 config is left alone — sessions are separate and named after the bound folder.
 
 Without tmux the channel still works (messages in, replies out), but everything that drives the
-terminal is gone: `/new`, `/resume`, `/restart`, `/compact`, `/screen`, `/last`, and the button
+terminal is gone: `/new`, `/resume`, `/restart`, `/compact`, `/screen`, `/tui`, and the button
 bridge for `AskUserQuestion` / `/model`.
 
 </details>
@@ -190,14 +190,14 @@ Sent in a bound topic or DM. These are handled by the bot and never reach the ag
 | Command | What it does |
 |---|---|
 | `/screen` | Live PNG of the terminal, refreshing every 5s, with a Close button |
-| `/last` | The same view as text — useful when you just want to read it |
+| `/tui` | The same view as text, with key buttons under it — arrows, `Esc`, a single `Ctrl-C` — for a terminal stuck on a screen the bot doesn't turn into buttons (a modal, a menu). `/last` still works as its old name |
 | `/skills` | Project skills of this folder, as tappable buttons |
 | `/stand_up` · `/stand_down` | Bring this project's dev stand up or down (see [project config](#per-project-config)) |
 | `/lang en\|ru` | Interface language, for the whole bot |
 | `/reload` | Re-scan plugin skills and refresh the bot's command list |
 
 Live views stop refreshing eventually — `/screen` after 3 minutes (each refresh re-uploads a photo),
-`/last` after 30; the message stays.
+`/tui` after 30; the message and its buttons stay.
 
 ## Who can use it
 

@@ -3,17 +3,18 @@
 
 export type OpsCommand =
   | 'compact' | 'clear' | 'esc' | 'enter' | 'restart' | 'resume' | 'new' | 'fork' | 'status' | 'doctor'
-  | 'bind' | 'unbind' | 'allow' | 'model' | 'stop' | 'screen' | 'last' | 'delete' | 'skills' | 'reload'
+  | 'bind' | 'unbind' | 'allow' | 'model' | 'stop' | 'screen' | 'tui' | 'delete' | 'skills' | 'reload'
   | 'stand_up' | 'stand_down' | 'pin' | 'unpin' | 'lang' | 'queue' | 'send'
 
 // `/q` — короткий алиас `/queue`: команда набирается на бегу, посреди чужого хода.
-const OPS_ALIASES: Record<string, OpsCommand> = { q: 'queue' }
+// /last — прежнее имя /tui: команду переименовали, привычку оставили работать.
+const OPS_ALIASES: Record<string, OpsCommand> = { q: 'queue', last: 'tui' }
 
 export function parseOpsCommand(
   text: string,
 ): { cmd: OpsCommand; bot?: string; arg?: string } | undefined {
   const m =
-    /^\/(compact|clear|esc|enter|restart|resume|new|fork|status|doctor|bind|unbind|allow|model|stop|screen|last|delete|skills|reload|stand_up|stand_down|pin|unpin|lang)(?:@(\w+))?(?:\s+(\S.*?))?\s*$/.exec(
+    /^\/(compact|clear|esc|enter|restart|resume|new|fork|status|doctor|bind|unbind|allow|model|stop|screen|tui|last|delete|skills|reload|stand_up|stand_down|pin|unpin|lang)(?:@(\w+))?(?:\s+(\S.*?))?\s*$/.exec(
       text.trim(),
     ) ??
     // Отдельным разбором, потому что аргумент `/queue` — текст задачи, и он бывает

@@ -44,6 +44,7 @@ import {
   type TrustedGroupConfig, type TrustedGroupMode,
 } from './trusted-groups'
 import { modeButtons } from './mode-picker'
+import { TUI_KEYS, isTuiKey, tuiButtons, tuiKeyLabel } from './tui-keys'
 import { t, getLang, setLang, type Lang } from './i18n'
 import { resolveModeDir, gitBranch, runHookDelete, removePlainWorktree, runStandCommand, worktreeHook, isLinkedWorktree, isPlainWorktreeDir } from './dir-resolve'
 import { PROJECT_CONFIG_FILE, parseStandLinks, standLogTail, worktreeBases } from './project-config'
@@ -1507,7 +1508,7 @@ function paneBelongsToKey(pane: string, key: string): boolean {
 // Command names are language-independent; descriptions come from the current lang table,
 // so the menu re-registers (with translated descriptions) whenever /lang switches.
 const OPS_NAMES = new Set([
-  'status', 'doctor', 'resume', 'screen', 'last', 'new', 'fork', 'skills', 'stand_up', 'stand_down',
+  'status', 'doctor', 'resume', 'screen', 'tui', 'new', 'fork', 'skills', 'stand_up', 'stand_down',
   'pin', 'unpin', 'reload', 'compact', 'clear', 'esc', 'enter', 'model', 'stop',
   'restart', 'bind', 'unbind', 'delete', 'allow', 'lang', 'send',
 ])
@@ -1518,7 +1519,7 @@ function opsCommands(): { command: string; description: string }[] {
     { command: 'doctor', description: L.cmd_doctor },
     { command: 'resume', description: L.cmd_resume },
     { command: 'screen', description: L.cmd_screen },
-    { command: 'last', description: L.cmd_last },
+    { command: 'tui', description: L.cmd_tui },
     { command: 'new', description: L.cmd_new },
     { command: 'fork', description: L.cmd_fork },
     { command: 'skills', description: L.cmd_skills },
@@ -2889,6 +2890,19 @@ const SCREEN_LIVE_MS = 3 * 60_000
 const LAST_LIVE_MS = 30 * 60_000 // /last — это editMessageText, ни рендера, ни заливки: живёт долго
 
 const closeKb = (token: string) => new InlineKeyboard().text(t().btnClose, `scrclose:${token}`)
+// /tui: под дайджестом кнопки клавиш — пейн, вставший на модалке, можно отжать из Telegram
+function tuiKb(token: string): InlineKeyboard {
+  const kb = new InlineKeyboard()
+  for (const row of tuiButtons(token, t().btnClose)) {
+    for (const button of row) {
+      kb.text(button.text, button.data)
+    }
+    kb.row()
+  }
+  return kb
+}
+// Пауза между нажатием и перерисовкой: TUI успевает отрисовать ответ на клавишу.
+const TUI_REFRESH_AFTER_KEY_MS = 600
 // live timestamp in the caption — so it's visibly "alive" even when the pane content is static
 const screenCap = (pane: string, note?: string) =>
   `🖥 <code>${escHtml(pane)}</code> · ${note ?? new Date().toLocaleTimeString('ru-RU')}`
@@ -2930,7 +2944,7 @@ function stopRefreshing(token: string): void {
   persistLiveScreen(token, v)
   if (v.kind === 'text') {
     void bot.api
-      .editMessageText(v.chatId, v.msgId, digestMsg(v.pane, paneDigest(v.lastText), t().updateStopped), { parse_mode: 'HTML', reply_markup: closeKb(token) })
+      .editMessageText(v.chatId, v.msgId, digestMsg(v.pane, paneDigest(v.lastText), t().updateStopped), { parse_mode: 'HTML', reply_markup: tuiKb(token) })
       .catch(() => {})
   } else {
     void bot.api
@@ -2956,7 +2970,7 @@ async function refreshLiveScreen(token: string): Promise<void> {
     v.lastText = text
     persistLiveScreen(token, v)
     await bot.api
-      .editMessageText(v.chatId, v.msgId, digestMsg(v.pane, paneDigest(text)), { parse_mode: 'HTML', reply_markup: closeKb(token) })
+      .editMessageText(v.chatId, v.msgId, digestMsg(v.pane, paneDigest(text)), { parse_mode: 'HTML', reply_markup: tuiKb(token) })
       .catch(() => {})
     return
   }
@@ -3009,7 +3023,7 @@ function resumeLiveScreens(): void {
 async function startLiveScreen(chatId: string, threadId: number | undefined, pane: string, bindingKey: string, kind: 'png' | 'text' = 'png'): Promise<void> {
   await closeAllLiveScreens() // ровно один живой экран на бота — новый гасит прежний
   const token = String(++screenSeq)
-  const kb = closeKb(token)
+  const kb = kind === 'text' ? tuiKb(token) : closeKb(token)
   const threadOpt = inTopic(threadId)
 
   if (kind === 'text') {
@@ -4932,7 +4946,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
     return
   }
 
-  if (cmd === 'compact' || cmd === 'clear' || cmd === 'esc' || cmd === 'enter' || cmd === 'restart' || cmd === 'model' || cmd === 'stop' || cmd === 'screen' || cmd === 'last') {
+  if (cmd === 'compact' || cmd === 'clear' || cmd === 'esc' || cmd === 'enter' || cmd === 'restart' || cmd === 'model' || cmd === 'stop' || cmd === 'screen' || cmd === 'tui') {
     // Одно и то же выполнение — сразу или после того, как пользователь ответит на вопрос,
     // с которым поднялась сессия.
     const runOnPanes = async (targets: typeof live) => {
@@ -4985,9 +4999,9 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
             if (msgId != null) {
               void bot.api.deleteMessage(chat_id, msgId).catch(() => {})
             }
-          } else if (cmd === 'last') {
+          } else if (cmd === 'tui') {
             // Same live view as /screen but text-only (paneDigest) — readable recent output +
-            // live bottom, no image render at all. Self-updating with a Close button.
+            // live bottom, no image render at all. Self-updating, with key buttons under it.
             await startLiveScreen(chat_id, threadId, s.pane, key, 'text')
             if (msgId != null) {
               void bot.api.deleteMessage(chat_id, msgId).catch(() => {})
@@ -5474,6 +5488,26 @@ bot.on('callback_query:data', async ctx => {
       await bot.api.deleteMessage(chatId, msgId).catch(() => {})
     }
     await ctx.answerCallbackQuery({ text: t().toastClosed }).catch(() => {})
+    return
+  }
+  const tk = /^tuikey:(\d+):(\w+)$/.exec(ctx.callbackQuery.data)
+  if (tk) {
+    const [, token, key] = tk
+    const view = liveScreens.get(token!)
+    if (!view || !isTuiKey(key!) || !paneBelongsToKey(view.pane, view.bindingKey)) {
+      await ctx.answerCallbackQuery({ text: t().toastScreenStale }).catch(() => {})
+      return
+    }
+    // Клавиша в пейн — то же, что сообщение агенту, поэтому и права те же.
+    const sender = String(ctx.from.id)
+    if (!isAdmin(sender) && !loadBindings()[view.bindingKey]?.allow?.includes(sender)) {
+      await ctx.answerCallbackQuery({ text: t().toastNoAccess }).catch(() => {})
+      return
+    }
+    await sendKeys(view.pane, TUI_KEYS[key]).catch(() => {})
+    log(`tui: ${view.bindingKey} key=${key}`)
+    await ctx.answerCallbackQuery({ text: tuiKeyLabel(key) }).catch(() => {})
+    setTimeout(() => void refreshLiveScreen(token!), TUI_REFRESH_AFTER_KEY_MS)
     return
   }
   // skpg:<token>:<page> — flip the /skills menu to another page (edit keyboard in place).
