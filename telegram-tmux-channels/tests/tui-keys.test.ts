@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { TUI_KEYS, isTuiKey, tuiButtons, tuiKeyLabel } from '../src/tui-keys'
+import { TUI_KEYS, TUI_NOOP_DATA, isTuiKey, tuiButtons, tuiKeyLabel } from '../src/tui-keys'
 
 describe('кнопки /tui', () => {
   test('Ctrl-C одиночный: второй подряд у Claude Code означает выход из сессии', () => {
@@ -7,12 +7,21 @@ describe('кнопки /tui', () => {
     expect(TUI_KEYS.esc).toBe('Escape')
   })
 
-  test('раскладка: стрелки рядом, под ними Esc, Ctrl-C и закрытие', () => {
+  test('сетка 3×3: стрелки на своих сторонах, как на крестовине', () => {
     const rows = tuiButtons('7', '✖️ Close')
     expect(rows.map(row => row.map(button => button.data))).toEqual([
-      ['tuikey:7:left', 'tuikey:7:up', 'tuikey:7:down', 'tuikey:7:right'],
-      ['tuikey:7:esc', 'tuikey:7:ctrlc', 'scrclose:7'],
+      ['tuikey:7:esc', 'tuikey:7:up', 'tuikey:7:ctrlc'],
+      ['tuikey:7:left', TUI_NOOP_DATA, 'tuikey:7:right'],
+      [TUI_NOOP_DATA, 'tuikey:7:down', 'scrclose:7'],
     ])
+  })
+
+  test('пустая клетка не пустая строка — иначе Telegram отобьёт всю клавиатуру', () => {
+    const blanks = tuiButtons('7', 'x').flat().filter(button => button.data === TUI_NOOP_DATA)
+    expect(blanks.length).toBe(2)
+    for (const blank of blanks) {
+      expect(blank.text.trim()).not.toBe('')
+    }
   })
 
   test('callback_data влезает в лимит Telegram в 64 байта с запасом', () => {

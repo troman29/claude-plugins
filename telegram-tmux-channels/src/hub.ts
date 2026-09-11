@@ -44,7 +44,7 @@ import {
   type TrustedGroupConfig, type TrustedGroupMode,
 } from './trusted-groups'
 import { modeButtons } from './mode-picker'
-import { TUI_KEYS, isTuiKey, tuiButtons, tuiKeyLabel } from './tui-keys'
+import { TUI_KEYS, TUI_NOOP_DATA, isTuiKey, tuiButtons, tuiKeyLabel } from './tui-keys'
 import { t, getLang, setLang, type Lang } from './i18n'
 import { resolveModeDir, gitBranch, runHookDelete, removePlainWorktree, runStandCommand, worktreeHook, isLinkedWorktree, isPlainWorktreeDir } from './dir-resolve'
 import { PROJECT_CONFIG_FILE, parseStandLinks, standLogTail, worktreeBases } from './project-config'
@@ -5488,6 +5488,10 @@ bot.on('callback_query:data', async ctx => {
       await bot.api.deleteMessage(chatId, msgId).catch(() => {})
     }
     await ctx.answerCallbackQuery({ text: t().toastClosed }).catch(() => {})
+    return
+  }
+  if (ctx.callbackQuery.data === TUI_NOOP_DATA) {
+    await ctx.answerCallbackQuery().catch(() => {}) // пустая клетка сетки /tui — гасим «часики» и всё
     return
   }
   const tk = /^tuikey:(\d+):(\w+)$/.exec(ctx.callbackQuery.data)

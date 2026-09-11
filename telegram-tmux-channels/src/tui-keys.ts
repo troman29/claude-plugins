@@ -35,11 +35,19 @@ export function tuiKeyLabel(key: TuiKey): string {
   return TUI_LABELS[key]
 }
 
-/** Раскладка: стрелки одним рядом, под ними Esc, Ctrl-C и закрытие просмотра. */
+// Пустая клетка сетки. Telegram не принимает кнопку без текста, а пробел обрезает, поэтому
+// «пустой символ Брайля»: не пробел для Telegram, но на экране его не видно.
+const BLANK_CELL = '\u2800'
+export const TUI_NOOP_DATA = 'tuinoop'
+
+/** Сетка 3×3, стрелки на своих сторонах, как на крестовине: Esc и Ctrl-C в верхних углах,
+ *  закрытие в нижнем правом. Пустые клетки нажимаются, но ничего не делают. */
 export function tuiButtons(token: string, closeLabel: string): TuiButton[][] {
   const key = (name: TuiKey): TuiButton => ({ text: TUI_LABELS[name], data: `tuikey:${token}:${name}` })
+  const blank: TuiButton = { text: BLANK_CELL, data: TUI_NOOP_DATA }
   return [
-    [key('left'), key('up'), key('down'), key('right')],
-    [key('esc'), key('ctrlc'), { text: closeLabel, data: `scrclose:${token}` }],
+    [key('esc'), key('up'), key('ctrlc')],
+    [key('left'), blank, key('right')],
+    [blank, key('down'), { text: closeLabel, data: `scrclose:${token}` }],
   ]
 }
