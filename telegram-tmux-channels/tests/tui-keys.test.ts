@@ -7,18 +7,18 @@ describe('кнопки /tui', () => {
     expect(TUI_KEYS.esc).toBe('Escape')
   })
 
-  test('сетка 3×3: стрелки на своих сторонах, как на крестовине', () => {
+  test('сетка 3×3: стрелки на своих сторонах, Enter в центре', () => {
     const rows = tuiButtons('7', '✖️ Close')
     expect(rows.map(row => row.map(button => button.data))).toEqual([
       ['tuikey:7:esc', 'tuikey:7:up', 'tuikey:7:ctrlc'],
-      ['tuikey:7:left', TUI_NOOP_DATA, 'tuikey:7:right'],
+      ['tuikey:7:left', 'tuikey:7:enter', 'tuikey:7:right'],
       [TUI_NOOP_DATA, 'tuikey:7:down', 'scrclose:7'],
     ])
   })
 
   test('пустая клетка не пустая строка — иначе Telegram отобьёт всю клавиатуру', () => {
     const blanks = tuiButtons('7', 'x').flat().filter(button => button.data === TUI_NOOP_DATA)
-    expect(blanks.length).toBe(2)
+    expect(blanks.length).toBe(1)
     for (const blank of blanks) {
       expect(blank.text.trim()).not.toBe('')
     }

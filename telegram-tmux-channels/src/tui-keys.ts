@@ -9,6 +9,7 @@ export const TUI_KEYS = {
   up: 'Up',
   down: 'Down',
   right: 'Right',
+  enter: 'Enter',
   esc: 'Escape',
   ctrlc: 'C-c',
 } as const
@@ -22,6 +23,7 @@ const TUI_LABELS: Record<TuiKey, string> = {
   up: '↑',
   down: '↓',
   right: '→',
+  enter: 'Enter',
   esc: 'Esc',
   ctrlc: 'Ctrl-C',
 }
@@ -40,14 +42,14 @@ export function tuiKeyLabel(key: TuiKey): string {
 const BLANK_CELL = '\u2800'
 export const TUI_NOOP_DATA = 'tuinoop'
 
-/** Сетка 3×3, стрелки на своих сторонах, как на крестовине: Esc и Ctrl-C в верхних углах,
- *  закрытие в нижнем правом. Пустые клетки нажимаются, но ничего не делают. */
+/** Сетка 3×3, стрелки на своих сторонах, как на крестовине, Enter в центре: Esc и Ctrl-C в
+ *  верхних углах, закрытие в нижнем правом. Пустая клетка нажимается, но ничего не делает. */
 export function tuiButtons(token: string, closeLabel: string): TuiButton[][] {
   const key = (name: TuiKey): TuiButton => ({ text: TUI_LABELS[name], data: `tuikey:${token}:${name}` })
   const blank: TuiButton = { text: BLANK_CELL, data: TUI_NOOP_DATA }
   return [
     [key('esc'), key('up'), key('ctrlc')],
-    [key('left'), blank, key('right')],
+    [key('left'), key('enter'), key('right')],
     [blank, key('down'), { text: closeLabel, data: `scrclose:${token}` }],
   ]
 }
