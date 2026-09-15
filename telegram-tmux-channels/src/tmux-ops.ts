@@ -388,6 +388,9 @@ const TYPE_ENTER_GAP_MS = 500
 const CTRL_C_EXIT_MS = 3000
 const EXIT_POLL_MS = 250
 const SHELLS = new Set(['bash', 'zsh', 'sh', 'fish', 'dash'])
+const TEARDOWN_WAIT_MS = 60_000
+const EXIT_BANNER_RE = /^Resume this session with:|^To continue this session, run:/m
+const EXIT_BANNER_TAIL_LINES = 6
 // Seconds the user gets to answer the exit-confirm via Telegram buttons.
 export const EXIT_CONFIRM_GRACE_S = 10
 // Сколько строк пейна печатать в лог, когда остановка не удалась: хватает, чтобы узнать модалку.
@@ -540,6 +543,28 @@ export function paneDigest(text: string, maxLines = 24, maxChars = 3500): string
 // confirms): new-folder trust and the dev-channel warning. They can appear in
 // sequence (trust first, then dev-warning), so we click both over a ~30s window.
 
+/** Агент уже напечатал свой прощальный баннер («Resume this session with:» у Claude, «To continue
+ *  this session, run: codex resume …» у Codex) — из TUI он вышел. Смотрим только низ пейна. */
+export function leftTui(pane: string): boolean {
+  const tail = pane.split('\n').filter(line => line.trim()).slice(-EXIT_BANNER_TAIL_LINES).join('\n')
+  return EXIT_BANNER_RE.test(tail)
+}
+
+// Агент вышел из TUI (баннер выхода или шелл в пейне), а процесс ещё дорабатывает — хуки конца сессии.
+// 15.09 такой выход шёл дольше 40 с, и выгрузка по простою записала провал при фактически
+// закрытой сессии. Сессия для человека уже закрыта; процесс дорабатывает сам, скоуп подберёт
+// scope-reaper. Ctrl-C в шелл не шлём.
+async function awaitTeardown(pid: number, scope: string | undefined, log: (s: string) => void): Promise<boolean> {
+  if (await exitsWithin(pid, TEARDOWN_WAIT_MS)) {
+    if (scope) {
+      await stopScope(scope, log)
+    }
+    return true
+  }
+  log(`stop: agent left its TUI, teardown still running after ${TEARDOWN_WAIT_MS / 1000}s — leaving it to finish`)
+  return true
+}
+
 async function exitsWithin(pid: number, ms: number): Promise<boolean> {
   for (let waited = 0; waited < ms; waited += EXIT_POLL_MS) {
     if (!alive(pid)) {
@@ -665,6 +690,9 @@ export async function stopSession(
       break
     }
     const text = await capturePane(pane).catch(() => '')
+    if (leftTui(text) || SHELLS.has(await paneCurrentCommand(pane).catch(() => ''))) {
+      return awaitTeardown(pid, scope, log)
+    }
     if (isFeedbackDraftPrompt(text)) {
       log('stop: unsent feedback draft on exit → Esc (discard)')
       await sendKeys(pane, 'Escape')

@@ -11,7 +11,7 @@ import { Router } from '../src/router'
 import { chunk, planAttachments, CAPTION_LIMIT } from '../src/chunk'
 import { fmtUntil, formatLimits } from '../src/limits'
 import {
-  parseOpsCommand, shellQuote, relaunchCommand,
+  parseOpsCommand, shellQuote, relaunchCommand, leftTui,
   stripResumeFlags, buildLaunch, DEFAULT_CLAUDE_ARGV,
   parseCompaction,
   parseContextPct,
@@ -863,5 +863,19 @@ describe('«Chat about this» без номера', () => {
     expect(downsToChatAbout(1, 3)).toBe(3) // курсор на 1-й из трёх → 2 опции + сам пункт
     expect(downsToChatAbout(3, 3)).toBe(1) // курсор на последней → один шаг вниз
     expect(downsToChatAbout(5, 3)).toBe(1) // курсор ниже списка — меньше одного не бывает
+  })
+})
+
+// Страж 15.09: Claude напечатал «Resume this session with:», но дорабатывал хуки конца сессии
+// дольше 40 с — выгрузка по простою записала провал при фактически закрытой сессии.
+describe('leftTui', () => {
+  test('баннер выхода Claude и Codex внизу пейна — агент вышел из TUI', () => {
+    expect(leftTui('● done\n\nResume this session with:\nclaude --resume a2bbc947\n')).toBe(true)
+    expect(leftTui('To continue this session, run:\n  codex resume 01a0a489\nOr run codex resume and select X.\n')).toBe(true)
+  })
+
+  test('баннер далеко в истории — не выход', () => {
+    const old = 'Resume this session with:\nclaude --resume x\n' + Array.from({ length: 10 }, (_, i) => `● line ${i}`).join('\n') + '\n❯ \n'
+    expect(leftTui(old)).toBe(false)
   })
 })
