@@ -414,7 +414,11 @@ export async function typeLine(pane: string, text: string): Promise<void> {
 
 /** Type into an already focused inline field without submitting it. */
 export async function typeText(pane: string, text: string): Promise<void> {
-  await tmux('send-keys', '-t', pane, '-l', text)
+  // tmux limits command size in bytes. Unicode-aware chunks stay below 4 KB
+  // even for emoji, without splitting surrogate pairs or dropping newlines.
+  for (const chunk of text.match(/[\s\S]{1,1000}/gu) ?? []) {
+    await tmux('send-keys', '-t', pane, '-l', '--', chunk)
+  }
 }
 
 // Inject a SLASH command literally. Claude Code's "/" autocomplete pops a fuzzy-matched
@@ -424,7 +428,7 @@ export async function typeText(pane: string, text: string): Promise<void> {
 // text (verified), so the following Enter submits the literal command. Never do this for plain
 // text — Escape there interrupts a running turn / clears the line.
 export async function typeSlashCommand(pane: string, text: string): Promise<void> {
-  await tmux('send-keys', '-t', pane, '-l', text)
+  await typeText(pane, text)
   await sleep(TYPE_ENTER_GAP_MS)
   await tmux('send-keys', '-t', pane, 'Escape') // dismiss the "/" autocomplete popup, keep the text
   await sleep(150)
