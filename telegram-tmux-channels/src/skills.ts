@@ -219,12 +219,36 @@ export async function discoverGlobalSkills(): Promise<{ skills: Skill[]; failed:
 // по тому же mangleCmd. Пусто → возвращаем как есть: это может быть встроенная команда
 // Claude Code (/compact, /model, …), их хаб не знает и знать не должен.
 // Pure — tested in core.test.ts.
-export function resolveSkillCommand(
-  name: string,
-  globalMap: Map<string, string>,
-  projectSkills: Skill[],
-): string {
-  return globalMap.get(name) ?? projectSkills.find(s => mangleCmd(s.name) === name)?.name ?? name
+/** Настоящее имя скилла по имени из Telegram (`/add_model` → `add-model`); незнакомое — undefined. */
+export function findSkill(name: string, globalMap: Map<string, string>, projectSkills: Skill[]): string | undefined {
+  return globalMap.get(name) ?? projectSkills.find(s => mangleCmd(s.name) === name)?.name
+}
+
+// Встроенные команды самих CLI: скиллами они не значатся, но набирать их надо как команду.
+const CLI_COMMANDS: Record<AgentKind, ReadonlySet<string>> = {
+  claude: new Set([
+    'add-dir', 'agents', 'artifacts', 'bashes', 'btw', 'bug', 'clear', 'compact', 'config', 'context',
+    'cost', 'doctor', 'effort', 'exit', 'export', 'extra-usage', 'fast', 'feedback', 'fork', 'help',
+    'hooks', 'ide', 'init', 'install-github-app', 'keybindings', 'login', 'logout', 'loop', 'mcp',
+    'memory', 'model', 'output-style', 'permissions', 'plugin', 'plugins', 'pr-comments',
+    'privacy-settings', 'release-notes', 'remote-control', 'rename', 'resume', 'review', 'rewind',
+    'sandbox', 'security-review', 'skills', 'stats', 'status', 'statusline', 'tasks',
+    'terminal-setup', 'theme', 'todos', 'upgrade', 'usage', 'vim', 'workflows',
+  ]),
+  codex: new Set([
+    'agent', 'approvals', 'apps', 'clean', 'clear', 'collab', 'compact', 'copy', 'debug-config', 'diff',
+    'exit', 'experimental', 'feedback', 'fork', 'init', 'logout', 'mcp', 'mention', 'model', 'new',
+    'permissions', 'personality', 'plan', 'plugins', 'ps', 'quit', 'rename', 'resume', 'review',
+    'rollout', 'skills', 'status', 'statusline', 'stop', 'theme', 'undo', 'usage',
+  ]),
+}
+
+/** Слэш в начале сообщения — команда агенту или начало обычной фразы («/to-spec можно
+ *  вычистить, а…»). Команда — известный скилл, встроенная команда CLI или голое слово без текста
+ *  (незнакомую команду CLI отобьёт сам). Незнакомое слово, за которым идёт текст, — фраза: набранная
+ *  как команда, она оставалась висеть в поле ввода. */
+export function isSlashCommand(slash: { agent: AgentKind; name: string; known: boolean; hasArgs: boolean }): boolean {
+  return slash.known || CLI_COMMANDS[slash.agent].has(slash.name) || !slash.hasArgs
 }
 
 export function discoverProjectSkills(dir: string, agent: AgentKind = 'claude'): Skill[] {

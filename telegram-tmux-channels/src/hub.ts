@@ -34,7 +34,7 @@ import {
 } from './tmux-ops'
 import { ansiToImage } from './ansi-image'
 import { deserializeStatus, emptyStatus, hasLiveWork, renderBg, renderStatus, serializeStatus, statusIsEmpty, syncBg, type BgTask, type StatusState } from './status-render'
-import { discoverGlobalSkills, discoverProjectSkills, mangleCmd, resolveSkillCommand, skillInvocation, tgDescription, type Skill } from './skills'
+import { discoverGlobalSkills, discoverProjectSkills, findSkill, isSlashCommand, mangleCmd, skillInvocation, tgDescription, type Skill } from './skills'
 import { agentPidsInDir, cmdlineOf } from './proc'
 import { bySendTime, clampLines, rmQuiet } from './util'
 import { parsePicker, CHAT_ABOUT_INDEX, checkedIndexes, pickerCursorIndex, textBeforePicker, parseResumeList, fnv1a, hasPickerFooter, isStartupTrustPrompt, trustOptionIndex, isCodexStartupTrustScreen, isCodexHooksTrustScreen, isCodexOwnToolApproval, type Picker, type ResumeRow } from './picker'
@@ -1602,9 +1602,9 @@ function buildSkillMap(skills: Skill[]): Map<string, string> {
  *  целиком; не уложился — печатаем имя как есть, карта дообновится в фоне к следующей команде. */
 const SKILL_RESCAN_WAIT_MS = 5_000
 
-async function resolveSkillFresh(name: string, projectSkills: Skill[]): Promise<string> {
-  const known = resolveSkillCommand(name, globalSkillMap, projectSkills)
-  if (known !== name || Date.now() - lastSkillRescan < SKILL_RESCAN_MIN_GAP_MS) {
+async function findSkillFresh(name: string, projectSkills: Skill[]): Promise<string | undefined> {
+  const known = findSkill(name, globalSkillMap, projectSkills)
+  if (known || Date.now() - lastSkillRescan < SKILL_RESCAN_MIN_GAP_MS) {
     return known
   }
   lastSkillRescan = Date.now()
@@ -1617,10 +1617,8 @@ async function resolveSkillFresh(name: string, projectSkills: Skill[]): Promise<
     })
     .catch(() => false)
   const inTime = await Promise.race([rescan, new Promise<false>(r => setTimeout(() => r(false), SKILL_RESCAN_WAIT_MS))])
-  const fresh = inTime ? resolveSkillCommand(name, globalSkillMap, projectSkills) : name
-  log(`skill map rescan on miss: ${name} → ${fresh}${
-    !inTime ? ' (скан не успел, печатаю как есть)' : fresh === name ? ' (так и не нашёлся)' : ''
-  }`)
+  const fresh = inTime ? findSkill(name, globalSkillMap, projectSkills) : undefined
+  log(`skill map rescan on miss: ${name} → ${fresh ?? '—'}${!inTime ? ' (скан не успел)' : fresh ? '' : ' (так и не нашёлся)'}`)
   return fresh
 }
 
@@ -4198,14 +4196,17 @@ async function handleInbound(inbound: Inbound): Promise<void> {
     const [head, ...rest] = text.trim().split(/\s+/)
     const name = head!.slice(1).replace(/@\w+$/, '').toLowerCase() // drop leading "/" and "@bot"
     // глобальные И проектные скиллы: /add_model → /add-model (Telegram не даёт дефис)
-    const real = await resolveSkillFresh(name, discoverProjectSkills(binding.dir, binding.agent))
+    const skill = await findSkillFresh(name, discoverProjectSkills(binding.dir, binding.agent))
     const agent = binding.agent ?? 'claude'
-    const cmd = skillInvocation(agent, real, rest)
-    const ok = await injectSkillToPanes(conns, cmd, key, binding.dir, chat_id, threadId, msgId, agent)
-    if (!ok) {
-      void say(t().notInTmuxSlash)
+    if (isSlashCommand({ agent, name, known: skill !== undefined, hasArgs: rest.length > 0 })) {
+      const cmd = skillInvocation(agent, skill ?? name, rest)
+      const ok = await injectSkillToPanes(conns, cmd, key, binding.dir, chat_id, threadId, msgId, agent)
+      if (!ok) {
+        void say(t().notInTmuxSlash)
+      }
+      return
     }
-    return
+    log(`slash: ${key} — «/${name}» не скилл и не команда CLI, доставляю обычным сообщением`)
   }
 
   const imagePath = downloadImage ? await downloadImage() : undefined

@@ -30,7 +30,7 @@ import {
   deadScopes,
   memoryCapPrefix,
 } from '../src/tmux-ops'
-import { discoverProjectSkills, resolveSkillCommand, skillInvocation, mangleCmd as mangleSkillCmd } from '../src/skills'
+import { discoverProjectSkills, findSkill, isSlashCommand, skillInvocation, mangleCmd as mangleSkillCmd } from '../src/skills'
 import { isClaudeArgv, claudePidsInDir, agentPidsInDir, cmdlineOf, envOf, findClaudeAncestor } from '../src/proc'
 import {
   isExcludedTopic, slugFromTopicName, mergeGroupConfig,
@@ -306,17 +306,24 @@ describe('tmux-ops', () => {
     expect(parseOpsCommand('/new и дальше текст\nвторая строка')).toBeUndefined()
   })
 
-  test('resolveSkillCommand: /add_model → /add-model (project skill)', () => {
+  test('findSkill: /add_model → add-model (project skill)', () => {
     const global = new Map([['deep_research', 'deep-research']])
     const project = [{ name: 'add-model' }, { name: 'add-mcp' }] as never[]
     // проектный скилл резолвится по тому же mangle, что использует публикация команд
-    expect(resolveSkillCommand('add_model', global, project)).toBe('add-model')
+    expect(findSkill('add_model', global, project)).toBe('add-model')
     expect(mangleSkillCmd('add-model')).toBe('add_model')  // публикация ↔ резолв согласованы
     // глобальный по-прежнему приоритетен
-    expect(resolveSkillCommand('deep_research', global, project)).toBe('deep-research')
-    // встроенные команды Claude не трогаем
-    expect(resolveSkillCommand('compact', global, project)).toBe('compact')
-    expect(resolveSkillCommand('unknown_thing', global, [] as never[])).toBe('unknown_thing')
+    expect(findSkill('deep_research', global, project)).toBe('deep-research')
+    expect(findSkill('unknown_thing', global, [] as never[])).toBeUndefined()
+  })
+
+  test('isSlashCommand: незнакомое слово с текстом дальше — это фраза, а не команда', () => {
+    // 15.09: «/to-spec можно вычистить, а…» набралось командой и повисло в поле ввода
+    expect(isSlashCommand({ agent: 'claude', name: 'to-spec', known: false, hasArgs: true })).toBe(false)
+    expect(isSlashCommand({ agent: 'claude', name: 'deep-research', known: true, hasArgs: true })).toBe(true)
+    expect(isSlashCommand({ agent: 'claude', name: 'context', known: false, hasArgs: true })).toBe(true) // встроенная CLI
+    expect(isSlashCommand({ agent: 'codex', name: 'diff', known: false, hasArgs: false })).toBe(true)
+    expect(isSlashCommand({ agent: 'claude', name: 'somecmd', known: false, hasArgs: false })).toBe(true) // голое слово
   })
 
   test('tmuxSessionName: dots/colons rewritten like tmux does', () => {
