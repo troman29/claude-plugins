@@ -648,6 +648,8 @@ export async function stopSession(
     return true
   }
   if (!SHELLS.has(await paneCurrentCommand(pane).catch(() => ''))) {
+    // Недописанный текст в поле ввода склеился бы с /exit в один промпт и ушёл агенту задачей.
+    await sendKeys(pane, 'C-u')
     await typeLine(pane, '/exit')
   }
   // Graceful window, 1s granularity. The background-shell confirm ("Exit
