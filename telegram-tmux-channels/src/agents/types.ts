@@ -67,6 +67,12 @@ export interface AgentAdapter {
   parseError(pane: string): string | undefined
   parseWorkflow(pane: string): { name: string; done: number; total: number } | undefined
   paneReady(pane: string): boolean
+  /** Примет ли пейн впечатанное входящее прямо сейчас (для агентов без нативного канала).
+   *  Шире `paneReady`: посреди хода ввод принимать можно, поверх модалки — нет. */
+  inboundReady(pane: string): boolean
+  /** Где в пейне впечатанное входящее с меткой `needle`: принято, но ещё не в транскрипте
+   *  (`pending`), или стоит в поле ввода неотправленным (`draft`). */
+  inboundState(pane: string, needle: string): 'pending' | 'draft' | undefined
 
   // Optional interactive status panel (currently Codex `/status`).  `canOpen…` must be
   // conservative: a local draft in tmux must never be submitted merely to refresh quotas.

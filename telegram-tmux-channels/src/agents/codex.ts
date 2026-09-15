@@ -331,6 +331,30 @@ export function codexPaneReady(pane: string): boolean {
     && !tail.some(line => /Working \(\d+s?\s*[•·]|esc to interrupt/i.test(line))
 }
 
+const MODAL_FOOTER = /Press enter to (?:confirm|continue)|esc to go back/i
+
+/** Можно ли впечатать входящее прямо сейчас. Посреди хода — можно: Codex 0.154 сам держит
+ *  набранное до ближайшего вызова тула («Messages to be submitted after next tool call»).
+ *  Нельзя поверх модалки или пикера: курсор `› 1.` там — вариант, и Enter выбрал бы его. */
+export function codexInboundReady(pane: string): boolean {
+  const tail = pane.split('\n').map(s => s.trim()).filter(Boolean).slice(-12)
+  return tail.some(line => /^›(?:\s|$)/.test(line) && !/^›\s*\d+\./.test(line))
+    && !tail.some(line => MODAL_FOOTER.test(line))
+}
+
+/** Где в пейне впечатанное сообщение с меткой `needle`: `pending` — Codex принял его и держит
+ *  до вызова тула (строка `↳`), `draft` — текст стоит в поле ввода неотправленным (Enter
+ *  проглотила вставка). Иначе `undefined`. */
+export function codexInboundState(pane: string, needle: string): 'pending' | 'draft' | undefined {
+  const lines = pane.split('\n').map(s => s.trim())
+  if (lines.some(line => line.startsWith('↳') && line.includes(needle))) {
+    return 'pending'
+  }
+  // Отправленные реплики в истории тоже начинаются с `›`, поле ввода — самая нижняя из них.
+  const prompts = lines.filter(line => line.startsWith('›'))
+  return prompts[prompts.length - 1]?.includes(needle) ? 'draft' : undefined
+}
+
 export function codexPaneIsWorking(pane: string): boolean {
   return pane.split('\n').filter(line => line.trim()).slice(-12)
     .some(line => /[•●]\s+Working \(\d+s?\s*[•·].*esc to interrupt/i.test(line.trim()))
@@ -416,6 +440,8 @@ export const codexAdapter: AgentAdapter = {
   parseError: parseCodexError,
   parseWorkflow: () => undefined,
   paneReady: codexPaneReady,
+  inboundReady: codexInboundReady,
+  inboundState: codexInboundState,
   statusPanelCommand: '/status',
   canOpenStatusPanel: codexCanOpenStatusPanel,
   parseStatusPanel: parseCodexStatusPanel,

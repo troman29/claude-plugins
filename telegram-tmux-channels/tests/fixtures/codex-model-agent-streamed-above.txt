@@ -1,0 +1,17 @@
+› [Telegram message; chat_id="-1004495746357" message_id="3622" user="troman29" topic_id="3615"]
+  ты где блять
+
+• Здесь. Извини — я зря молча завис на длинном импорте вместо короткого ответа. Сейчас проверяю финальное
+  состояние и сразу возвращаюсь с результатом, без дальнейшего молчания.
+
+  Select Model and Effort
+  Access legacy models by running codex -m <model_name> or in your config.toml
+
+  1. gpt-6-astra (default)  Our most capable model for complex, demanding work.
+› 2. gpt-5.6-sol (current)  Reliable agentic workhorse for everyday tasks.
+  3. gpt-5.6-terra          Balanced agentic coding model for everyday work.
+  4. gpt-5.6-luna           Fast and affordable agentic coding model.
+  5. gpt-5.5                Proven previous-generation model for coding and general work.
+  6. gpt-5.3-codex-spark    Ultra-fast coding model.
+
+  Press enter to confirm or esc to go back

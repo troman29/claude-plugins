@@ -123,6 +123,13 @@ and `download_attachment`. Bind a topic explicitly to Codex:
 Legacy `/bind myproject` continues to select Claude Code. The choice is persisted per topic, so
 session lifecycle commands and idle revive keep using the selected agent.
 
+Codex has no inbound channel, so the hub types each message into its TUI, the same way you would.
+That works mid-turn too: Codex holds the text until its next tool call and shows it under
+"Messages to be submitted". A message is held only while a picker or dialog is open. Each typed
+message carries a `delivery_id`, and the hub uses it to confirm the message landed in the rollout.
+A long message sometimes swallows the Enter after it; the hub notices the text still sitting in the
+input line and presses Enter again, so it never sends the message twice.
+
 The hub launches Codex with `--ask-for-approval never --sandbox danger-full-access`, the
 counterpart of `--permission-mode bypassPermissions` it uses for Claude: nobody sits at the
 terminal to approve an escalation, and the default `workspace-write` sandbox has no network. Pass
@@ -181,7 +188,7 @@ Sent in a bound topic or DM. These are handled by the bot and never reach the ag
 | `/restart` · `/stop` | Graceful restart / stop |
 | `/compact` · `/clear` | Compact or clear the conversation |
 | `/esc` · `/enter` | Interrupt the current turn / submit what's sitting in the input line |
-| `/queue <text>` · `/q` | Hold the text until the current turn ends instead of cutting into it. A plain message reaches the agent right away, mid-turn — this one waits its turn (👌 while held). With the session idle it goes straight through |
+| `/queue <text>` · `/q` | Hold the text until the current turn ends instead of cutting into it. A plain message reaches the agent right away, mid-turn — this one waits its turn (😴 while held). With the session idle it goes straight through |
 | `/send <text>` | Send text literally through the normal delivery path, even when it starts with a hub/CLI slash command. Bare `/send` as a reply sends the replied message's text or caption |
 | `/model` | The CLI's model picker, as buttons |
 
@@ -434,8 +441,10 @@ Two details worth knowing, because they explain most of the behaviour:
   else (an old conversation asking whether to resume in full) goes to the chat as buttons. Without
   that, a modal nobody can see blocks the launch and the stub never comes up.
 - **A message is never dropped because the launch is slow.** If the session isn't up when the
-  message arrives, it is held (👌) and delivered the moment the stub connects, however long that
-  takes.
+  message arrives, it is held (😴) and delivered the moment the stub connects, however long that
+  takes. 👀 goes on a message only once it has actually reached the session, and a message that
+  arrives while earlier ones are still held queues behind them, so the agent reads them in the
+  order they were written.
 - **Agents write Markdown; the hub picks how to send it.** Most replies are rendered to Telegram
   HTML as they always were. A rich message is used only when `needsRich()` sees something that
   conversion would lose, because a rich message carries no plain `text` field — a client too old

@@ -55,3 +55,11 @@ export function parseCallback(data: string): { token: string; action: PickAction
 export function downsToChatAbout(cursorIndex: number, lastOptionIndex: number): number {
   return Math.max(1, lastOptionIndex - cursorIndex + 1)
 }
+
+/** Нужен ли Enter после нажатой цифры. Claude цифрой только двигает курсор, выбор подтверждает
+ *  Enter. Codex цифрой уже выбирает — и следующий экран (вторая стадия /model) открывается сам:
+ *  Enter лёг бы туда и выбрал вариант за человека. Поэтому Enter не жмём, только если на экране
+ *  уже ДРУГОЙ пикер; пустой экран — пикер закрылся, Enter в пустое поле ввода безвреден. */
+export function confirmAfterDigit(onScreen: Picker | undefined, tappedHash: string): boolean {
+  return !onScreen || onScreen.hash === tappedHash
+}

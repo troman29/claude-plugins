@@ -44,6 +44,8 @@ export const claudeAdapter: AgentAdapter = {
   parseError,
   parseWorkflow,
   paneReady,
+  inboundReady: paneReady,
+  inboundState: () => undefined,
   canOpenStatusPanel: () => false,
   parseStatusPanel: () => undefined,
   cachedStatusLines: (dir, nowMs) => {

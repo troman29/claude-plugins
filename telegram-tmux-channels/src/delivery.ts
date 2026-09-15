@@ -16,8 +16,8 @@ export type DeliveryDeps = {
   clock: Clock
   /** Ответ стаба: отдал сообщение в сессию, не смог, или молчит (старый стаб). */
   awaitAck(): Promise<'ok' | 'failed' | 'silent'>
-  /** Видел ли транскрипт сессии это входящее после момента `since`. */
-  sawIncoming(dir: string, since: number, needle: string): boolean
+  /** Дошло ли это входящее до сессии после момента `since` (транскрипт, пейн). */
+  sawIncoming(dir: string, since: number, needle: string): boolean | Promise<boolean>
   /** Отправить payload в сессию ещё раз (в бою — запись в сокеты стаба). */
   resend(): void | Promise<void>
   /** Сказать пользователю, что сообщение не дошло. */
@@ -34,7 +34,7 @@ export type DeliveryOutcome = 'landed' | 'landed-after-retry' | 'lost'
 async function landed(d: DeliveryDeps, dir: string, since: number, needle: string): Promise<boolean> {
   for (let i = 0; i < ACK_TRIES; i++) {
     await d.clock.sleep(ACK_STEP_MS)
-    if (d.sawIncoming(dir, since, needle)) {
+    if (await d.sawIncoming(dir, since, needle)) {
       return true
     }
   }

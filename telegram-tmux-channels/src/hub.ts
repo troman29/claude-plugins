@@ -38,7 +38,7 @@ import { discoverGlobalSkills, discoverProjectSkills, mangleCmd, resolveSkillCom
 import { agentPidsInDir, cmdlineOf } from './proc'
 import { bySendTime, clampLines, rmQuiet } from './util'
 import { parsePicker, CHAT_ABOUT_INDEX, checkedIndexes, pickerCursorIndex, textBeforePicker, parseResumeList, fnv1a, hasPickerFooter, isStartupTrustPrompt, trustOptionIndex, isCodexStartupTrustScreen, isCodexHooksTrustScreen, isCodexOwnToolApproval, type Picker, type ResumeRow } from './picker'
-import { buildKeyboard, downsToChatAbout, parseCallback } from './picker-drive'
+import { buildKeyboard, confirmAfterDigit, downsToChatAbout, parseCallback } from './picker-drive'
 import {
   loadTrustedGroups, isExcludedTopic, slugFromTopicName, modeLabel,
   type TrustedGroupConfig, type TrustedGroupMode,
@@ -49,6 +49,7 @@ import { t, getLang, setLang, type Lang } from './i18n'
 import { resolveModeDir, gitBranch, runHookDelete, removePlainWorktree, runStandCommand, worktreeHook, isLinkedWorktree, isPlainWorktreeDir } from './dir-resolve'
 import { PROJECT_CONFIG_FILE, parseStandLinks, standLogTail, worktreeBases } from './project-config'
 import { watchDelivery as watchDeliveryCore, type DeliveryDeps } from './delivery'
+import { deliveryNeedle, inboundEnvelope } from './inbound-envelope'
 import { FallbackGate } from './fallback-gate'
 import { topic as inTopic } from './chat'
 import { HubStateRepository, type PersistedPicker, type PersistedInbound, type PersistedLaunchCapture } from './state-repo'
@@ -797,6 +798,7 @@ type ActivePicker = {
   picker: Picker
   key: string // binding key — reject a tap if the pane got recycled to another session post-restart
   intro?: string // готовый HTML: что агент написал ПЕРЕД вопросом
+  answering?: boolean // тап принят, ответ печатается — сообщение закроет обработчик тапа
 }
 const activePickers = new Map<string, ActivePicker>() // key = pane
 const awaitingCustom = new Map<string, { chatId: string; threadId?: number; bindingKey: string; at: number; multi: boolean }>()
@@ -1172,6 +1174,12 @@ async function detectPicker(pane: string, session: SessionInfo, text: string): P
     void bot.api
       .editMessageText(rec.chatId, rec.msgId, t().pickerClosedRestart, { parse_mode: 'HTML' })
       .catch(() => {})
+  }
+  if (existing && !existing.answering) {
+    // На месте прежнего пикера открылся другой. Сообщение прежнего гасим сразу: иначе его
+    // кнопки выглядят живыми, а тап по ним отвечает «пикер закрыт». Отвеченный закроет сам
+    // обработчик тапа — его «✅ выбор» не перетираем.
+    endPicker(pane, { close: t().pickerAnsweredInTerminal })
   }
   // Reserve the slot synchronously before the await below — otherwise an overlapping
   // pollScreens tick for the same pane sees `existing === undefined` too and double-sends.
@@ -1796,7 +1804,24 @@ function clearPendingAnswer(conn: Socket<undefined>): void {
   }
 }
 
-async function forwardFallbackReply(key: string): Promise<void> {
+// Кадр пейна берётся с последнего такта опроса и на Stop часто ещё показывает спиннер. Одного
+// такого хватало, чтобы досыл ждал следующего Stop, которого уже не будет, и ответ оставался в
+// терминале. Поэтому «ещё работает» перепроверяем сами, пока пейн не освободится.
+const FALLBACK_RECHECK_MS = 3000
+const FALLBACK_RECHECK_MAX = 40
+const fallbackRechecks = new Map<string, ReturnType<typeof setTimeout>>()
+
+function recheckFallbackLater(key: string, attempt: number): void {
+  if (attempt >= FALLBACK_RECHECK_MAX || fallbackRechecks.has(key)) {
+    return
+  }
+  fallbackRechecks.set(key, setTimeout(() => {
+    fallbackRechecks.delete(key)
+    void forwardFallbackReply(key, attempt + 1)
+  }, FALLBACK_RECHECK_MS))
+}
+
+async function forwardFallbackReply(key: string, attempt = 0): Promise<void> {
   const pending = pendingAnswer.get(key)
   if (!pending) {
     return
@@ -1804,9 +1829,12 @@ async function forwardFallbackReply(key: string): Promise<void> {
   // Codex шлёт Stop не только в конце разговора: успевает «подумать вслух», получить Stop и лишь
   // потом вызвать `reply`. Досыл на таком промежуточном Stop приезжает раньше настоящего ответа —
   // пользователь видит и черновую мысль, и ответ (2026-08-17). Пейн ещё работает — значит ход не
-  // кончился: выходим, НЕ снимая метку, следующий Stop вернётся сюда.
+  // кончился: выходим, НЕ снимая метку, — вернёт сюда следующий Stop или перепроверка.
   if (keyIsWorking(key, pending.dir)) {
-    log(`reply-fallback: ${key} — пейн ещё работает, жду настоящего конца хода`)
+    if (attempt === 0) {
+      log(`reply-fallback: ${key} — пейн ещё работает, жду настоящего конца хода`)
+    }
+    recheckFallbackLater(key, attempt)
     return
   }
   disarmPending(key) // one shot per inbound, whatever the transcript holds
@@ -2475,6 +2503,36 @@ async function pressChatAbout(pane: string, picker: Picker): Promise<void> {
   await sendKeys(pane, 'Enter')
 }
 
+/** Набрать слэш-команду самого CLI. Codex пачку «текст+Enter» одним send-keys принимает за
+ *  вставку и Enter глотает: `/model` оставался в поле ввода, пока не нажмёшь Enter через /tui. */
+async function typeCliCommand(session: SessionInfo, pane: string, command: string): Promise<void> {
+  if (adapterForSession(session).kind === 'codex') {
+    await typeLine(pane, command)
+    return
+  }
+  await sendKeys(pane, command, 'Enter')
+}
+
+// Сколько ждать после цифры, прежде чем смотреть, что стало с пикером: следующая стадия /model
+// у Codex дорисовывается за ~300 мс.
+const DIGIT_SETTLE_MS = 500
+
+async function chooseOption(pane: string, index: number, tappedHash: string): Promise<void> {
+  await sendKeys(pane, String(index))
+  await new Promise(resolve => setTimeout(resolve, DIGIT_SETTLE_MS))
+  if (confirmAfterDigit(parsePicker(await capturePane(pane).catch(() => '')), tappedHash)) {
+    await sendKeys(pane, 'Enter')
+  }
+}
+
+/** Закрыть слежение за ОТВЕЧЕННЫМ пикером. Пока ответ печатался, на его месте мог открыться
+ *  следующий (вторая стадия /model) — его слежение не трогаем, иначе он повиснет без кнопок. */
+function endTappedPicker(pane: string, tapped: ActivePicker): void {
+  if (activePickers.get(pane) === tapped) {
+    endPicker(pane, 'message-already-resolved')
+  }
+}
+
 async function handlePickCallback(
   ctx: Context,
   pick: NonNullable<ReturnType<typeof parseCallback>>,
@@ -2510,14 +2568,15 @@ async function handlePickCallback(
     .catch(() => {})
   const labelOf = (i: number) => ap.picker.options.find(o => o.index === i)?.label ?? String(i)
   if (action.kind === 'opt' && ap.picker.mode === 'single') {
+    ap.answering = true
     if (action.index === CHAT_ABOUT_INDEX) {
       await pressChatAbout(pane, ap.picker)
     } else {
-      await selectOption(pane, action.index)
+      await chooseOption(pane, action.index, ap.hash)
     }
     await resolvePickerMessage(ap, `✅ <b>${escHtml(labelOf(action.index))}</b>`)
     markPickerAnswered(pane, ap.hash)
-    endPicker(pane, 'message-already-resolved')
+    endTappedPicker(pane, ap)
     typing(ap.chatId, ap.threadId) // agent resumes on the answer
     await ctx.answerCallbackQuery({ text: t().toastChosen }).catch(() => {})
   } else if (action.kind === 'opt') {
@@ -2545,7 +2604,7 @@ async function handlePickCallback(
     }
     await resolvePickerMessage(ap, `✅ <b>${chosen.length ? escHtml(chosen.join(', ')) : '—'}</b>`)
     markPickerAnswered(pane, ap.hash)
-    endPicker(pane, 'message-already-resolved')
+    endTappedPicker(pane, ap)
     typing(ap.chatId, ap.threadId) // agent resumes on the submitted answers
     await ctx.answerCallbackQuery({ text: t().toastSent }).catch(() => {})
   } else {
@@ -3075,11 +3134,15 @@ const PANE_SETTLE_MS = 1500
 // поднимающегося Claude Code, а не конкретного вызова.
 const PANE_READY_MS = 60_000
 async function waitPaneReady(pane: string | undefined, ms: number, adapter = agentAdapter('claude')): Promise<boolean> {
+  return waitPane(pane, ms, text => adapter.paneReady(text))
+}
+
+async function waitPane(pane: string | undefined, ms: number, ready: (text: string) => boolean): Promise<boolean> {
   if (!pane) {
     return true
   }
   for (let waited = 0; ; waited += 500) {
-    if (adapter.paneReady(await capturePane(pane).catch(() => ''))) {
+    if (ready(await capturePane(pane).catch(() => ''))) {
       await new Promise(r => setTimeout(r, PANE_SETTLE_MS))
       return true
     }
@@ -3520,6 +3583,9 @@ function enqueueForTopic(key: string, inbound: Inbound): void {
 // Одна разборка очереди на ключ: её дёргают и подъём (runAutoTopic), и подключение стаба —
 // без замка оба забрали бы один и тот же массив и доставили сообщения дважды.
 const flushing = new Set<string>()
+// Сообщения, которые прямо сейчас отдаёт flushQueued. Их заход в handleInbound — доставка из
+// очереди; всё остальное, пришедшее за время разборки, — новое и встаёт в хвост.
+const fromQueue = new WeakSet<Inbound>()
 // «Придержал» говорим один раз на подъём: сообщений может прийти сколько угодно, а новость
 // в них одна и та же. Снимается, когда очередь ушла в сессию.
 const heldNotice = new Set<string>()
@@ -3571,19 +3637,28 @@ async function flushQueued(key: string): Promise<void> {
       log(`queue held: ${key} — сессия ещё не поднялась, ${q.length} сообщ. ждут подключения`)
       return
     }
-    queuedMessages.delete(key)
-    stateRepo.delQueued(key)
     heldNotice.delete(key)
-    for (let i = 0; i < q.length; i++) {
-      await handleInbound(q[i]!) // binding now exists → normal delivery path
-      const requeued = queuedMessages.get(key)
-      if (!requeued?.length) {
-        continue
+    // Пока разбираем, могут прийти новые — они встают в хвост очереди, и их берём следующим кругом.
+    for (let batch = q; batch.length; batch = liveQueue(key)) {
+      queuedMessages.delete(key)
+      stateRepo.delQueued(key)
+      for (let i = 0; i < batch.length; i++) {
+        const inbound = batch[i]!
+        fromQueue.add(inbound)
+        try {
+          await handleInbound(inbound) // binding now exists → normal delivery path
+        } finally {
+          fromQueue.delete(inbound)
+        }
+        const queued = queuedMessages.get(key) ?? []
+        if (!queued.includes(inbound)) {
+          continue
+        }
+        // Сообщение не отдалось и вернулось в очередь — ход ещё идёт. Остальные вперёд него
+        // не пускаем: порядок важнее скорости. Кладём хвост обратно и ждём конца хода.
+        holdInOrder(key, [...queued, ...batch.slice(i + 1)])
+        return
       }
-      // Сообщение не отдалось и вернулось в очередь — ход ещё идёт. Остальные вперёд него
-      // не пускаем: порядок важнее скорости. Кладём хвост обратно и ждём конца хода.
-      holdInOrder(key, [...requeued, ...q.slice(i + 1)])
-      return
     }
   } finally {
     flushing.delete(key)
@@ -3784,6 +3859,8 @@ type Inbound = {
   attachment?: AttachmentMeta
   literal?: boolean
   reply?: ReplyContext
+  /** Отложено `/queue` до конца хода: обычное сообщение его обгоняет, так и задумано. */
+  waitTurn?: boolean
 }
 
 function persistInbound(inbound: Inbound): PersistedInbound {
@@ -3795,6 +3872,7 @@ function persistInbound(inbound: Inbound): PersistedInbound {
     // Время САМОГО сообщения: перезапись очереди не должна омолаживать придержанное
     // (иначе оно не протухнет никогда), а reviveInbound кладёт `at` обратно в message.date.
     msgId: msg?.message_id, at: (msg?.date ?? 0) * 1000 || Date.now(), literal: inbound.literal, reply,
+    ...(inbound.waitTurn ? { waitTurn: true } : {}),
   }
 }
 
@@ -3806,7 +3884,7 @@ function reviveInbound(value: PersistedInbound): Inbound {
     chat: { id: Number(value.chatId), type: 'supergroup' },
     message: value.msgId == null ? undefined : { message_id: value.msgId, message_thread_id: value.threadId, date: Math.floor(value.at / 1000) },
   } as unknown as Context
-  return { ctx, text: value.text, literal: value.literal, reply: value.reply }
+  return { ctx, text: value.text, literal: value.literal, reply: value.reply, ...(value.waitTurn ? { waitTurn: true } : {}) }
 }
 
 for (const [key, values] of stateRepo.queuedEntries()) {
@@ -3880,7 +3958,7 @@ async function handleInbound(inbound: Inbound): Promise<void> {
         say(t().queueUsage)
         return
       }
-      const held: Inbound = { ...inbound, text: body }
+      const held: Inbound = { ...inbound, text: body, waitTurn: true }
       const binding = loadBindings()[key]
       // Держать имеет смысл, только пока сессия занята ходом. Свободной отдаём сразу:
       // иначе сообщение ждало бы конца хода, который никто не начинал.
@@ -4013,7 +4091,7 @@ async function handleInbound(inbound: Inbound): Promise<void> {
     // переживает рестарт, а доставит её тот же путь, что и всегда — flushQueued.
     // Кроме случая, когда flushQueued нас и позвал: сообщение уже его, вторая копия в очереди
     // прочитается разгрузчиком как «не отдалось, верните в очередь» — и доставится ДВАЖДЫ.
-    const queuedByFlush = flushing.has(key)
+    const queuedByFlush = fromQueue.has(inbound)
     if (!queuedByFlush) {
       enqueueForTopic(key, inbound)
     }
@@ -4058,6 +4136,15 @@ async function handleInbound(inbound: Inbound): Promise<void> {
     // Ждать пейн и перерезолвить conn не нужно — это делает deliverMessage перед самой отправкой.
   }
 
+  // Раньше пришедшие ещё ждут в очереди — новое встаёт за ними, иначе агент прочтёт их не
+  // в том порядке, в каком их писали. Отложенное `/queue` не в счёт: его обгонять и задумано.
+  const earlier = flushing.has(key) || (queuedMessages.get(key) ?? []).some(held => !held.waitTurn)
+  if (!fromQueue.has(inbound) && earlier) {
+    enqueueForTopic(key, inbound)
+    log(`deliver: ${key} — в очереди есть более ранние, встаю за ними`)
+    return
+  }
+
   log(`deliver: ${key} → ${binding.dir} (${conns.length} session${conns.length > 1 ? 's' : ''})`)
 
   // A non-hub slash ("/deep-research …", "/deep_research …") → type it into the session's
@@ -4080,14 +4167,6 @@ async function handleInbound(inbound: Inbound): Promise<void> {
     return
   }
 
-  // 👀 = "received" ack: the reply may lag if the session is busy
-  if (msgId != null) {
-    void bot.api
-      .setMessageReaction(chat_id, msgId, [{ type: 'emoji', emoji: '👀' }])
-      .catch(() => {})
-  }
-  // thread_id is required, otherwise typing goes to General instead of the topic
-  typing(chat_id, threadId)
   const imagePath = downloadImage ? await downloadImage() : undefined
   const meta: Record<string, string> = {
     chat_id,
@@ -4117,10 +4196,19 @@ async function handleInbound(inbound: Inbound): Promise<void> {
   snapshotScreens(key, text, conns)
   armPending(key, { dir: binding.dir, at: Date.now() }) // armed until the agent replies or turnend forwards
   const delivered = await deliverMessage(key, binding.dir, { op: 'event', kind: 'message', content: text, meta }, text)
-  if (!delivered) {
-    // Вход у codex — та же TUI, что у человека, и посреди хода она ввод не принимает. Раньше
-    // сообщение здесь просто исчезало: 👀 на нём уже стояло, а до сессии оно не доходило и
-    // никто об этом не узнавал. Держим до конца хода — как /queue, его же flushQueued и отдаст.
+  if (delivered) {
+    // 👀 = «ушло в сессию» — только после доставки: поставленная заранее, она минуту висела на
+    // сообщении, которое потом всё равно уходило в очередь (😴), и порядок значков врал.
+    if (msgId != null) {
+      void bot.api
+        .setMessageReaction(chat_id, msgId, [{ type: 'emoji', emoji: '👀' }])
+        .catch(() => {})
+    }
+    // thread_id is required, otherwise typing goes to General instead of the topic
+    typing(chat_id, threadId)
+  } else {
+    // Вход у codex — та же TUI, что у человека, и поверх модалки или пикера ввод ей давать
+    // нельзя. Держим до конца хода — как /queue, его же flushQueued и отдаст.
     disarmPending(key) // ничего не отправили — ждать ответа не на что
     enqueueForTopic(key, inbound)
     log(`deliver: ${key} — пейн занят ходом, придержал сообщение до его конца`)
@@ -4139,44 +4227,63 @@ async function handleInbound(inbound: Inbound): Promise<void> {
 //     потеря больше не тихая.
 let nextDeliveryId = 1
 
-// Текст, который печатается прямо в пейн (агенты без нативного входящего канала — Codex).
-// Инструкция про reply здесь не для красоты: у Codex тул есть, но подсказки MCP-сервера до него
-// не доходят, и он отвечает в терминал. Хаб тогда досылает ответ сам, и КАЖДАЯ реплика
-// приезжает с плашкой «↩️ auto-forward» — досыл превращается из страховки в норму.
-const REPLY_HINT = 'Answer via the telegram `reply` tool (chat_id/thread_id from the tag above); '
-  + 'terminal output alone never reaches the user.'
-
-// Подсказку даём ОДИН раз на сессию: агенту хватает, а печатать её в каждое сообщение —
-// засорять и пейн, и его контекст. Ключ — БИНДИНГ, а не пейн: пейн приходит то как id (`%13`),
-// то как цель сессии (`=name:`), и на разных путях доставки подсказка выдавалась повторно.
+// Подсказку про reply даём ОДИН раз на сессию: агенту хватает, а печатать её в каждое
+// сообщение — засорять и пейн, и его контекст. Ключ — БИНДИНГ, а не пейн: пейн приходит то
+// как id (`%13`), то как цель сессии (`=name:`), и на разных путях доставки подсказка
+// выдавалась повторно.
 const hintedKeys = new Set<string>()
 
-function fallbackInboundText(content: string, meta: Record<string, string>, key?: string): string {
-  const details = Object.entries(meta).map(([k, value]) => `${k}=${JSON.stringify(value)}`).join(' ')
-  if (!details) {
-    return content
+/** Вписать входящее в пейн агента без нативного канала (Codex). `msg` — уже помеченный
+ *  delivery_id: первая доставка и переотправка сторожа идут этим одним путём. Когда первая
+ *  печатала неразмеченный payload, сторож не находил сообщение в роллауте и слал его второй раз. */
+async function typeInbound(target: { pane: string; key: string; msg: HubToStub; adapter: AgentAdapter }): Promise<void> {
+  const { pane, key, msg, adapter } = target
+  if (msg.op !== 'event' || msg.kind !== 'message') {
+    return
   }
-  const first = key !== undefined && !hintedKeys.has(key)
-  if (first) {
-    hintedKeys.add(key)
+  const hint = !hintedKeys.has(key)
+  hintedKeys.add(key)
+  await typeText(pane, inboundEnvelope(msg.content, msg.meta, hint))
+  await submitDraft(pane, deliveryNeedle(msg.meta.delivery_id ?? ''), adapter)
+}
+
+// Codex глотает Enter, пришедший вскоре после длинной вставки: на стенде 3.5 КБ с паузой 0.5 с
+// оставались в поле ввода, с паузой 1 с уходили. Поэтому жмём и смотрим, ушло ли, — не ушло,
+// жмём снова. Лишний Enter в пустое поле ввода безвреден.
+const SUBMIT_GAP_MS = 700
+const SUBMIT_TRIES = 4
+
+async function submitDraft(pane: string, needle: string, adapter: AgentAdapter): Promise<void> {
+  for (let i = 0; i < SUBMIT_TRIES; i++) {
+    await new Promise(resolve => setTimeout(resolve, SUBMIT_GAP_MS))
+    await sendKeys(pane, 'Enter')
+    await new Promise(resolve => setTimeout(resolve, SUBMIT_GAP_MS))
+    if (adapter.inboundState(await capturePane(pane).catch(() => ''), needle) !== 'draft') {
+      return
+    }
   }
-  return `[Telegram message; ${details}]\n${first ? `${REPLY_HINT}\n` : ''}${content}`
+}
+
+/** Пейн, куда печатать входящее. Codex starts its stdio MCP only when it first needs a tool:
+ *  until then there is no stub subscription, although its tmux pane is already a perfectly
+ *  live interactive session. Do not relaunch into that pane (which types a second `codex`
+ *  command into the first agent). */
+async function inboundPane(key: string, dir: string, adapter: AgentAdapter): Promise<string | undefined> {
+  const first = connsForBinding(key, dir)[0]
+  const subscribed = first ? router.get(first)?.pane : undefined
+  if (subscribed || adapter.capabilities.nativeInboundTransport) {
+    return subscribed
+  }
+  const binding = loadBindings()[key]
+  return binding && await hasTmuxSession(sessionName(key, binding)).catch(() => false)
+    ? `=${sessionName(key, binding)}:`
+    : undefined
 }
 
 async function deliverMessage(key: string, dir: string, payload: HubToStub, needle: string): Promise<number> {
-  const binding = loadBindings()[key]
-  const adapter = adapterForBinding(binding)
-  const first = connsForBinding(key, dir)[0]
-  // Codex starts its stdio MCP only when it first needs a tool. Until then there is no stub
-  // subscription, although its tmux pane is already a perfectly live interactive session. Do
-  // not relaunch into that pane (which types a second `codex` command into the first agent).
-  const subscribedPane = first ? router.get(first)?.pane : undefined
-  const directPane = !subscribedPane && !adapter.capabilities.nativeInboundTransport && binding
-    && await hasTmuxSession(sessionName(key, binding)).catch(() => false)
-    ? `=${sessionName(key, binding)}:`
-    : undefined
-  const pane = subscribedPane ?? directPane
-  const ready = await waitPaneReady(pane, PANE_READY_MS, adapter)
+  const adapter = adapterForBinding(loadBindings()[key])
+  const pane = await inboundPane(key, dir, adapter)
+  const ready = await waitPane(pane, PANE_READY_MS, text => adapter.inboundReady(text))
   if (!adapter.capabilities.nativeInboundTransport && (!pane || !ready)) {
     log(`delivery: fallback pane is not ready for key=${key}`)
     return 0
@@ -4187,24 +4294,46 @@ async function deliverMessage(key: string, dir: string, payload: HubToStub, need
   // The visible message body is not an identity: two topics that share a directory can
   // send the same text at once. Put the delivery id into the exact envelope Codex records,
   // then use that unique marker for both delivery verification and rollout correlation.
+  // Первым полем — чтобы метку было видно и в строке `↳`, где Codex показывает принятое
+  // посреди хода: длинный конверт там обрезается по ширине пейна.
   const tagged: HubToStub = payload.op === 'event' && payload.kind === 'message'
-    ? { ...payload, id, meta: { ...payload.meta, delivery_id: id } }
+    ? { ...payload, id, meta: { delivery_id: id, ...payload.meta } }
     : payload
   const conns = connsForBinding(key, dir)
   if (adapter.capabilities.nativeInboundTransport) {
     for (const conn of conns) send(conn, tagged)
-  } else if (pane && payload.op === 'event' && payload.kind === 'message') {
+  } else if (pane) {
     // Codex has no Claude Channels notification transport. Its MCP stub still supplies reply,
     // files and session identity; inbound text is submitted through the same tmux TUI users see.
-    await typeLine(pane, fallbackInboundText(payload.content, payload.meta))
+    await typeInbound({ pane, key, msg: tagged, adapter })
   }
   if (conns.length || pane) {
     const correlationNeedle = adapter.kind === 'codex'
-      ? `delivery_id=${JSON.stringify(id)}`
+      ? deliveryNeedle(id)
       : needle.trim().slice(0, 60)
     void watchDelivery(key, dir, tagged, correlationNeedle, at, id, adapter)
   }
   return conns.length || pane ? 1 : 0
+}
+
+/** Принял ли агент впечатанное, хотя в транскрипте его ещё нет: Codex посреди хода держит
+ *  сообщение до вызова тула (строка `↳`), и сорока секунд сторожа на это может не хватить.
+ *  Текст, застрявший в поле ввода (Enter проглотила вставка), дожимаем Enter'ом: переотправка
+ *  положила бы рядом второй экземпляр. */
+async function paneHoldsInbound(key: string, dir: string, needle: string, adapter: AgentAdapter): Promise<boolean> {
+  if (adapter.capabilities.nativeInboundTransport) {
+    return false
+  }
+  const pane = await inboundPane(key, dir, adapter)
+  if (!pane) {
+    return false
+  }
+  const state = adapter.inboundState(await capturePane(pane).catch(() => ''), needle)
+  if (state === 'draft') {
+    log(`delivery: ${key} — сообщение стоит в поле ввода неотправленным, жму Enter`)
+    await sendKeys(pane, 'Enter')
+  }
+  return state === 'pending'
 }
 
 // Боевая обвязка сторожа: реальные часы, транскрипт на диске, сокеты стаба и Telegram.
@@ -4213,25 +4342,19 @@ function deliveryDeps(key: string, dir: string, payload: HubToStub, id: string, 
   return {
     clock: { now: () => Date.now(), sleep: ms => new Promise(r => setTimeout(r, ms)) },
     awaitAck: () => adapter.capabilities.nativeInboundTransport ? awaitAck(id) : Promise.resolve('silent'),
-    // Ответ агента — сам по себе доказательство доставки, причём более надёжное, чем поиск по
-    // транскрипту: у Codex запись хода коррелируется не всегда, сторож не находил сообщение и
-    // ПЕРЕОТПРАВЛЯЛ его — агент отвечал дважды (2026-08-17).
-    sawIncoming: (d, since, needle) =>
-      !fallbackGate.shouldForward(key) || adapter.transcriptSawIncoming(d, since, needle),
+    // Ответ агента — сам по себе доказательство доставки: раз он уже ответил, переотправка
+    // только заставит его ответить второй раз.
+    sawIncoming: async (d, since, needle) =>
+      !fallbackGate.shouldForward(key) || adapter.transcriptSawIncoming(d, since, needle)
+        || await paneHoldsInbound(key, dir, needle, adapter),
     resend: async () => {
       if (adapter.capabilities.nativeInboundTransport) {
         for (const conn of connsForBinding(key, dir)) send(conn, payload)
         return
       }
-      const conn = connsForBinding(key, dir)[0]
-      const binding = loadBindings()[key]
-      const pane = conn
-        ? router.get(conn)?.pane
-        : !adapter.capabilities.nativeInboundTransport && binding && await hasTmuxSession(sessionName(key, binding)).catch(() => false)
-          ? `=${sessionName(key, binding)}:`
-          : undefined
-      if (pane && payload.op === 'event' && payload.kind === 'message') {
-        await typeLine(pane, fallbackInboundText(payload.content, payload.meta, key))
+      const pane = await inboundPane(key, dir, adapter)
+      if (pane) {
+        await typeInbound({ pane, key, msg: payload, adapter })
       }
     },
     warn: async () => {
@@ -4963,10 +5086,10 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
         }
         try {
           if (cmd === 'compact') {
-            await sendKeys(s.pane, '/compact', 'Enter')
+            await typeCliCommand(s, s.pane, '/compact')
             void say(L.compactSent)
           } else if (cmd === 'clear') {
-            await sendKeys(s.pane, '/clear', 'Enter')
+            await typeCliCommand(s, s.pane, '/clear')
             void say(L.historyCleared)
           } else if (cmd === 'esc') {
             // Interrupt the current turn AND drain the input queue. After an interrupt Claude Code
@@ -5014,7 +5137,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
           } else if (cmd === 'model') {
             // Typed as real keystrokes (not a message-event) so the CLI opens its
             // native picker — pollScreens/detectPicker below turns it into buttons.
-            await sendKeys(s.pane, '/model', 'Enter')
+            await typeCliCommand(s, s.pane, '/model')
             void say(L.modelSent)
           } else if (cmd === 'stop') {
             if (!s.pid) {

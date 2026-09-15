@@ -100,8 +100,12 @@ function optionLabel(rest: string): string {
 }
 
 function isSeparator(t: string): boolean {
-  return /^[─▔━]+$/.test(t)
+  return /^[─▔━]+$/.test(t) || /[─━]{8,}/.test(t)
 }
+
+// Строки ленты разговора над инлайн-попапом Codex: реплика агента, эхо сообщения пользователя,
+// хвост вывода тула. Заголовок попапа выше них не продолжается.
+const TRANSCRIPT_LINE_RE = /^(?:[•●⏺]\s|›\s|└)/
 
 // Опции с превью рисуются в ДВЕ колонки: слева список, справа рамка с примером. Всё, что
 // правее рамки, к выбору отношения не имеет — режем, иначе label уносит с собой чужой текст.
@@ -112,6 +116,9 @@ const BOX_ONLY_RE = /^[┌┐└┘├┤─│\s]+$/
 // Подсказки TUI между списком и футером. Именно перечислением: любой НЕизвестный текст в этом
 // месте по-прежнему означает «это не пикер», иначе кнопками уедет вывод агента.
 const HINT_RE = /^(?:Notes: press n to add notes|Chat about this|Press \S+ .*)$/
+// Строка усилия под списком моделей Claude (`○ Effort not supported for Haiku`, `◐ Medium effort`):
+// принимали её за текст диалога без вариантов, и /model после выбора Haiku в чат не выносился.
+const EFFORT_LINE_RE = /^[○◐◑◒◓◔◕]\s.*effort/i
 // «Chat about this» — настоящий пункт списка, а не подсказка. В обычной раскладке он приходит
 // с номером (`4. Chat about this`), а в раскладке с превью номер теряется и остаётся голая
 // строка под чертой — и до 24.08 она молча уезжала в chrome, из-за чего кнопки в чате не было.
@@ -127,6 +134,9 @@ function isChrome(t: string): boolean {
     return true
   }
   if (/^[☐☒]/.test(t)) {
+    return true
+  }
+  if (EFFORT_LINE_RE.test(t)) {
     return true
   }
   if (t.startsWith('←') && (t.includes('Submit') || t.includes('→'))) {
@@ -319,8 +329,14 @@ function parseNumberedPicker(text: string): Picker | undefined {
       chatAbout = true
       continue
     }
+    if (!t && titleParts.length >= 2) {
+      break
+    }
     if (isChrome(t)) {
       continue
+    }
+    if (TRANSCRIPT_LINE_RE.test(t)) {
+      break
     }
     if (options.length === 0) {
       // Текст между футером и первой опцией = это не список выбора, а диалог без вариантов

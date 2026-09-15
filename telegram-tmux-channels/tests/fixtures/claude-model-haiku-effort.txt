@@ -1,0 +1,100 @@
+
+ ▐▛███▛█   Claude Code v2.1.268
+▝▜██████▀  Haiku 4.5 · Claude API
+  ▝▝ ▝▝    ~/projects/sandbox--smoke-claude-1786995384
+
+▎ Channels (experimental) messages from server:telegram inject directly in this session · restart without --dangerously-load-development-channels to stop
+
+❯ Run the shell command: sleep 3000 — with run_in_background true. Do not wait for it, just answer ok.
+
+  Ran 1 shell command
+
+● ok
+
+✻ Churned for 7s · done Friday 7:02 PM
+
+● Background shell command didn't finish before the previous session ended
+
+● The background sleep 3000 from the prior session didn't complete—it got stopped when that session ended. Nothing further to do unless you'd like me to re-run it.
+
+✻ Crunched for 4s · done 10:11 AM
+
+❯ /model
+  ⎿  Set model to Haiku 4.5 and saved as your default for new sessions
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+   Select model
+   Switch between Claude models. Your pick becomes the default for new sessions. For other/previous model names, specify with --model.
+
+     1. Default (recommended)  Sonnet 5 · Efficient for routine tasks
+     2. Sonnet                 Sonnet 5 · Efficient for routine tasks
+     3. Opus                   Opus 5 · Best for everyday, complex tasks
+   ❯ 4. Haiku ✔                Haiku 4.5 · Fastest for quick answers
+
+   ○ Effort not supported for Haiku
+
+   Enter to set as default · s to use this session only · Esc to cancel

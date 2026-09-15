@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import { parsePicker } from '../src/picker'
-import { buildKeyboard, parseCallback } from '../src/picker-drive'
+import { buildKeyboard, confirmAfterDigit, parseCallback } from '../src/picker-drive'
 
 const fx = (n: string) => readFileSync(join(import.meta.dir, 'fixtures', n), 'utf8')
 
@@ -32,5 +32,23 @@ describe('parseCallback', () => {
     expect(parseCallback('pk:dcab0000:s')).toEqual({ token: 'dcab0000', action: { kind: 'submit' } })
     expect(parseCallback('pk:dcab0000:c')).toEqual({ token: 'dcab0000', action: { kind: 'custom' } })
     expect(parseCallback('perm:allow:abcde')).toBeUndefined()
+  })
+})
+
+// Страж 15.09: в Codex цифра на первой стадии /model уже выбирает модель и открывает вторую
+// (усилие), а Enter хаба через полсекунды подтверждал там вариант под курсором за человека.
+describe('confirmAfterDigit', () => {
+  const stage1 = parsePicker(fx('codex-0154-model-picker.txt'))!
+
+  test('на экране открылась следующая стадия — Enter не жмём', () => {
+    expect(confirmAfterDigit(parsePicker(fx('codex-0154-reasoning-stage.txt')), stage1.hash)).toBe(false)
+  })
+
+  test('тот же пикер (Claude: цифра сдвинула курсор) — Enter подтверждает', () => {
+    expect(confirmAfterDigit(parsePicker(fx('codex-0154-model-picker.txt')), stage1.hash)).toBe(true)
+  })
+
+  test('пикер закрылся — Enter безвреден', () => {
+    expect(confirmAfterDigit(undefined, stage1.hash)).toBe(true)
   })
 })

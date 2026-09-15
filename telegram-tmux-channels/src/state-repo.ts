@@ -36,7 +36,7 @@ export type HubState = {
 export type PersistedError = { err: string; at: number }
 
 export type PersistedPendingMode = { cfg: TrustedGroupConfig; topicName: string; chatId: string; threadId: number; agent?: 'claude' | 'codex'; hookOff?: boolean }
-export type PersistedInbound = { text: string; chatId: string; threadId?: number; senderId: string; username?: string; msgId?: number; at: number; literal?: boolean; reply?: ReplyContext }
+export type PersistedInbound = { text: string; chatId: string; threadId?: number; senderId: string; username?: string; msgId?: number; at: number; literal?: boolean; reply?: ReplyContext; waitTurn?: boolean }
 // A fresh launch has no session id yet. Preserve the pre-launch rollout ids so
 // a hub restart can continue the exact capture instead of guessing the newest
 // conversation in a shared directory.

@@ -1,0 +1,57 @@
+    86 -| `~/.claude-mem/` | личная память Claude Code (плагин `thedotmack`, per-machine): `claude-mem.db` (тексты + FTS), `chroma/` (векторы, производный индекс) и `settings.json` (`0600`, настройки + отдельный ключ Sub2API для observer на `gpt-5.6-terra`). Операции и починка — ски
+        лл `.claude/skills/claude-mem-ops` |
+    86 +| `~/.claude-mem/` | личная память Claude Code (плагин `thedotmack`, per-machine): `claude-mem.db` (тексты + FTS), `chroma/` (векторы, производный индекс) и `settings.json` (`0600`, настройки + отдельный ключ Sub2API для observer на `gpt-5.6-luna`). Операции и починка — скил
+        л `.claude/skills/claude-mem-ops` |
+    87  | `~/.local/share/dsh/` · `~/.dsh/` | DeepSeek Harness: установка из npm и его стейт (сессии, ключи провайдеров в `.credentials.yaml` — **секрет**). Деталь — [`apps/dsh.md`](../../apps/dsh.md) |
+
+  └ hosts/homelab/reproduce.md (+1 -1)
+    200  # CLAUDE_MEM_OPENROUTER_BASE_URL=https://sub2api.windbit.dev/v1 и
+    201 -# CLAUDE_MEM_OPENROUTER_MODEL=gpt-5.6-terra. Там же отдельный секретный ключ Sub2API,
+    201 +# CLAUDE_MEM_OPENROUTER_MODEL=gpt-5.6-luna. Там же отдельный секретный ключ Sub2API,
+    202  # поэтому файл должен оставаться 0600 и восстанавливаться из бэкапа; см. скилл claude-mem-ops.
+
+• Ran set -eu
+  │ settings=/home/user/.claude-mem/settings.json
+  │ response=$(mktemp /tmp/claude-mem-luna-smoke.XXXXXX)
+  │ … +17 lines
+  └ smoke_model=gpt-5.6-luna reply=OK
+    runtime_model=gpt-5.6-luna provider=openrouter mode=600 pid=1642345 failures=0
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• Модель уже переключена и отвечает. Так как одновременно обновилась документация восстановления, прогоняю docs-guard: сверю имя модели и ключи конфигурации с живым API и исходниками claude-mem.
+
+• Called
+  └ telegram.reply({"chat_id":"-1004495746357","thread_id":"3615","reply_to":"3673","text":"Модель уже переключена и отвечает. Так как одновременно обновилась документация восстановления, прогоняю docs-guard: сверю имя модели и ключи конфигурации с живым API и исходниками claude-
+        mem."})
+    sent (id: 3675)
+
+• Ran sed -n '1,220p' /home/user/.agents/skills/docs-guard/SKILL.md >/dev/null
+  │ set -eu
+  │ plugin=/home/user/.claude/plugins/cache/thedotmack/claude-mem/13.24.23/scripts/worker-service.cjs
+  │ … +7 lines
+  └ docs-guard passed
+
+• Called
+  └ telegram.reply({"chat_id":"-1004495746357","thread_id":"3615","reply_to":"3673","text":"Готово, claude-mem теперь на `gpt-5.6-luna`.\n\nПроверил реальным запросом: модель вернула `OK`; worker видит `provider=openrouter`, `model=gpt-5.6-luna`, ошибок подряд `0`. PID остался
+        прежним — перезапуска не было. Отдельный ключ и Sub2API endpoint не менялись, права конфига остались `0600`. Документацию восстановления тоже обновил и проверил."})
+    sent (id: 3676)
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• Готово, claude-mem переведён на gpt-5.6-luna. Проверка прошла, worker перезапускать не пришлось.
+
+─ Worked for 1m 05s ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+  Select Model and Effort
+  Access legacy models by running codex -m <model_name> or in your config.toml
+
+  1. gpt-6-astra (default)  Our most capable model for complex, demanding work.
+› 2. gpt-5.6-sol (current)  Reliable agentic workhorse for everyday tasks.
+  3. gpt-5.6-terra          Balanced agentic coding model for everyday work.
+  4. gpt-5.6-luna           Fast and affordable agentic coding model.
+  5. gpt-5.5                Proven previous-generation model for coding and general work.
+  6. gpt-5.3-codex-spark    Ultra-fast coding model.
+
+  Press enter to confirm or esc to go back

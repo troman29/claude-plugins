@@ -1,0 +1,50 @@
+╭─────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.154.0)                  │
+│                                             │
+│ model:       gpt-6-astra   /model to change │
+│ directory:   ~/projects/codex-probe         │
+│ permissions: YOLO mode                      │
+╰─────────────────────────────────────────────╯
+
+  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-art in coding, computer use, science, and professional work. Give it a hard problem, a half-formed idea, or anything
+  you've been meaning to build. See where it takes you.
+
+• You have 3 usage limit resets available. Run /usage to use one.
+
+
+› Run the shell command: sleep 45 && echo FIRST-DONE. Then reply with just FIRST-DONE.
+
+
+• I’ll run the command and wait for it to finish.
+
+
+› SECOND: what is 2+2? answer SECOND=4
+
+
+• SECOND=4
+
+• Ran sleep 45 && echo FIRST-DONE
+  └ FIRST-DONE
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• FIRST-DONE
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+  Select Model and Effort
+  Access legacy models by running codex -m <model_name> or in your config.toml
+
+› 1. gpt-6-astra (current)  Our most capable model for complex, demanding work.
+  2. gpt-5.6-sol            Reliable agentic workhorse for everyday tasks.
+  3. gpt-5.6-terra          Balanced agentic coding model for everyday work.
+  4. gpt-5.6-luna           Fast and affordable agentic coding model.
+  5. gpt-5.5                Proven previous-generation model for coding and general work.
+
+  Press enter to confirm or esc to go back
+
+
+
+
+

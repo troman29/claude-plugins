@@ -289,3 +289,44 @@ describe('безномерной стартовый гейт', () => {
     expect(parsePicker('Готово.\nВсё сделано.\n\n Enter to confirm · Esc to cancel')).toBeUndefined()
   })
 })
+
+// Пикер /model в Codex рисуется прямо под лентой разговора. Страж 15.09: в заголовок попадали
+// строка «─ Worked for 1m 05s ───…» и реплики над попапом, а от каждой новой реплики менялся
+// хеш — и один открытый попап уходил в чат двумя-тремя сообщениями.
+describe('Codex /model под лентой разговора', () => {
+  const clean = (title: string) => {
+    expect(title).toContain('Select Model and Effort')
+    expect(title).not.toMatch(/[─━•]/)
+  }
+
+  test('разделитель с текстом внутри — не заголовок', () => {
+    clean(parsePicker(fx('codex-model-worked-separator.txt'))!.title)
+  })
+
+  test('реплики над попапом в заголовок не попадают', () => {
+    const underUser = parsePicker(fx('codex-model-under-user-msg.txt'))!
+    const streamed = parsePicker(fx('codex-model-agent-streamed-above.txt'))!
+    clean(underUser.title)
+    clean(streamed.title)
+    expect(underUser.title).not.toContain('ты где')
+  })
+
+  test('новая реплика над открытым попапом не меняет хеш', () => {
+    expect(parsePicker(fx('codex-model-agent-streamed-above.txt'))!.hash)
+      .toBe(parsePicker(fx('codex-model-under-user-msg.txt'))!.hash)
+  })
+
+  test('живой снимок 0.154: пять моделей и чистый заголовок', () => {
+    const p = parsePicker(fx('codex-0154-model-picker.txt'))!
+    clean(p.title)
+    expect(p.options).toHaveLength(5)
+  })
+})
+
+test('Claude /model со строкой усилия под списком — всё ещё пикер', () => {
+  // живой снимок: после выбора Haiku под списком «○ Effort not supported for Haiku», и повторный
+  // /model в чат не выносился — хаб писал «modal not parsed»
+  const p = parsePicker(fx('claude-model-haiku-effort.txt'))!
+  expect(p.options.map(option => option.label)).toEqual(['Default (recommended)', 'Sonnet', 'Opus', 'Haiku'])
+  expect(p.title).toContain('Select model')
+})
