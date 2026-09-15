@@ -3,18 +3,20 @@
 
 export type OpsCommand =
   | 'compact' | 'clear' | 'esc' | 'enter' | 'restart' | 'resume' | 'new' | 'fork' | 'status' | 'doctor'
-  | 'bind' | 'unbind' | 'allow' | 'model' | 'stop' | 'screen' | 'tui' | 'delete' | 'skills' | 'reload'
+  | 'bind' | 'unbind' | 'allow' | 'model' | 'close' | 'screen' | 'tui' | 'delete' | 'skills' | 'reload'
   | 'stand_up' | 'stand_down' | 'pin' | 'unpin' | 'lang' | 'queue' | 'send'
 
 // `/q` — короткий алиас `/queue`: команда набирается на бегу, посреди чужого хода.
 // /last — прежнее имя /tui: команду переименовали, привычку оставили работать.
-const OPS_ALIASES: Record<string, OpsCommand> = { q: 'queue', last: 'tui' }
+// /stop — прерывание хода, как /esc: так его читают все, а гасил он сессию целиком. Закрыть
+// сессию — /close.
+const OPS_ALIASES: Record<string, OpsCommand> = { q: 'queue', last: 'tui', stop: 'esc' }
 
 export function parseOpsCommand(
   text: string,
 ): { cmd: OpsCommand; bot?: string; arg?: string } | undefined {
   const m =
-    /^\/(compact|clear|esc|enter|restart|resume|new|fork|status|doctor|bind|unbind|allow|model|stop|screen|tui|last|delete|skills|reload|stand_up|stand_down|pin|unpin|lang)(?:@(\w+))?(?:\s+(\S.*?))?\s*$/.exec(
+    /^\/(compact|clear|esc|enter|restart|resume|new|fork|status|doctor|bind|unbind|allow|model|close|stop|screen|tui|last|delete|skills|reload|stand_up|stand_down|pin|unpin|lang)(?:@(\w+))?(?:\s+(\S.*?))?\s*$/.exec(
       text.trim(),
     ) ??
     // Отдельным разбором, потому что аргумент `/queue` — текст задачи, и он бывает
@@ -383,6 +385,9 @@ export async function paneCurrentCommand(pane: string): Promise<string> {
 }
 
 const TYPE_ENTER_GAP_MS = 500
+const CTRL_C_EXIT_MS = 3000
+const EXIT_POLL_MS = 250
+const SHELLS = new Set(['bash', 'zsh', 'sh', 'fish', 'dash'])
 // Seconds the user gets to answer the exit-confirm via Telegram buttons.
 export const EXIT_CONFIRM_GRACE_S = 10
 // Сколько строк пейна печатать в лог, когда остановка не удалась: хватает, чтобы узнать модалку.
@@ -535,6 +540,16 @@ export function paneDigest(text: string, maxLines = 24, maxChars = 3500): string
 // confirms): new-folder trust and the dev-channel warning. They can appear in
 // sequence (trust first, then dev-warning), so we click both over a ~30s window.
 
+async function exitsWithin(pid: number, ms: number): Promise<boolean> {
+  for (let waited = 0; waited < ms; waited += EXIT_POLL_MS) {
+    if (!alive(pid)) {
+      return true
+    }
+    await sleep(EXIT_POLL_MS)
+  }
+  return !alive(pid)
+}
+
 export function alive(pid: number): boolean {
   try {
     process.kill(pid, 0)
@@ -622,17 +637,19 @@ export async function stopSession(
   log(`stop: pane=${pane} pid=${pid}`)
   const scope = scopeOfPid(pid) // читаем ДО убийства: у мёртвого pid cgroup уже не спросишь
   await sendKeys(pane, 'C-c')
-  await sleep(1500)
-  // Codex exits on Ctrl-C when it is idle.  Do not type Claude's `/exit` into
-  // the shell that has already replaced it: apart from a noisy error, that can
-  // race the next launch in the same tmux pane.
-  if (!alive(pid)) {
+  // Codex exits on Ctrl-C when it is idle — but not always within a fixed pause: on the stand it
+  // took longer than 1.5 s, and `/exit` landed in bash. Wait for the process, and never type into
+  // a pane whose foreground is already a shell: apart from a noisy error, that can race the next
+  // launch in the same tmux pane.
+  if (await exitsWithin(pid, CTRL_C_EXIT_MS)) {
     if (scope) {
       await stopScope(scope, log)
     }
     return true
   }
-  await typeLine(pane, '/exit')
+  if (!SHELLS.has(await paneCurrentCommand(pane).catch(() => ''))) {
+    await typeLine(pane, '/exit')
+  }
   // Graceful window, 1s granularity. The background-shell confirm ("Exit
   // anyway / Move to background / Stay") is surfaced to Telegram as buttons by
   // the hub's picker bridge — give the user EXIT_CONFIRM_GRACE_S to answer it

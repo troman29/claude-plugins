@@ -11,7 +11,7 @@ to expose the same Telegram behavior.
 | Deliver plain text/media while idle or busy | channel notification + ack | tmux input + transcript ack | idle and queued delivery scenarios |
 | Agent text/file/voice reply and edit/react | MCP reply tools | transcript final + hub operations | outbound contract scenarios |
 | Permission prompts as Telegram buttons | native permission RPC + picker | TUI picker | allow/deny integration |
-| `/new`, `/resume [id]`, `/fork`, `/restart`, `/stop` | CLI adapter | CLI adapter | launch argv contract + live smoke |
+| `/new`, `/resume [id]`, `/fork`, `/restart`, `/close` | CLI adapter | CLI adapter | launch argv contract + live smoke |
 | `/compact`, `/clear`, `/esc`, `/enter`, `/queue` | TUI adapter | TUI adapter | captured-pane fixtures |
 | `/model` and `AskUserQuestion` buttons | Claude picker | Codex picker | picker fixtures + drive tests |
 | `/status`, `/screen`, `/last`, limits/context/errors | statusline cache + pane parsers | on-demand `/status` modal + pane parsers | real 0.147 status fixture; refuses a non-empty local composer |
@@ -45,7 +45,7 @@ Legend: ✅ supported, ◐ partial or materially different, — not found in the
 | Text-to-speech replies | ✅ | ✅ | Hub uses OpenAI TTS; CCGram supports Edge or OpenAI TTS. |
 | Permission and interactive-question buttons | ✅ | ✅ | Both bridge terminal/agent prompts to Telegram buttons. |
 | Restart-safe interactive buttons and message edits | ✅ | ◐ | Hub persists typed interaction records and restores live views/drafts; CCGram handles stale callbacks but does not document the same restart contract for every interaction. |
-| `/new`, `/resume`, `/restart`, and `/stop` lifecycle control | ✅ | ✅ | Both recover dead sessions; Hub also has a first-class `/fork` that creates a separate Telegram topic. |
+| `/new`, `/resume`, `/restart`, and `/close` lifecycle control | ✅ | ✅ | Both recover dead sessions; Hub also has a first-class `/fork` that creates a separate Telegram topic. |
 | `/fork` into a new independent topic | ✅ | — | CCGram may forward provider `/fork`; no equivalent topic-branch lifecycle was found. |
 | `/compact`, `/clear`, `/esc`, and `/enter` terminal control | ✅ | ✅ | CCGram exposes common actions through its toolbar as well as commands. |
 | Queue/follow-up without steering the active turn | ✅ | ◐ | Hub provides provider-neutral `/queue`; CCGram documents `/followup` for Pi. |

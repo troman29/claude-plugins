@@ -50,6 +50,7 @@ import { resolveModeDir, gitBranch, runHookDelete, removePlainWorktree, runStand
 import { PROJECT_CONFIG_FILE, parseStandLinks, standLogTail, worktreeBases } from './project-config'
 import { watchDelivery as watchDeliveryCore, type DeliveryDeps } from './delivery'
 import { deliveryNeedle, inboundEnvelope } from './inbound-envelope'
+import { laneOf, Lanes } from './update-lanes'
 import { FallbackGate } from './fallback-gate'
 import { topic as inTopic } from './chat'
 import { HubStateRepository, type PersistedPicker, type PersistedInbound, type PersistedLaunchCapture } from './state-repo'
@@ -121,7 +122,11 @@ function codePath(p: string): string {
 // `/status` is a modal in Codex, not a stable machine API.  Open it only on an explicitly
 // requested Telegram /status and only if the adapter proves that the composer is untouched;
 // otherwise a local tmux draft could be submitted.  The panel is always closed before return.
-async function readLiveStatusPanel(adapter: AgentAdapter, pane: string): Promise<AgentStatusPanel | undefined> {
+function readLiveStatusPanel(adapter: AgentAdapter, pane: string): Promise<AgentStatusPanel | undefined> {
+  return paneInput.run(pane, () => readLiveStatusPanelUnlocked(adapter, pane))
+}
+
+async function readLiveStatusPanelUnlocked(adapter: AgentAdapter, pane: string): Promise<AgentStatusPanel | undefined> {
   if (!adapter.statusPanelCommand) return undefined
   const [before, ansiBefore] = await Promise.all([
     capturePane(pane).catch(() => ''),
@@ -253,6 +258,7 @@ const IDLE_UNLOAD_MS = (() => {
 // timer measures from here; a live session with no entry is treated as "just active" (now).
 const lastActivity = new Map<string, number>()
 const unloading = new Set<string>() // guards against re-triggering while a stop is in flight
+const closing = new Set<string>() // /close в процессе: очередь не отдаём в гаснущую сессию
 const idleUnloaded = new Set<string>() // was suspended by idle-unload → wake gets one quiet msg
 function markActivity(keys: string[] | undefined): void {
   const now = Date.now()
@@ -262,18 +268,19 @@ function markActivity(keys: string[] | undefined): void {
   }
 }
 
-// The suspended state also lives in bindings.json: a reboot kills tmux, and boot-revive would
-// otherwise start every sleeping session at once — a memory spike for topics nobody asked for.
-function persistUnloaded(keys: string[], unloaded: boolean): void {
+// Спящее и закрытое состояние живёт в bindings.json: перезагрузка убивает tmux, и boot-revive
+// иначе поднял бы и выгруженные по простою сессии (всплеск памяти ради топиков, которые никто
+// не звал), и закрытые через /close (сессия «сама» оживала после перезагрузки).
+function persistFlag(keys: string[], flag: 'unloaded' | 'closed', on: boolean): void {
   const reg = loadBindings()
   let changed = false
   for (const k of keys) {
     const b = reg[k]
-    if (b && Boolean(b.unloaded) !== unloaded) {
-      if (unloaded) {
-        b.unloaded = true
+    if (b && Boolean(b[flag]) !== on) {
+      if (on) {
+        b[flag] = true
       } else {
-        delete b.unloaded
+        delete b[flag]
       }
       changed = true
     }
@@ -341,9 +348,14 @@ const throttler = apiThrottler()
 bot.api.config.use((prev, method, payload, signal) =>
   method === 'sendChatAction' ? prev(method, payload, signal) : throttler(prev, method, payload, signal),
 )
-bot.use(async (ctx, next) => {
+const updateLanes = new Lanes()
+// Ввод в один пейн — строго по очереди (см. update-lanes).
+const paneInput = new Lanes()
+bot.use((ctx, next) => {
   logDebugEvent({ type: 'tg_in', update: ctx.update })
-  await next()
+  // Не ждём: опрос сразу берёт следующий апдейт, а этот идёт в полосе своего топика.
+  void updateLanes.run(laneOf(ctx.update), () => next())
+    .catch(err => log(`handler error (polling continues): ${err instanceof Error ? err.stack : err}`))
 })
 
 const router = new Router<Socket<undefined>>()
@@ -1522,7 +1534,7 @@ function paneBelongsToKey(pane: string, key: string): boolean {
 // so the menu re-registers (with translated descriptions) whenever /lang switches.
 const OPS_NAMES = new Set([
   'status', 'doctor', 'resume', 'screen', 'tui', 'new', 'fork', 'skills', 'stand_up', 'stand_down',
-  'pin', 'unpin', 'reload', 'compact', 'clear', 'esc', 'enter', 'model', 'stop',
+  'pin', 'unpin', 'reload', 'compact', 'clear', 'esc', 'enter', 'model', 'close',
   'restart', 'bind', 'unbind', 'delete', 'allow', 'lang', 'send',
 ])
 function opsCommands(): { command: string; description: string }[] {
@@ -1548,7 +1560,7 @@ function opsCommands(): { command: string; description: string }[] {
     { command: 'queue', description: L.cmd_queue },
     { command: 'send', description: L.cmd_send },
     { command: 'model', description: L.cmd_model },
-    { command: 'stop', description: L.cmd_stop },
+    { command: 'close', description: L.cmd_close },
     { command: 'restart', description: L.cmd_restart },
     { command: 'bind', description: L.cmd_bind },
     { command: 'unbind', description: L.cmd_unbind },
@@ -1780,7 +1792,7 @@ async function injectSkillToPanes(
     const session = router.get(conn)
     await waitPaneReady(pane, PANE_READY_MS, session ? adapterForSession(session) : undefined)
     const inject = agent === 'claude' ? typeSlashCommand : typeLine
-    await inject(pane, cmdText).catch(e => log(`inject skill failed: ${e}`))
+    await paneInput.run(pane, () => inject(pane, cmdText)).catch(e => log(`inject skill failed: ${e}`))
     typed = true
   }
   if (typed) {
@@ -1905,7 +1917,7 @@ async function handleSubagentEvent(msg: Extract<StubToHub, { op: 'subagent' }>):
       statusPost.endTurn(key)
       await forwardFallbackReply(key) // agent didn't reply → forward its final text ourselves
       fallbackGate.endTurn(key) // ход закрыт: следующий начинается с чистого листа
-      await flushQueued(key) // отложенное через /queue — ход кончился, самое время
+      flushQueuedInLane(key) // отложенное через /queue — ход кончился, самое время
     }
     return
   }
@@ -2472,7 +2484,7 @@ async function maybeIdleUnload(s: SessionInfo & { pane: string }, working: boole
       lastActivity.delete(k)
       idleUnloaded.add(k)
     }
-    persistUnloaded(keys, true)
+    persistFlag(keys, 'unloaded', true)
     // Стенд спит вместе с сессией: пока агент выгружен, его backend/frontend только едят
     // память. Отдельного порога у сна НЕТ намеренно — момент один и тот же.
     const standDir = s.cwd
@@ -2490,7 +2502,11 @@ async function maybeIdleUnload(s: SessionInfo & { pane: string }, working: boole
 }
 
 /** «Chat about this» выбирается стрелками: номера у него нет (см. CHAT_ABOUT_INDEX). */
-async function pressChatAbout(pane: string, picker: Picker): Promise<void> {
+function pressChatAbout(pane: string, picker: Picker): Promise<void> {
+  return paneInput.run(pane, () => pressChatAboutUnlocked(pane, picker))
+}
+
+async function pressChatAboutUnlocked(pane: string, picker: Picker): Promise<void> {
   const numbered = picker.options.filter(option => option.index > 0).map(option => option.index)
   const last = numbered.length ? Math.max(...numbered) : 1
   const cursor = pickerCursorIndex(await capturePane(pane).catch(() => '')) ?? 1
@@ -2505,24 +2521,28 @@ async function pressChatAbout(pane: string, picker: Picker): Promise<void> {
 
 /** Набрать слэш-команду самого CLI. Codex пачку «текст+Enter» одним send-keys принимает за
  *  вставку и Enter глотает: `/model` оставался в поле ввода, пока не нажмёшь Enter через /tui. */
-async function typeCliCommand(session: SessionInfo, pane: string, command: string): Promise<void> {
-  if (adapterForSession(session).kind === 'codex') {
-    await typeLine(pane, command)
-    return
-  }
-  await sendKeys(pane, command, 'Enter')
+function typeCliCommand(session: SessionInfo, pane: string, command: string): Promise<void> {
+  return paneInput.run(pane, async () => {
+    if (adapterForSession(session).kind === 'codex') {
+      await typeLine(pane, command)
+      return
+    }
+    await sendKeys(pane, command, 'Enter')
+  })
 }
 
 // Сколько ждать после цифры, прежде чем смотреть, что стало с пикером: следующая стадия /model
 // у Codex дорисовывается за ~300 мс.
 const DIGIT_SETTLE_MS = 500
 
-async function chooseOption(pane: string, index: number, tappedHash: string): Promise<void> {
-  await sendKeys(pane, String(index))
-  await new Promise(resolve => setTimeout(resolve, DIGIT_SETTLE_MS))
-  if (confirmAfterDigit(parsePicker(await capturePane(pane).catch(() => '')), tappedHash)) {
-    await sendKeys(pane, 'Enter')
-  }
+function chooseOption(pane: string, index: number, tappedHash: string): Promise<void> {
+  return paneInput.run(pane, async () => {
+    await sendKeys(pane, String(index))
+    await new Promise(resolve => setTimeout(resolve, DIGIT_SETTLE_MS))
+    if (confirmAfterDigit(parsePicker(await capturePane(pane).catch(() => '')), tappedHash)) {
+      await sendKeys(pane, 'Enter')
+    }
+  })
 }
 
 /** Закрыть слежение за ОТВЕЧЕННЫМ пикером. Пока ответ печатался, на его месте мог открыться
@@ -2580,7 +2600,7 @@ async function handlePickCallback(
     typing(ap.chatId, ap.threadId) // agent resumes on the answer
     await ctx.answerCallbackQuery({ text: t().toastChosen }).catch(() => {})
   } else if (action.kind === 'opt') {
-    await sendKeys(pane, String(action.index)) // multi: toggle checkbox
+    await paneInput.run(pane, () => sendKeys(pane, String(action.index))) // multi: toggle checkbox
     await ctx.answerCallbackQuery().catch(() => {})
     const text = await capturePane(pane).catch(() => '')
     await ctx
@@ -2727,13 +2747,14 @@ async function handleStubMessage(sock: Socket<undefined>, msg: StubToHub): Promi
     }
     router.subscribe(sock, session)
     markActivity(session.bindingKeys) // fresh session = active now; starts the idle clock
-    persistUnloaded(session.bindingKeys ?? [], false)
+    persistFlag(session.bindingKeys ?? [], 'unloaded', false)
+    persistFlag(session.bindingKeys ?? [], 'closed', false)
     learnCmdline(session)
     log(`subscribe: cwd=${session.cwd ?? '-'} pane=${session.pane ?? '-'}`)
     // Сессия дошла — снять сторожа и отдать всё, что придержали, пока она поднималась.
     for (const key of session.bindingKeys ?? []) {
       clearBringUp(key)
-      void flushQueued(key)
+      flushQueuedInLane(key)
     }
     return
   }
@@ -3330,6 +3351,9 @@ async function reviveBoundSessions(): Promise<void> {
       idleUnloaded.add(key) // it was asleep before the reboot — leave it so; an inbound wakes it
       continue
     }
+    if (binding.closed) {
+      continue // закрыта через /close — поднимет её сообщение или кнопка, не перезагрузка
+    }
     if (await hasTmuxSession(sessionName(key, binding))) {
       continue
     }
@@ -3565,6 +3589,10 @@ function armMode(key: string, value: PendingModeChoice, chatId: string, threadId
 }
 function disarmMode(key: string): void { pendingModeChoice.delete(key); stateRepo.delPendingMode(key) }
 const TOPIC_RETRY_TTL_MS = 24 * 60 * 60_000
+// Команды, которым нужна живая сессия: на закрытой они её поднимают (вслух). Остальные —
+// взгляд, одно нажатие, повторное закрытие — отвечают «сессия закрыта» с кнопками подъёма.
+const REVIVING_OPS: ReadonlySet<OpsCommand> = new Set(['compact', 'clear', 'model', 'restart'])
+const REVIVE_WAIT_MS = 30_000
 const HELD_REACTION = '😴' // одна на все очереди: /queue, подъём, занятый ход
 
 function enqueueForTopic(key: string, inbound: Inbound): void {
@@ -3619,7 +3647,18 @@ function holdInOrder(key: string, messages: Inbound[]): void {
   stateRepo.setQueued(key, ordered.map(persistInbound))
 }
 
+/** Отдать очередь топика в его полосе апдейтов — для вызовов извне обработчиков (подписка стаба,
+ *  конец хода, подъём). Иначе разборка шла мимо полосы, и пришедший позже `/model` впечатывался
+ *  раньше придержанного сообщения: цифры конверта выбирали модель в открытом пикере. */
+function flushQueuedInLane(key: string): void {
+  void updateLanes.run(key, () => flushQueued(key))
+    .catch(err => log(`queue flush failed: ${key} ${err instanceof Error ? err.stack : err}`))
+}
+
 async function flushQueued(key: string): Promise<void> {
+  if (closing.has(key) || unloading.has(key)) {
+    return // сессия гаснет: отдать туда — потерять; очередь поднимет следующий подъём
+  }
   const q = liveQueue(key)
   if (!q.length) {
     queuedMessages.delete(key)
@@ -3774,7 +3813,7 @@ async function runAutoTopic(
     // Биндинга нет — подъём не состоялся: отдавать очередь некуда, а ждать её 30 секунд
     // впустую тем более незачем. Она дождётся кнопки повтора.
     if (loadBindings()[key]) {
-      await flushQueued(key)
+      flushQueuedInLane(key)
     }
   }
 }
@@ -3887,10 +3926,12 @@ function reviveInbound(value: PersistedInbound): Inbound {
   return { ctx, text: value.text, literal: value.literal, reply: value.reply, ...(value.waitTurn ? { waitTurn: true } : {}) }
 }
 
+const awaitingMode = new Set(stateRepo.pendingModeEntries().map(([key]) => key))
 for (const [key, values] of stateRepo.queuedEntries()) {
   // Очередь отвязанного топика доставлять некуда: биндинга нет, а при повторном `/bind` этого
   // же топика она села бы в чужую сессию. Такое остаётся от подъёма, упавшего перед `/delete`.
-  if (!loadBindings()[key]) {
+  // Кроме топика, который ждёт выбора режима: биндинга у него нет, потому что режим ещё не выбран.
+  if (!loadBindings()[key] && !awaitingMode.has(key)) {
     log(`queue: ${key} — биндинга нет, выбрасываю ${values.length} придержанных сообщ.`)
     stateRepo.delQueued(key)
     continue
@@ -4024,7 +4065,7 @@ async function handleInbound(inbound: Inbound): Promise<void> {
         // Do not press Enter: it toggles the custom checkbox back off. The multi
         // picker marks the inline value selected as it is typed; Submit remains a
         // separate Telegram button for the complete selection.
-        await typeText(pane, text)
+        await paneInput.run(pane, () => typeText(pane, text))
         // A multi answer is not complete until the user presses Submit. Keep its
         // Telegram keyboard armed so subsequent option changes and Submit still work.
         if (ap) {
@@ -4036,7 +4077,7 @@ async function handleInbound(inbound: Inbound): Promise<void> {
           ).catch(() => {})
         }
       } else {
-        await typeLine(pane, text)
+        await paneInput.run(pane, () => typeLine(pane, text))
         typing(chat_id, threadId) // agent now processes the custom answer
         if (ap) {
           await resolvePickerMessage(ap, `✅ <b>${escHtml(text)}</b>`)
@@ -4236,7 +4277,11 @@ const hintedKeys = new Set<string>()
 /** Вписать входящее в пейн агента без нативного канала (Codex). `msg` — уже помеченный
  *  delivery_id: первая доставка и переотправка сторожа идут этим одним путём. Когда первая
  *  печатала неразмеченный payload, сторож не находил сообщение в роллауте и слал его второй раз. */
-async function typeInbound(target: { pane: string; key: string; msg: HubToStub; adapter: AgentAdapter }): Promise<void> {
+function typeInbound(target: { pane: string; key: string; msg: HubToStub; adapter: AgentAdapter }): Promise<void> {
+  return paneInput.run(target.pane, () => typeInboundUnlocked(target))
+}
+
+async function typeInboundUnlocked(target: { pane: string; key: string; msg: HubToStub; adapter: AgentAdapter }): Promise<void> {
   const { pane, key, msg, adapter } = target
   if (msg.op !== 'event' || msg.kind !== 'message') {
     return
@@ -5074,7 +5119,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
     return
   }
 
-  if (cmd === 'compact' || cmd === 'clear' || cmd === 'esc' || cmd === 'enter' || cmd === 'restart' || cmd === 'model' || cmd === 'stop' || cmd === 'screen' || cmd === 'tui') {
+  if (cmd === 'compact' || cmd === 'clear' || cmd === 'esc' || cmd === 'enter' || cmd === 'restart' || cmd === 'model' || cmd === 'close' || cmd === 'screen' || cmd === 'tui') {
     // Одно и то же выполнение — сразу или после того, как пользователь ответит на вопрос,
     // с которым поднялась сессия.
     const runOnPanes = async (targets: typeof live) => {
@@ -5115,7 +5160,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
           } else if (cmd === 'enter') {
             // Submit whatever is already in the pane's input line (e.g. a /compact that got
             // typed but not sent) — a bare Enter, without typing anything.
-            await sendKeys(s.pane, 'Enter')
+            await paneInput.run(s.pane, () => sendKeys(s.pane!, 'Enter'))
             void say(L.enterSent)
           } else if (cmd === 'screen') {
             // Universal 1:1 view of the pane — the escape hatch for any TUI state the picker
@@ -5139,27 +5184,12 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
             // native picker — pollScreens/detectPicker below turns it into buttons.
             await typeCliCommand(s, s.pane, '/model')
             void say(L.modelSent)
-          } else if (cmd === 'stop') {
+          } else if (cmd === 'close') {
             if (!s.pid) {
               void say(L.stopNoProc)
               continue
             }
-            void say(L.stopping)
-            expectedDisconnect.add(key)
-            void stopSession(s.pane, s.pid, log)
-              .then(ok => {
-                if (!ok) {
-                  return void say(L.procNotDead)
-                }
-                // straight into the what-next choice — same keyboard as after /bind
-                void bot.api
-                  .sendMessage(chat_id, L.sessionStopped, {
-                    ...threadOpt, parse_mode: 'HTML', reply_markup: startChoiceKeyboard(key, binding),
-                  })
-                  .catch(() => {})
-              })
-              .catch(e => say(L.stopFail(escHtml(String(e)))))
-              .finally(() => setTimeout(() => expectedDisconnect.delete(key), 90_000))
+            await closeSession({ key, binding, pane: s.pane, pid: s.pid, chatId: chat_id, threadId })
           } else {
             if (!s.pid || !s.cmdline?.length) {
               void say(L.restartNoProc)
@@ -5199,7 +5229,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
               } finally {
                 spawningBindings.delete(key)
                 setTimeout(() => expectedDisconnect.delete(key), 90_000)
-                await flushQueued(key) // всё, что придержали, пока сессия перезапускалась
+                flushQueuedInLane(key) // всё, что придержали, пока сессия перезапускалась
               }
             })()
           }
@@ -5210,43 +5240,51 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
     }
 
     if (live.length === 0) {
-      // Сессию мог остановить idle-unload — для пользователя она «просто есть», он не обязан
-      // знать про выгрузку. Команды, осмысленные на поднятой сессии, поднимают её сами (как
-      // это делает обычное сообщение). /esc и /stop не поднимаем: прерывать/останавливать
-      // нечего, подъём ради немедленной остановки — абсурд.
-      // /clear на ВЫГРУЖЕННОЙ сессии: поднимать старую бессмысленно — историю всё
-      // равно выбрасываем. Стартуем свежую: результат тот же, но без промпта
-      // «сессия большая, возобновить из саммари?» и без трат на возобновление.
-      if (cmd === 'clear' && binding.sessionId) {
+      // Сессия закрыта (/close) или уснула по простою. Поднимают её только команды, которым нужна
+      // живая сессия, и поднимают вслух. Взгляд (/tui, /screen), одно нажатие (/enter, /esc) и
+      // повторный /close ради себя сессию не поднимают: подъём ради немедленного выхода — абсурд.
+      if (!REVIVING_OPS.has(cmd) || (cmd === 'compact' && !binding.sessionId)) {
+        void bot.api.sendMessage(chat_id, L.sessionClosedIdle, {
+          ...threadOpt, parse_mode: 'HTML', reply_markup: startChoiceKeyboard(key, binding),
+        }).catch(() => {})
+        return
+      }
+      // /clear: поднимать старую бессмысленно — историю всё равно выбрасываем. Стартуем свежую:
+      // результат тот же, но без промпта «сессия большая, возобновить из саммари?».
+      if (cmd === 'clear') {
         void say(L.clearStartsFresh)
         await spawnSession(key, binding, 'new', { say: html => void say(html) })
         return
       }
-      const revivable = cmd !== 'esc' && cmd !== 'stop'
-      if (revivable && binding.sessionId) {
-        void say(L.revivingForCommand(cmd))
-        await spawnSession(key, binding, 'resume', { say: html => void say(html), quiet: true })
-        live = await waitForBinding(key, 30_000)
-        const pane = live.length > 0 ? router.get(live[0])?.pane : undefined
-        // Здесь срок НАМЕРЕННО короче PANE_READY_MS: это не ожидание доставки, а проба —
-        // не готов за 12 с, значит сессия о чём-то спрашивает, и пользователю надо сказать
-        // об этом сейчас, а не через минуту молчания. Не сводить к общей константе.
-        if (!(await waitPaneReady(pane, 12_000, adapterForBinding(binding)))) {
-          // Сессия поднялась в диалог (доверие к папке, вопрос про возобновление). Команду
-          // НЕ теряем и повторить не просим: ждём ответа в фоне и выполняем сами — иначе
-          // отправленное в выгруженную сессию молча пропадает.
-          void say(L.sessionAsksFirst(cmd)) // кнопки уже отправил picker bridge
-          void (async () => {
-            if (!(await waitPaneReady(pane, PENDING_CMD_MS, adapterForBinding(binding)))) {
-              return void say(L.pendingCmdDropped(cmd))
-            }
-            await runOnPanes(await waitForBinding(key, 5_000))
-          })()
-          return
-        }
+      void say(L.revivingForCommand(cmd))
+      const revivedAt = Date.now()
+      await spawnSession(key, binding, binding.sessionId ? 'resume' : 'new', { say: html => void say(html), quiet: true })
+      live = await waitForBinding(key, REVIVE_WAIT_MS)
+      const seconds = Math.round((Date.now() - revivedAt) / 1000)
+      if (cmd === 'restart') {
+        // Подъём закрытой сессии и есть её рестарт — второй подряд только уронил бы её снова.
+        void say(live.length ? L.restartReady(seconds) : L.restartNotReady(seconds))
+        return
+      }
+      const pane = live.length > 0 ? router.get(live[0])?.pane : undefined
+      // Здесь срок НАМЕРЕННО короче PANE_READY_MS: это не ожидание доставки, а проба —
+      // не готов за 12 с, значит сессия о чём-то спрашивает, и пользователю надо сказать
+      // об этом сейчас, а не через минуту молчания. Не сводить к общей константе.
+      if (!(await waitPaneReady(pane, 12_000, adapterForBinding(binding)))) {
+        // Сессия поднялась в диалог (доверие к папке, вопрос про возобновление). Команду
+        // НЕ теряем и повторить не просим: ждём ответа в фоне и выполняем сами — иначе
+        // отправленное в выгруженную сессию молча пропадает.
+        void say(L.sessionAsksFirst(cmd)) // кнопки уже отправил picker bridge
+        void (async () => {
+          if (!(await waitPaneReady(pane, PENDING_CMD_MS, adapterForBinding(binding)))) {
+            return void say(L.pendingCmdDropped(cmd))
+          }
+          await runOnPanes(await waitForBinding(key, 5_000))
+        })()
+        return
       }
       if (live.length === 0) {
-        void say(revivable ? L.noLiveSession : L.nothingToInterrupt)
+        void say(L.restartNotReady(seconds))
         return
       }
     }
@@ -5420,6 +5458,34 @@ function offerBind(key: string, chatId: string, threadId: number | undefined): v
       ...(kb.inline_keyboard.length > 0 ? { reply_markup: kb } : {}),
     })
     .catch(() => {})
+}
+
+/** /close: погасить сессию и запомнить, что её закрыли намеренно — boot-revive её не поднимет.
+ *  Ждёт конца остановки: обработчик идёт в полосе топика, и следующее сообщение или команда в
+ *  этом топике выполнятся уже после «Сессия закрыта», а не поверх гаснущей сессии. */
+async function closeSession(target: {
+  key: string; binding: BindingEntry; pane: string; pid: number; chatId: string; threadId?: number
+}): Promise<void> {
+  const { key, binding, pane, pid, chatId, threadId } = target
+  const say = (html: string, extra: { reply_markup?: InlineKeyboard } = {}) =>
+    bot.api.sendMessage(chatId, html, { ...inTopic(threadId), parse_mode: 'HTML', ...extra }).catch(() => {})
+  void say(t().closing)
+  closing.add(key)
+  expectedDisconnect.add(key)
+  try {
+    if (!(await stopSession(pane, pid, log))) {
+      void say(t().procNotDead)
+      return
+    }
+    persistFlag([key], 'closed', true)
+    await say(t().sessionClosed, { reply_markup: startChoiceKeyboard(key, binding) })
+  } catch (e) {
+    log(`close failed: ${key} ${e instanceof Error ? e.stack : e}`)
+    void say(t().stopFail(escHtml(String(e))))
+  } finally {
+    closing.delete(key)
+    setTimeout(() => expectedDisconnect.delete(key), 90_000)
+  }
 }
 
 function startChoiceKeyboard(key: string, binding: BindingEntry): InlineKeyboard {
@@ -5636,7 +5702,7 @@ bot.on('callback_query:data', async ctx => {
       await ctx.answerCallbackQuery({ text: t().toastNoAccess }).catch(() => {})
       return
     }
-    await sendKeys(view.pane, TUI_KEYS[key]).catch(() => {})
+    await paneInput.run(view.pane, () => sendKeys(view.pane, TUI_KEYS[key])).catch(() => {})
     log(`tui: ${view.bindingKey} key=${key}`)
     await ctx.answerCallbackQuery({ text: tuiKeyLabel(key) }).catch(() => {})
     setTimeout(() => void refreshLiveScreen(token!), TUI_REFRESH_AFTER_KEY_MS)

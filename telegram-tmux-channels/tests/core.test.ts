@@ -276,7 +276,8 @@ describe('tmux-ops', () => {
     expect(parseOpsCommand('/status')).toEqual({ cmd: 'status' })
     expect(parseOpsCommand('/doctor')).toEqual({ cmd: 'doctor' })
     expect(parseOpsCommand('/model')).toEqual({ cmd: 'model' })
-    expect(parseOpsCommand('/stop')).toEqual({ cmd: 'stop' })
+    expect(parseOpsCommand('/close')).toEqual({ cmd: 'close' })
+    expect(parseOpsCommand('/stop')).toEqual({ cmd: 'esc' }) // «стоп» — прервать ход, а не закрыть сессию
     expect(parseOpsCommand('/screen')).toEqual({ cmd: 'screen' })
     expect(parseOpsCommand('/tui')).toEqual({ cmd: 'tui' })
     expect(parseOpsCommand('/last')).toEqual({ cmd: 'tui' }) // прежнее имя /tui — привычка работает

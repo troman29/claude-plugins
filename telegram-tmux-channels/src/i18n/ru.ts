@@ -27,7 +27,7 @@ export const ru: Strings = {
     '📥 <b>/queue &lt;текст&gt;</b> (или <code>/q</code>) — придержать текст до конца текущего хода, ' +
     'вместо того чтобы вклиниться в него. Если сессия свободна — уйдёт сразу.',
   cmd_model: 'Выбрать модель (интерактивно, кнопками)',
-  cmd_stop: 'Остановить сессию (graceful /exit → Ctrl-C)',
+  cmd_close: 'Закрыть сессию (graceful /exit); /stop прерывает ход',
   cmd_restart: 'Аккуратный перезапуск сессии',
   cmd_bind: 'Привязать этот чат/топик к папке проекта (админ)',
   cmd_unbind: 'Снять привязку (админ)',
@@ -48,7 +48,7 @@ export const ru: Strings = {
   bringUpStuck: (seconds: number) =>
     `⚠️ <b>Сессия так и не поднялась за ${seconds} с</b>
 
-Пришли <code>/last</code>, чтобы увидеть её терминал, или <code>/restart</code>.`,
+Пришли <code>/tui</code>, чтобы увидеть её терминал, или <code>/restart</code>.`,
   directiveNotDelivered: (text: string) =>
     `⚠️ <b>Ветка не приняла директиву</b> — её терминал не принимал ввод. Отправь её ещё раз:\n<code>${text}</code>`,
   deliveryLost:
@@ -227,9 +227,8 @@ export const ru: Strings = {
   launchingNew: '🆕 Запускаю новую сессию…',
 
   // ── compact / clear / esc / enter / model / stop / restart ──
-  noLiveSession: '⚠️ Нет живой сессии. Попробуй <code>/resume</code>.',
   revivingForCommand: cmd => `▶️ <b>Поднимаю сессию</b> для <code>/${cmd}</code>…`,
-  nothingToInterrupt: '⚠️ Прерывать нечего — живой сессии нет.',
+  sessionClosedIdle: '⚫ Сессия закрыта — не на чем выполнить. Поднять её?',
   sessionAsksFirst: cmd => `⚠️ Сессия поднялась с вопросом — ответь кнопками выше, <code>/${cmd}</code> выполню сразу после ответа.`,
   pendingCmdDropped: cmd => `🚫 Вопрос остался без ответа — <code>/${cmd}</code> отменён.`,
   forkNoConversation: '⚠️ Форкать нечего — в этом топике ещё нет разговора.',
@@ -245,15 +244,15 @@ export const ru: Strings = {
   enterSent: '⏎ <b>Enter</b> отправлен.',
   modelSent: '📋 <code>/model</code> отправлен — жди меню с кнопками.',
   stopNoProc: '⚠️ Стоп недоступен — не опознал процесс claude.',
-  stopping: '🛑 <b>Останавливаю</b> сессию… Если всплывёт вопрос про фоновые задачи — ответь кнопками, иначе через ~10с выйду сам.',
+  closing: '🛑 <b>Закрываю</b> сессию… Если всплывёт вопрос про фоновые задачи — ответь кнопками, иначе через ~10с выйду сам.',
   procNotDead: '⚠️ Процесс не умер — глянь руками в tmux.',
-  sessionStopped: '🛑 <b>Сессия остановлена.</b> Что дальше?',
+  sessionClosed: '🛑 <b>Сессия закрыта.</b> Так и останется, рестарты тоже, пока её не поднимет сообщение или кнопка ниже.',
   stopFail: err => `⚠️ Стоп не удался: ${err}`,
   restartNoProc: '⚠️ Рестарт недоступен — не опознал процесс claude.',
   restarting: '♻️ <b>Перезапускаю</b> сессию…',
   restartWaiting: (seconds: number) => `⏳ Жду, пока поднимется… ${seconds} с`,
   restartReady: (seconds: number) => `✅ <b>Сессия перезапущена</b> за ${seconds} с`,
-  restartNotReady: (seconds: number) => `⚠️ <b>За ${seconds} с не подключилась</b> — посмотри <code>/last</code>`,
+  restartNotReady: (seconds: number) => `⚠️ <b>За ${seconds} с не подключилась</b> — посмотри <code>/tui</code>`,
   restartFail: err => `⚠️ Рестарт не удался: ${err}`,
   cmdFail: (cmd, err) => `⚠️ <b>${cmd} не удалось</b>: ${err}`,
 

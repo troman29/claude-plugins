@@ -26,7 +26,7 @@ export const en = {
     '📥 <b>/queue &lt;text&gt;</b> (or <code>/q</code>) — hold the text until the current turn ends, ' +
     'instead of cutting into it. With the session idle it goes straight through.',
   cmd_model: 'Pick a model (interactive, buttons)',
-  cmd_stop: 'Stop the session (graceful /exit → Ctrl-C)',
+  cmd_close: 'Close the session (graceful /exit); /stop interrupts the turn',
   cmd_restart: 'Gracefully restart the session',
   cmd_bind: 'Bind this chat/topic to a project folder (admin)',
   cmd_unbind: 'Remove the binding (admin)',
@@ -47,7 +47,7 @@ export const en = {
   bringUpStuck: (seconds: number) =>
     `⚠️ <b>Session still isn't up after ${seconds}s</b>
 
-Send <code>/last</code> to see its terminal, or <code>/restart</code>.`,
+Send <code>/tui</code> to see its terminal, or <code>/restart</code>.`,
   directiveNotDelivered: (text: string) =>
     `⚠️ <b>The branch didn't take its directive</b> — its terminal wasn't accepting input. Send it again:\n<code>${text}</code>`,
   deliveryLost:
@@ -100,7 +100,7 @@ Send <code>/last</code> to see its terminal, or <code>/restart</code>.`,
   bgLine: (what: string, done: boolean) => `${done ? '✅' : '▶️'} ${what}`,
   skillLine: (skill: string, args: string) => `🧩 Skill: <b>${skill}</b>${args ? ` — <i>${args}</i>` : ''}`,
 
-  // ── screen/last digest ──
+  // ── screen/tui digest ──
   updateStopped: 'updates stopped',
   btnClose: '✖️ Close',
   btnCancel: '✖️ Cancel',
@@ -237,9 +237,8 @@ Send <code>/last</code> to see its terminal, or <code>/restart</code>.`,
   launchingNew: '🆕 Starting a new session…',
 
   // ── compact / clear / esc / enter / model / stop / restart ──
-  noLiveSession: '⚠️ No live session. Try <code>/resume</code>.',
   revivingForCommand: (cmd: string) => `▶️ <b>Bringing the session up</b> for <code>/${cmd}</code>…`,
-  nothingToInterrupt: '⚠️ Nothing to interrupt — no live session.',
+  sessionClosedIdle: '⚫ The session is closed — nothing to act on. Bring it back?',
   sessionAsksFirst: (cmd: string) => `⚠️ The session came up with a question — answer it with the buttons above and I'll run <code>/${cmd}</code> right after.`,
   pendingCmdDropped: (cmd: string) => `🚫 The question stayed unanswered — <code>/${cmd}</code> was dropped.`,
   forkNoConversation: '⚠️ Nothing to fork yet — this topic has no conversation.',
@@ -255,15 +254,15 @@ Send <code>/last</code> to see its terminal, or <code>/restart</code>.`,
   enterSent: '⏎ <b>Enter</b> sent.',
   modelSent: '📋 <code>/model</code> sent — wait for the button menu.',
   stopNoProc: '⚠️ Stop unavailable — couldn\'t identify the claude process.',
-  stopping: '🛑 <b>Stopping</b> the session… If a background-tasks question pops up — answer with buttons, otherwise I exit myself in ~10s.',
+  closing: '🛑 <b>Closing</b> the session… If a background-tasks question pops up — answer with buttons, otherwise I exit myself in ~10s.',
   procNotDead: '⚠️ Process didn\'t die — check tmux by hand.',
-  sessionStopped: '🛑 <b>Session stopped.</b> What next?',
+  sessionClosed: '🛑 <b>Session closed.</b> It stays closed, restarts included, until a message or a button below brings it back.',
   stopFail: (err: string) => `⚠️ Stop failed: ${err}`,
   restartNoProc: '⚠️ Restart unavailable — couldn\'t identify the claude process.',
   restarting: '♻️ <b>Restarting</b> the session…',
   restartWaiting: (seconds: number) => `⏳ Waiting for it to come back… ${seconds}s`,
   restartReady: (seconds: number) => `✅ <b>Session restarted</b> in ${seconds}s`,
-  restartNotReady: (seconds: number) => `⚠️ <b>No connection after ${seconds}s</b> — check <code>/last</code>`,
+  restartNotReady: (seconds: number) => `⚠️ <b>No connection after ${seconds}s</b> — check <code>/tui</code>`,
   restartFail: (err: string) => `⚠️ Restart failed: ${err}`,
   cmdFail: (cmd: string, err: string) => `⚠️ <b>${cmd} failed</b>: ${err}`,
 

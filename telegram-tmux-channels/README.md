@@ -185,9 +185,9 @@ Sent in a bound topic or DM. These are handled by the bot and never reach the ag
 | `/doctor` | Read-only checks for Telegram access, binding, folder, MCP routing, process, tmux/pane, resume id, and voice setup |
 | `/resume` | Bring the session back. `/resume <id>` picks one specific past conversation — works even with tmux down |
 | `/new` | Start fresh |
-| `/restart` · `/stop` | Graceful restart / stop |
+| `/restart` · `/close` | Graceful restart / close the session. A closed session stays closed across hub restarts and reboots until a message, `/restart` or a button brings it back |
 | `/compact` · `/clear` | Compact or clear the conversation |
-| `/esc` · `/enter` | Interrupt the current turn / submit what's sitting in the input line |
+| `/esc` · `/stop` · `/enter` | Interrupt the current turn (`/stop` is the same) / submit what's sitting in the input line |
 | `/queue <text>` · `/q` | Hold the text until the current turn ends instead of cutting into it. A plain message reaches the agent right away, mid-turn — this one waits its turn (😴 while held). With the session idle it goes straight through |
 | `/send <text>` | Send text literally through the normal delivery path, even when it starts with a hub/CLI slash command. Bare `/send` as a reply sends the replied message's text or caption |
 | `/model` | The CLI's model picker, as buttons |
@@ -365,7 +365,7 @@ its full history (`--resume`), announced by one quiet line.
 
 Background shells still running at that moment stop with the session: the bot answers Claude
 Code's "Background work is running" question itself instead of posting it to a topic nobody is
-watching. A manual `/stop` still shows you that question as buttons.
+watching. A manual `/close` still shows you that question as buttons.
 
 `/pin` exempts a topic. Unset (the default) means the plugin never stops anything.
 
@@ -440,6 +440,14 @@ Two details worth knowing, because they explain most of the behaviour:
   scans the tmux session by name instead of by pane: trust prompts are answered for you, anything
   else (an old conversation asking whether to resume in full) goes to the chat as buttons. Without
   that, a modal nobody can see blocks the launch and the stub never comes up.
+- **One topic at a time, topics in parallel.** Updates run in per-topic lanes: a slow command
+  (a `/delete` whose cleanup hook takes a minute) holds only its own topic, while taps on buttons
+  get a lane of their own so a question raised mid-`/close` can still be answered. Anything that
+  types into a pane — a message, `/model`, a button tap — takes the pane in turn, so two of them
+  never interleave keystrokes. A command sent while a session is closing runs after it has closed.
+- **A closed session answers plainly.** `/tui`, `/screen`, `/enter` and `/esc` on a closed session
+  say so, with buttons to bring it back; `/compact`, `/clear`, `/model` and `/restart` bring it
+  back first and announce it.
 - **A message is never dropped because the launch is slow.** If the session isn't up when the
   message arrives, it is held (😴) and delivered the moment the stub connects, however long that
   takes. 👀 goes on a message only once it has actually reached the session, and a message that

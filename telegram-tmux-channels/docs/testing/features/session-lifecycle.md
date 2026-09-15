@@ -1,7 +1,7 @@
 # Feature: session-lifecycle
 
 **Цель.** Поднятие/переподнятие/остановка сессий: `/resume` (--continue), `/new` (свежая),
-`/restart` (graceful /exit → relaunch, продолжает разговор), `/stop` (graceful, без relaunch).
+`/restart` (graceful /exit → relaunch, продолжает разговор), `/close` (graceful, без relaunch; закрытая не оживает сама и после перезагрузки).
 Хаб создаёт tmux (имя по папке), прокликивает стартовые промпты. Не стартует вторую сессию, если
 claude уже жив в папке. На буте `reviveBoundSessions` поднимает забинденные сессии.
 
