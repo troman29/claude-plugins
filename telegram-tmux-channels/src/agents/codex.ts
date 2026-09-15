@@ -360,9 +360,26 @@ export function codexPaneIsWorking(pane: string): boolean {
     .some(line => /[•●]\s+Working \(\d+s?\s*[•·].*esc to interrupt/i.test(line.trim()))
 }
 
+// Сбой сессии Codex рисует своей ячейкой «■ …» с нулевого отступа (живой снимок 0.154). Вывод
+// тулов идёт с отступом под «└», и его «Error:» — ошибка команды, а не сессии: такие строки
+// от jq и node уходили в чат плашкой «Session error». «■ Conversation interrupted» — это Esc.
+const ERROR_CELL_RE = /^■\s+(.+)$/
+const SESSION_STATUS_ERROR_RE = /^Not logged in\b/
+const INTERRUPTED_RE = /^Conversation interrupted\b/
+const ERROR_MAX_CHARS = 300
+
 export function parseCodexError(pane: string): string | undefined {
-  const tail = pane.split('\n').map(s => s.trim().replace(/^[•●]\s*/, '')).filter(Boolean).slice(-12)
-  return tail.find(line => /^(Error:|Not logged in|Failed to|You've hit your usage limit)/i.test(line))?.slice(0, 300)
+  const tail = pane.split('\n').map(s => s.trimEnd()).filter(Boolean).slice(-12)
+  for (const line of tail.reverse()) {
+    const cell = ERROR_CELL_RE.exec(line)?.[1]
+    if (cell && !INTERRUPTED_RE.test(cell)) {
+      return cell.slice(0, ERROR_MAX_CHARS)
+    }
+    if (SESSION_STATUS_ERROR_RE.test(line)) {
+      return line.slice(0, ERROR_MAX_CHARS)
+    }
+  }
+  return undefined
 }
 
 // Codex 0.147 renders `/status` as a modal panel.  Its values are deliberately parsed only

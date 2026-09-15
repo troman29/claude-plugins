@@ -99,7 +99,6 @@ describe('Codex CLI adapter', () => {
     expect(codexPaneIsWorking(idle)).toBe(false)
     expect(codexPaneReady(working)).toBe(false)
     expect(codexPaneIsWorking(working)).toBe(true)
-    expect(parseCodexError('• Error: stream disconnected')).toBe('Error: stream disconnected')
   })
 
   test('parses the real 0.147 /status panel and never opens over a draft', () => {

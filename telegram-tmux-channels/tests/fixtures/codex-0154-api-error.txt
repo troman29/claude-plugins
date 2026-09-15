@@ -1,0 +1,45 @@
+╭──────────────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.154.0)                               │
+│                                                          │
+│ model:       no-such-model-xyz medium   /model to change │
+│ directory:   /srv/share/.tmp/…/scratchpad/codex-err      │
+│ permissions: YOLO mode                                   │
+╰──────────────────────────────────────────────────────────╯
+
+  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-art in coding, computer use, science, and professional work. Give it a hard
+  problem, a half-formed idea, or anything you've been meaning to build. See where it takes you.
+
+• You have 3 usage limit resets available. Run /usage to use one.
+
+
+› hi
+
+
+⚠ Model metadata for `no-such-model-xyz` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.
+
+■ {"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The 'no-such-model-xyz' model is not supported when using Codex with a
+ChatGPT account."}}
+
+
+› Ask Codex to do anything
+
+  no-such-model-xyz medium · /srv/share/.tmp/claude-1000/-home-user-projects-homelab/bcb2d366-25c9-4783-9ce2-267e15b15a23/scratchpad/codex-err · Greet user
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

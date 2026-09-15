@@ -4,7 +4,7 @@
 import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'fs'
 import { join } from 'path'
-import { codexInboundReady, codexInboundState } from '../src/agents/codex'
+import { codexInboundReady, codexInboundState, parseCodexError } from '../src/agents/codex'
 
 const fx = (name: string) => readFileSync(join(import.meta.dir, 'fixtures', name), 'utf8')
 
@@ -39,5 +39,28 @@ describe('codexInboundState', () => {
 
   test('чужая метка не засчитывается', () => {
     expect(codexInboundState(fx('codex-0154-pending-while-working.txt'), 'delivery_id="other"')).toBeUndefined()
+  })
+})
+
+// Страж 15.09: «Error:» из вывода тула (jq: «Error: stepping, bad JSON path», «error: undefined»)
+// приходил в Codex-топик плашкой «⛔️ Session error», хотя сессия была жива.
+describe('parseCodexError', () => {
+  test('ячейка ■ — сбой сессии (живой снимок 400 от API)', () => {
+    expect(parseCodexError(fx('codex-0154-api-error.txt'))).toContain('"status":400')
+  })
+
+  test('ошибка в выводе тула — не сбой сессии', () => {
+    const pane = [
+      '• Ran jq .foo data.json',
+      "  └ jq: error (at data.json:1): Cannot index array with \"foo\"",
+      "    Error: stepping, bad JSON path: '0'",
+      'error: undefined',
+      '› Ask Codex to do anything',
+    ].join('\n')
+    expect(parseCodexError(pane)).toBeUndefined()
+  })
+
+  test('прерванный человеком ход — не ошибка', () => {
+    expect(parseCodexError('■ Conversation interrupted - tell the model what to do differently.\n› Ask Codex')).toBeUndefined()
   })
 })
