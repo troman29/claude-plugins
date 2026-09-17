@@ -1,3 +1,5 @@
+import type { TopicRef } from '../session-topics'
+
 export type AgentKind = 'claude' | 'codex'
 
 export type LaunchMode = 'resume' | 'new' | 'fork'
@@ -23,7 +25,8 @@ export type AgentCapabilities = {
   hookSessionIdReliable: boolean
 }
 
-export type RecentAgentSession = { id: string; mtime: number; snippet: string }
+/** `origin` — чат и топик первого сообщения из Telegram в сессии, если оно есть. */
+export type RecentAgentSession = { id: string; mtime: number; snippet: string; origin?: TopicRef }
 
 // A transient agent-owned status panel.  The hub only asks an adapter to parse a panel it
 // explicitly opened for a user-requested /status; it never guesses quota data from a

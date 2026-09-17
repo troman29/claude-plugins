@@ -5,6 +5,7 @@ import { readdirSync, statSync, openSync, readSync, closeSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 import { StringDecoder } from 'string_decoder'
+import { telegramOrigin, type TopicRef } from './session-topics'
 
 export function claudeProjectDir(dir: string): string {
   return join(homedir(), '.claude', 'projects', dir.replace(/[^A-Za-z0-9]/g, '-'))
@@ -37,8 +38,9 @@ const SNIPPET_MIN_CHARS = 25
 const SNIPPET_BOILERPLATE = [/^Caveat:/i, /^This session is being continued/i, /^\[Request interrupted/i]
 
 /** Первый содержательный и первый любой пользовательский текст из кусочка транскрипта. */
-export function pickUserSnippet(lines: string[]): { meaningful?: string; first?: string } {
+export function pickUserSnippet(lines: string[]): { meaningful?: string; first?: string; origin?: TopicRef } {
   let first: string | undefined
+  let origin: TopicRef | undefined
   for (const line of lines) {
     let parsed: { type?: string; message?: { content?: string | Array<{ type?: string; text?: string }> } }
     try {
@@ -51,6 +53,7 @@ export function pickUserSnippet(lines: string[]): { meaningful?: string; first?:
     }
     const content = parsed.message?.content
     const raw = typeof content === 'string' ? content : (content?.find(p => p.type === 'text')?.text ?? '')
+    origin ??= telegramOrigin(raw)
     // теги канала и служебные врезки оборачивают настоящий текст — на подпись идёт только он
     const text = raw.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
     if (!text) {
@@ -58,10 +61,10 @@ export function pickUserSnippet(lines: string[]): { meaningful?: string; first?:
     }
     first ??= text
     if (text.length >= SNIPPET_MIN_CHARS && !SNIPPET_BOILERPLATE.some(re => re.test(text))) {
-      return { meaningful: text, first }
+      return { meaningful: text, first, ...(origin ? { origin } : {}) }
     }
   }
-  return first === undefined ? {} : { first }
+  return { ...(first === undefined ? {} : { first }), ...(origin ? { origin } : {}) }
 }
 
 // Читаем ГОЛОВУ файла кусками, а не целиком: транскрипты бывают по сотне мегабайт. Первый
@@ -70,7 +73,8 @@ export function pickUserSnippet(lines: string[]): { meaningful?: string; first?:
 const SNIPPET_CHUNK_BYTES = 256 * 1024
 const SNIPPET_MAX_BYTES = 1024 * 1024
 
-function firstUserText(dir: string, id: string): string {
+/** Подпись сессии — первый содержательный промпт — и топик, из которого пришло её первое сообщение. */
+function firstUserText(dir: string, id: string): { snippet: string; origin?: TopicRef } {
   let fd: number | undefined
   try {
     fd = openSync(join(claudeProjectDir(dir), `${id}.jsonl`), 'r')
@@ -79,6 +83,8 @@ function firstUserText(dir: string, id: string): string {
     const buf = Buffer.alloc(SNIPPET_CHUNK_BYTES)
     let pending = ''
     let fallback: string | undefined
+    let origin: TopicRef | undefined
+    const found = (snippet: string) => ({ snippet, ...(origin ? { origin } : {}) })
     for (let offset = 0; offset < SNIPPET_MAX_BYTES; offset += SNIPPET_CHUNK_BYTES) {
       const n = readSync(fd, buf, 0, buf.length, offset)
       if (n === 0) {
@@ -87,17 +93,20 @@ function firstUserText(dir: string, id: string): string {
       const lines = (pending + decoder.write(buf.subarray(0, n))).split('\n')
       pending = lines.pop() ?? ''
       const picked = pickUserSnippet(lines)
+      origin ??= picked.origin
       if (picked.meaningful) {
-        return picked.meaningful
+        return found(picked.meaningful)
       }
       fallback ??= picked.first
       if (n < buf.length) {
         break
       }
     }
-    return pickUserSnippet([pending]).meaningful ?? fallback ?? pickUserSnippet([pending]).first ?? ''
+    const tail = pickUserSnippet([pending])
+    origin ??= tail.origin
+    return found(tail.meaningful ?? fallback ?? tail.first ?? '')
   } catch {
-    return ''
+    return { snippet: '' }
   } finally {
     if (fd !== undefined) {
       closeSync(fd)
@@ -121,13 +130,13 @@ function transcriptId(dir: string, sessionId?: string): { id: string; mtime: num
   return newest ? { id: newest[0], mtime: newest[1] } : undefined
 }
 
-export type RecentSession = { id: string; mtime: number; snippet: string }
+export type RecentSession = { id: string; mtime: number; snippet: string; origin?: TopicRef }
 
 export function recentSessions(dir: string, limit = 5): RecentSession[] {
   return [...jsonlMtimes(dir).entries()]
     .sort((a, b) => b[1] - a[1])
     .slice(0, limit)
-    .map(([id, mtime]) => ({ id, mtime, snippet: firstUserText(dir, id) }))
+    .map(([id, mtime]) => ({ id, mtime, ...firstUserText(dir, id) }))
 }
 
 // Final assistant text of the most-recently-written session in `dir`, for the reply

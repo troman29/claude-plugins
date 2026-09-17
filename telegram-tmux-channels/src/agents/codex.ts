@@ -5,6 +5,7 @@ import type { AgentAdapter, AgentStatusPanel, LaunchMode, RecentAgentSession } f
 import { shellQuote } from '../tmux-ops'
 import { isCodexArgv } from '../proc'
 import { STATE_DIR } from '../paths'
+import { telegramOrigin } from '../session-topics'
 
 type RolloutMeta = { id: string; cwd: string }
 type Rollout = RolloutMeta & { path: string; mtime: number; firstUser: string }
@@ -232,7 +233,10 @@ export function codexSessionMtimes(dir: string): Map<string, number> {
 
 export function recentCodexSessions(dir: string, limit = 5): RecentAgentSession[] {
   return codexRollouts(dir).sort((a, b) => b.mtime - a.mtime).slice(0, limit)
-    .map(r => ({ id: r.id, mtime: r.mtime, snippet: displayRolloutSnippet(r.firstUser) }))
+    .map(r => {
+      const origin = telegramOrigin(r.firstUser)
+      return { id: r.id, mtime: r.mtime, snippet: displayRolloutSnippet(r.firstUser), ...(origin ? { origin } : {}) }
+    })
 }
 
 export function codexTranscriptSize(dir: string, sessionId?: string): number {

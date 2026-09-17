@@ -103,6 +103,7 @@ export const ru: Strings = {
   updateStopped: 'обновление остановлено',
   btnClose: '✖️ Закрыть',
   btnCancel: '✖️ Отмена',
+  privateChatLabel: 'личка',
   btnNewSession: '🆕 Новая сессия',
 
   // ── callback toasts ──

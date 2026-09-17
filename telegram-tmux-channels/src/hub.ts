@@ -54,7 +54,8 @@ import { laneOf, Lanes } from './update-lanes'
 import { FallbackGate } from './fallback-gate'
 import { topic as inTopic } from './chat'
 import { HubStateRepository, type PersistedPicker, type PersistedInbound, type PersistedLaunchCapture } from './state-repo'
-import { recordChat, recordTopic, topicTitle, chatLabel } from './known-chats'
+import { recordChat, recordTopic, topicTitle, chatLabel, loadKnownChats } from './known-chats'
+import { loadSessionTopics, sessionChoices } from './session-topics'
 import { agentAdapter, forgetForeignConversation, installedAgents, mayLearn, type AgentAdapter, type AgentKind, type AgentStatusPanel } from './agents'
 import { renderDoctor, type DoctorCheck } from './doctor'
 import { InteractionRegistry } from './interaction-registry'
@@ -5512,16 +5513,34 @@ async function closeSession(target: {
   }
 }
 
+// Сессий папки смотрим больше, чем кнопок: сессии этого топика идут первыми, даже если соседние
+// топики той же папки писали позже.
+const SESSION_CANDIDATES = 40
+const SESSION_BUTTONS = 6
+
 function startChoiceKeyboard(key: string, binding: BindingEntry): InlineKeyboard {
   const kb = new InlineKeyboard()
   kb.text(t().btnNewSession, `ns:${key}`).row()
-  for (const r of adapterForBinding(binding).recentSessions(binding.dir, 5)) {
-    const when = new Date(r.mtime).toLocaleString('ru-RU', {
-      day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
-    })
-    kb.text(`⏪ ${when} · ${r.snippet.slice(0, 40) || r.id.slice(0, 8)}`, `rs:${key}:${r.id}`).row()
+  const choices = sessionChoices({
+    sessions: adapterForBinding(binding).recentSessions(binding.dir, SESSION_CANDIDATES),
+    key,
+    index: loadSessionTopics(),
+    titleOf: topicLabel,
+    limit: SESSION_BUTTONS,
+  })
+  for (const choice of choices) {
+    kb.text(choice.label, `rs:${key}:${choice.id}`).row()
   }
   return kb
+}
+
+/** Имя топика по ключу биндинга — из реестра known-chats, он помнит и удалённые топики. */
+function topicLabel(key: string): string | undefined {
+  const target = keyToTarget(key)
+  if (target.thread_id != null) {
+    return topicTitle(target.chat_id, target.thread_id)
+  }
+  return key.startsWith('dm:') ? t().privateChatLabel : loadKnownChats()[target.chat_id]?.title
 }
 
 bot.on('my_chat_member', ctx => {

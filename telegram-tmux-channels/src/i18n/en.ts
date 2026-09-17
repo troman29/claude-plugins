@@ -104,6 +104,7 @@ Send <code>/tui</code> to see its terminal, or <code>/restart</code>.`,
   updateStopped: 'updates stopped',
   btnClose: '✖️ Close',
   btnCancel: '✖️ Cancel',
+  privateChatLabel: 'DM',
   btnNewSession: '🆕 New session',
 
   // ── callback toasts (short) ──

@@ -5,6 +5,7 @@ import { homedir } from 'os'
 import { join } from 'path'
 import { STATE_DIR } from './paths'
 import { safeJsonParse } from './util'
+import { rememberSessionTopics } from './session-topics'
 import { keyToTarget } from './bindings'
 import type { AgentKind } from './agents/types'
 import type { TrustedGroupMode } from './trusted-groups'
@@ -96,6 +97,7 @@ export function loadBindings(): Record<string, BindingEntry> {
 export function saveBindings(reg: Record<string, BindingEntry>): void {
   writeFileSync(BINDINGS_FILE + '.tmp', JSON.stringify(reg, null, 2) + '\n', { mode: 0o600 })
   renameSync(BINDINGS_FILE + '.tmp', BINDINGS_FILE)
+  rememberSessionTopics(reg) // единственная точка, где сессия встаёт за топиком, — связь не теряется ни на одном пути
 }
 
 export function keysForDir(reg: Record<string, BindingEntry>, dir: string): string[] {
