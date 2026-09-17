@@ -227,7 +227,7 @@ Send <code>/tui</code> to see its terminal, or <code>/restart</code>.`,
     `⚠️ <b>This conversation is already run by claude outside the hub</b> <i>(pid ${pids})</i> — ` +
     'the hub does not manage it.\n\nNot starting a second one: <code>/resume</code> would fork it. ' +
     'Close that session (or restart it with the dev channel) and retry.',
-  whichSessionRaise: '⏪ <b>Which session to bring up?</b> (freshest on top)',
+  whichSessionRaise: '⏪ <b>Which session to bring up?</b> (📍 this topic first, then the freshest)',
   switchedTo: (title: string) => `⏪ Switched: <b>${title}</b>`,
   staleListChanged: 'List changed — run /resume again',
   staleCursorMiss: 'Missed the cursor — run /resume again',

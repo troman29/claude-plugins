@@ -6,6 +6,7 @@ import { shellQuote } from '../tmux-ops'
 import { isCodexArgv } from '../proc'
 import { STATE_DIR } from '../paths'
 import { telegramOrigin } from '../session-topics'
+import { REPLY_HINT } from '../inbound-envelope'
 
 type RolloutMeta = { id: string; cwd: string }
 type Rollout = RolloutMeta & { path: string; mtime: number; firstUser: string }
@@ -89,8 +90,10 @@ function isBootstrapEnvelope(text: string): boolean {
 
 function displayRolloutSnippet(text: string): string {
   // Telegram routing metadata is needed in the transcript, but repeating chat/topic ids in every
-  // resume button hides the actual request. Strip exactly the leading envelope only.
-  return text.replace(/^\[Telegram message;[^\n]*\]\s*/u, '').trim()
+  // resume button hides the actual request. Strip the leading envelope and the hub's reply hint
+  // that rides on a session's first message.
+  const body = text.replace(/^\[Telegram message;(?:[^"\]]|"[^"]*")*\]\s*/u, '').trim()
+  return body.startsWith(REPLY_HINT.trim()) ? body.slice(REPLY_HINT.trim().length).trim() : body
 }
 
 function readHead(path: string, bytes: number): string {

@@ -82,6 +82,19 @@ describe('codexRollouts на диске', () => {
     expect(codexRollouts('/work/app').map(r => r.id)).toEqual(['b'])
   })
 
+  test('подсказка хаба про reply и скобки в полях конверта не идут на подпись', () => {
+    const day = home()
+    write(day, 'rollout-hint.jsonl', [
+      meta({ id: 'hint', cwd: '/work/app', source: 'cli' }),
+      userTurn('[Telegram message; delivery_id="d1" chat_id="-100" topic_id="7" reply_to_text="[message]"]\n'
+        + 'Answer via the telegram `reply` tool (chat_id/thread_id from the tag above); terminal output alone never reaches the user.\n'
+        + 'собери релиз'),
+    ])
+    const [session] = recentCodexSessions('/work/app')
+    expect(session?.snippet).toBe('собери релиз')
+    expect(session?.origin).toEqual({ chatId: '-100', threadId: 7 })
+  })
+
   test('бутстрап-конверт не идёт на подпись', () => {
     const day = home()
     write(day, 'rollout-env.jsonl', [

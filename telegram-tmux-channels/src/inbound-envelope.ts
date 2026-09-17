@@ -4,7 +4,7 @@
 // Инструкция про reply здесь не для красоты: у Codex тул есть, но подсказки MCP-сервера до него
 // не доходят, и он отвечает в терминал. Хаб тогда досылает ответ сам, и КАЖДАЯ реплика
 // приезжает с плашкой «↩️ auto-forward» — досыл превращается из страховки в норму.
-const REPLY_HINT = 'Answer via the telegram `reply` tool (chat_id/thread_id from the tag above); '
+export const REPLY_HINT = 'Answer via the telegram `reply` tool (chat_id/thread_id from the tag above); '
   + 'terminal output alone never reaches the user.'
 
 const attr = (name: string, value: string): string => `${name}=${JSON.stringify(value)}`
