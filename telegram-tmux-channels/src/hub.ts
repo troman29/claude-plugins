@@ -2886,6 +2886,29 @@ async function waitForNewBinding(
   return []
 }
 
+// Стаб живой сессии переподключается к хабу не мгновенно: после рестарта хаба апдейты, накопленные
+// в Telegram, приходят раньше него. 17.09 в эту секунду хаб ответил на /tui «сессия закрыта», а на
+// сообщение полез поднимать вторую сессию поверх живой. Агент в пейне работает — ждём его стаб.
+const STUB_RECONNECT_MS = 15_000
+
+/** Подключения биндинга; если их нет, а агент в пейне жив — ждёт переподключения стаба. */
+async function liveOrReconnecting(key: string, binding: BindingEntry): Promise<Socket<undefined>[]> {
+  const live = connsForBinding(key, binding.dir)
+  if (live.length > 0 || !(await agentRunsInPane(key, binding))) {
+    return live
+  }
+  log(`reconnect wait: ${key} — стаба нет, но агент в пейне жив; жду переподключения`)
+  return waitForBinding(key, STUB_RECONNECT_MS)
+}
+
+async function agentRunsInPane(key: string, binding: BindingEntry): Promise<boolean> {
+  const name = sessionName(key, binding)
+  if (!(await hasTmuxSession(name).catch(() => false))) {
+    return false
+  }
+  return adapterForBinding(binding).isPaneCommand(await paneCurrentCommand(`=${name}:`).catch(() => ''))
+}
+
 async function waitForBinding(key: string, timeoutMs: number): Promise<Socket<undefined>[]> {
   const dir = loadBindings()[key]?.dir
   const deadline = Date.now() + timeoutMs
@@ -4121,7 +4144,7 @@ async function handleInbound(inbound: Inbound): Promise<void> {
   }
   const wasIdle = idleUnloaded.has(key) // capture BEFORE markActivity clears it
   markActivity([key]) // an inbound message is activity — resets the idle clock
-  let conns = connsForBinding(key, binding.dir)
+  let conns = await liveOrReconnecting(key, binding)
   if (conns.length === 0) {
     log(`reviving: key=${key} dir=${binding.dir} — no live session for an inbound message`)
     // Кладём в очередь ДО подъёма. Подъём — это секунды, а бывает и минуты, и всё это время
@@ -4764,7 +4787,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
     return
   }
 
-  let live = binding ? connsForBinding(key, binding.dir) : []
+  let live = binding ? await liveOrReconnecting(key, binding) : []
   const session = live.length > 0 ? router.get(live[0]) : undefined
 
   // /stand_up | /stand_down — stand hooks from the binding folder's `.tmux-channels.json`. The hook prints
