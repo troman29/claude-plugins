@@ -46,7 +46,8 @@ const schemas = {
     lastPct: z.number(), misses: z.number().int().nonnegative(),
   })),
   workflow: envelope('workflow', messageRef.extend({
-    bindingKey: z.string().min(1), last: z.string(), name: z.string(), total: z.number().int().nonnegative(), misses: z.number().int().nonnegative(),
+    bindingKey: z.string().min(1), last: z.string(), name: z.string(), total: z.number().int().nonnegative(),
+    goneSince: z.number().finite().optional(), closedAt: z.number().finite().optional(),
   })),
   'answer-stream': envelope('answer-stream', z.object({
     chatId: z.string().min(1), threadId: z.number().int().optional(), bindingDir: z.string().min(1),

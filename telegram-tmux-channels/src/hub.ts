@@ -56,6 +56,7 @@ import { topic as inTopic } from './chat'
 import { HubStateRepository, type PersistedPicker, type PersistedInbound, type PersistedLaunchCapture } from './state-repo'
 import { recordChat, recordTopic, topicTitle, chatLabel, loadKnownChats } from './known-chats'
 import { loadSessionTopics, sessionChoices } from './session-topics'
+import { workflowCounter, workflowStep, type WorkflowPanel } from './workflow-panel'
 import { agentAdapter, forgetForeignConversation, installedAgents, mayLearn, type AgentAdapter, type AgentKind, type AgentStatusPanel } from './agents'
 import { renderDoctor, type DoctorCheck } from './doctor'
 import { InteractionRegistry } from './interaction-registry'
@@ -2009,10 +2010,11 @@ async function handleCompaction(pane: string, session: SessionInfo, text: string
 }
 
 // Running-workflow status, scraped from the pane — hooks expose only "workflow-subagent" with
-// no name, but Claude Code renders the real name + agent count on one bottom line. Same
-// self-editing + 2-miss anti-flicker as compaction; the workflow-subagent hook status is
-// suppressed (handleSubagentEvent) so this doesn't double up.
-type WorkflowState = { chatId: string; threadId?: number; msgId: number; bindingKey: string; last: string; name: string; total: number; misses: number }
+// no name, but Claude Code renders the real name + agent count on one bottom line. The
+// workflow-subagent hook status is suppressed (handleSubagentEvent) so this doesn't double up.
+// Когда заводить, править и закрывать панель, решает workflowStep — там же, почему это время,
+// а не счётчик кадров.
+type WorkflowState = WorkflowPanel
 const workflowMessages = new Map<string, WorkflowState>(interactions.entries('workflow')) // key = pane
 function persistWorkflow(pane: string, state: WorkflowState): void {
   if (state.msgId < 1) return
@@ -2032,50 +2034,46 @@ async function handleWorkflow(pane: string, session: SessionInfo, text: string):
     forgetWorkflow(pane)
     existing = undefined
   }
-  if (wf) {
-    const key = `${wf.name} ${wf.done}/${wf.total}`
-    if (!existing) {
-      const target = pickerChatFor(session)
-      if (!target || !bindingKey) {
-        return
-      }
-      const base = { chatId: target.chatId, ...(target.threadId != null ? { threadId: target.threadId } : {}) }
-      workflowMessages.set(pane, { ...base, msgId: -1, bindingKey, last: key, name: wf.name, total: wf.total, misses: 0 }) // reserve
-      const sent = await bot.api
-        .sendMessage(target.chatId, renderWorkflow(wf.name, wf.done, wf.total), {
-          ...inTopic(target.threadId),
-          parse_mode: 'HTML',
-        })
-        .catch(() => undefined)
-      if (sent) {
-        const state = { ...base, msgId: sent.message_id, bindingKey, last: key, name: wf.name, total: wf.total, misses: 0 }
-        workflowMessages.set(pane, state)
-        persistWorkflow(pane, state)
-      } else if (workflowMessages.get(pane)?.msgId === -1) {
-        workflowMessages.delete(pane)
-      }
+  const step = workflowStep({ ...(existing ? { panel: existing } : {}), ...(wf ? { line: wf } : {}), now: Date.now() })
+  if (step.action === 'idle') {
+    if (step.panel) {
+      workflowMessages.set(pane, step.panel)
+    }
+    return
+  }
+  if (step.action === 'forget') {
+    forgetWorkflow(pane)
+    return
+  }
+  if (step.action === 'open') {
+    const target = pickerChatFor(session)
+    if (!target || !bindingKey || !wf) {
       return
     }
-    existing.misses = 0
-    existing.name = wf.name
-    existing.total = wf.total
-    if (existing.msgId === -1 || existing.last === key) {
-      return // still sending, or count unchanged — skip the edit
+    const base = { chatId: target.chatId, ...(target.threadId != null ? { threadId: target.threadId } : {}) }
+    const opening = { ...base, msgId: -1, bindingKey, last: workflowCounter(wf), name: wf.name, total: wf.total }
+    workflowMessages.set(pane, opening) // reserve
+    const sent = await bot.api
+      .sendMessage(target.chatId, renderWorkflow(wf.name, wf.done, wf.total), {
+        ...inTopic(target.threadId),
+        parse_mode: 'HTML',
+      })
+      .catch(() => undefined)
+    if (sent) {
+      const state = { ...opening, msgId: sent.message_id }
+      workflowMessages.set(pane, state)
+      persistWorkflow(pane, state)
+    } else if (workflowMessages.get(pane)?.msgId === -1) {
+      workflowMessages.delete(pane)
     }
-    existing.last = key
-    await bot.api
-      .editMessageText(existing.chatId, existing.msgId, renderWorkflow(wf.name, wf.done, wf.total), { parse_mode: 'HTML' })
-      .catch(() => {})
-    persistWorkflow(pane, existing)
-  } else if (existing && existing.msgId !== -1) {
-    if (++existing.misses < 2) {
-      return // tolerate a flicker frame before declaring it done
-    }
-    forgetWorkflow(pane)
-    await bot.api
-      .editMessageText(existing.chatId, existing.msgId, t().workflowDone(escHtml(existing.name), existing.total), { parse_mode: 'HTML' })
-      .catch(() => {})
+    return
   }
+  workflowMessages.set(pane, step.panel)
+  persistWorkflow(pane, step.panel)
+  const html = step.action === 'edit'
+    ? renderWorkflow(step.panel.name, step.done, step.panel.total)
+    : t().workflowDone(escHtml(step.panel.name), step.panel.total)
+  await bot.api.editMessageText(step.panel.chatId, step.panel.msgId, html, { parse_mode: 'HTML' }).catch(() => {})
 }
 
 // Push error/auth banners (API Error, expired login, …) into the bound topic — no hook
@@ -2410,6 +2408,9 @@ async function pollScreens(): Promise<void> {
   detectorsRunning = true
   const done = Promise.all(
     captured.map(async ({ s, text }) => {
+      if (!text) {
+        return // captureTimeout отдаёт '' и на сбое, и на таймауте в 2 с — это «нет кадра», а не пустой пейн
+      }
       await detectPicker(s.pane, s, text)
       await handleCompaction(s.pane, s, text)
       await handleWorkflow(s.pane, s, text)
