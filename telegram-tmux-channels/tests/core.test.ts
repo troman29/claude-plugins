@@ -29,6 +29,7 @@ import {
   freeScopeUnitName,
   deadScopes,
   memoryCapPrefix,
+  normalizeClaudeExtendedContextModel,
 } from '../src/tmux-ops'
 import { discoverProjectSkills, findSkill, isSlashCommand, skillInvocation, mangleCmd as mangleSkillCmd } from '../src/skills'
 import { isClaudeArgv, claudePidsInDir, agentPidsInDir, cmdlineOf, envOf, findClaudeAncestor } from '../src/proc'
@@ -498,51 +499,68 @@ describe('tmux-ops', () => {
     expect(stripResumeFlags(['claude', '--resume', '--verbose'])).toEqual(['claude', '--verbose'])
     expect(stripResumeFlags(['claude', '--resume=abc'])).toEqual(['claude'])
   })
-  test('buildLaunch: learned argv or default; channel flags always added', () => {
+  test('buildLaunch: learned argv or default; channel flags and Claude env always added', () => {
+    expect(buildLaunch(['claude', '--resume', 'x'], 'resume')).toContain('"$HOME/.claude/claude.env"')
+    expect(buildLaunch(['claude', '--resume', 'x'], 'resume')).toContain('exec claude --dangerously-load-development-channels server:telegram --continue')
     expect(buildLaunch(['claude', '--resume', 'x'], 'resume')).toBe(
-      'claude --dangerously-load-development-channels server:telegram --continue',
+      `sh -c 'if [ -r "$HOME/.claude/claude.env" ]; then . "$HOME/.claude/claude.env" || exit $?; fi; exec claude --dangerously-load-development-channels server:telegram --continue'`,
     )
     expect(buildLaunch(['claude', '--continue'], 'new')).toBe(
-      'claude --dangerously-load-development-channels server:telegram',
+      `sh -c 'if [ -r "$HOME/.claude/claude.env" ]; then . "$HOME/.claude/claude.env" || exit $?; fi; exec claude --dangerously-load-development-channels server:telegram'`,
     )
     // default argv (from env/default) has NO channel flags; buildLaunch adds them
-    const withChannel = DEFAULT_CLAUDE_ARGV.join(' ') + ' --dangerously-load-development-channels server:telegram'
+    const withChannel = `sh -c 'if [ -r "$HOME/.claude/claude.env" ]; then . "$HOME/.claude/claude.env" || exit $?; fi; exec ${DEFAULT_CLAUDE_ARGV.join(' ')} --dangerously-load-development-channels server:telegram'`
     expect(buildLaunch(undefined, 'new')).toBe(withChannel)
     expect(buildLaunch([...DEFAULT_CLAUDE_ARGV], 'new')).toBe(withChannel)
+  })
+  test('normalizeClaudeExtendedContextModel: extends documented Claude models only', () => {
+    expect(normalizeClaudeExtendedContextModel(['claude', '--model', 'opus'])).toEqual(['claude', '--model', 'opus[1m]'])
+    expect(normalizeClaudeExtendedContextModel(['claude', '--model=sonnet'])).toEqual(['claude', '--model=sonnet[1m]'])
+    expect(normalizeClaudeExtendedContextModel(['claude', '--model', 'fable'])).toEqual(['claude', '--model', 'fable[1m]'])
+    expect(normalizeClaudeExtendedContextModel(['claude', '--model', 'claude-opus-5'])).toEqual(['claude', '--model', 'claude-opus-5[1m]'])
+    expect(normalizeClaudeExtendedContextModel(['claude', '--model', 'opus[1m]'])).toEqual(['claude', '--model', 'opus[1m]'])
+    expect(normalizeClaudeExtendedContextModel(['claude', '--model', 'haiku'])).toEqual(['claude', '--model', 'haiku'])
+    expect(normalizeClaudeExtendedContextModel(['claude', '--model', 'gpt-5.6-terra'])).toEqual(['claude', '--model', 'gpt-5.6-terra'])
+    expect(normalizeClaudeExtendedContextModel(['claude', '--model', '--verbose'])).toEqual(['claude', '--model', '--verbose'])
+  })
+  test('buildLaunch and relaunchCommand extend stale Claude model aliases', () => {
+    expect(buildLaunch(['claude', '--model', 'opus'], 'resume', 'abc-123')).toContain("exec claude --model '\\''opus[1m]'\\'' --dangerously-load-development-channels server:telegram --resume abc-123")
+    expect(relaunchCommand(['claude', '--model=sonnet', '--resume', 'abc-123'])).toContain("exec claude '\\''--model=sonnet[1m]'\\'' --resume abc-123 --dangerously-load-development-channels server:telegram")
   })
   test('buildLaunch: a learned argv never carries --fork-session into a plain resume', () => {
     // ветка выучивает свой argv с --fork-session; без вычистки она форкалась бы при каждом подъёме
     const learned = ['claude', '--fork-session', '--resume', 'parent-id']
     expect(buildLaunch(learned, 'resume', 'branch-id')).toBe(
-      'claude --dangerously-load-development-channels server:telegram --resume branch-id',
+      `sh -c 'if [ -r "$HOME/.claude/claude.env" ]; then . "$HOME/.claude/claude.env" || exit $?; fi; exec claude --dangerously-load-development-channels server:telegram --resume branch-id'`,
     )
   })
   test('buildLaunch: fork → --resume <id> --fork-session; no id → plain start', () => {
     expect(buildLaunch(['claude'], 'fork', 'abc-123')).toBe(
-      'claude --dangerously-load-development-channels server:telegram --resume abc-123 --fork-session',
+      `sh -c 'if [ -r "$HOME/.claude/claude.env" ]; then . "$HOME/.claude/claude.env" || exit $?; fi; exec claude --dangerously-load-development-channels server:telegram --resume abc-123 --fork-session'`,
     )
     // --fork-session without --resume is meaningless — CLI would reject it
     expect(buildLaunch(['claude'], 'fork')).toBe(
-      'claude --dangerously-load-development-channels server:telegram',
+      `sh -c 'if [ -r "$HOME/.claude/claude.env" ]; then . "$HOME/.claude/claude.env" || exit $?; fi; exec claude --dangerously-load-development-channels server:telegram'`,
     )
   })
   test('buildLaunch: explicit sessionId → --resume <id>, not --continue', () => {
     expect(buildLaunch(['claude'], 'resume', 'abc-123')).toBe(
-      'claude --dangerously-load-development-channels server:telegram --resume abc-123',
+      `sh -c 'if [ -r "$HOME/.claude/claude.env" ]; then . "$HOME/.claude/claude.env" || exit $?; fi; exec claude --dangerously-load-development-channels server:telegram --resume abc-123'`,
     )
     expect(buildLaunch(['claude'], 'resume')).toBe(
-      'claude --dangerously-load-development-channels server:telegram --continue',
+      `sh -c 'if [ -r "$HOME/.claude/claude.env" ]; then . "$HOME/.claude/claude.env" || exit $?; fi; exec claude --dangerously-load-development-channels server:telegram --continue'`,
     )
   })
   test('relaunchCommand: bare --resume → --continue; --resume <id> kept', () => {
+    const withClaudeEnvironment = (command: string) => `sh -c 'if [ -r "$HOME/.claude/claude.env" ]; then . "$HOME/.claude/claude.env" || exit $?; fi; exec ${command}'`
     expect(relaunchCommand(['claude', '--resume'])).toBe(
-      'claude --dangerously-load-development-channels server:telegram --continue',
+      withClaudeEnvironment('claude --dangerously-load-development-channels server:telegram --continue'),
     )
     expect(relaunchCommand(['claude', '--resume', 'abc-123'])).toBe(
-      'claude --resume abc-123 --dangerously-load-development-channels server:telegram',
+      withClaudeEnvironment('claude --resume abc-123 --dangerously-load-development-channels server:telegram'),
     )
     expect(relaunchCommand(['claude', '--permission-mode', 'bypassPermissions'])).toBe(
-      'claude --permission-mode bypassPermissions --dangerously-load-development-channels server:telegram --continue',
+      withClaudeEnvironment('claude --permission-mode bypassPermissions --dangerously-load-development-channels server:telegram --continue'),
     )
   })
   test('ensureChannelFlags rewrites any old channel flags to canon', () => {
@@ -550,12 +568,12 @@ describe('tmux-ops', () => {
     expect(
       buildLaunch(['claude', '--channels', 'plugin:telegram@claude-plugins-official', '--resume'], 'resume'),
     ).toBe(
-      'claude --dangerously-load-development-channels server:telegram --continue',
+      `sh -c 'if [ -r "$HOME/.claude/claude.env" ]; then . "$HOME/.claude/claude.env" || exit $?; fi; exec claude --dangerously-load-development-channels server:telegram --continue'`,
     )
     // a flag without its argument (broken argv) is normalised too
     expect(
       buildLaunch(['claude', '--channels', 'server:telegram', '--dangerously-load-development-channels'], 'new'),
-    ).toBe('claude --dangerously-load-development-channels server:telegram')
+    ).toBe(`sh -c 'if [ -r "$HOME/.claude/claude.env" ]; then . "$HOME/.claude/claude.env" || exit $?; fi; exec claude --dangerously-load-development-channels server:telegram'`)
   })
   test('isClaudeArgv recognises the binary and cli.js', () => {
     expect(isClaudeArgv(['node', '/usr/lib/claude/cli.js', '--resume'])).toBe(true)

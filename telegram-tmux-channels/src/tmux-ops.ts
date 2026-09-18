@@ -150,16 +150,62 @@ export function shellQuote(args: string[]): string {
     .join(' ')
 }
 
+const CLAUDE_ENV_PATH = '$HOME/.claude/claude.env'
+const EXTENDED_CONTEXT_ALIASES = new Set(['opus', 'sonnet', 'fable'])
+const EXTENDED_CONTEXT_MODEL_PATTERN = /^claude-(?:opus|sonnet|fable)(?:-|$)/i
+const EXTENDED_CONTEXT_SUFFIX = '[1m]'
+
+function withClaudeEnvironment(command: string): string {
+  const script = `if [ -r "${CLAUDE_ENV_PATH}" ]; then . "${CLAUDE_ENV_PATH}" || exit $?; fi; exec ${command}`
+  return shellQuote(['sh', '-c', script])
+}
+
+function supportsExtendedContext(model: string): boolean {
+  const normalized = model.toLowerCase()
+  return EXTENDED_CONTEXT_ALIASES.has(normalized) || EXTENDED_CONTEXT_MODEL_PATTERN.test(normalized)
+}
+
+function normalizeExtendedContextModel(model: string): string {
+  if (!supportsExtendedContext(model) || model.toLowerCase().endsWith(EXTENDED_CONTEXT_SUFFIX)) {
+    return model
+  }
+  return `${model}${EXTENDED_CONTEXT_SUFFIX}`
+}
+
+export function normalizeClaudeExtendedContextModel(argv: string[]): string[] {
+  const normalized: string[] = []
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]!
+    if (arg === '--model') {
+      const model = argv[i + 1]
+      if (model === undefined || model.startsWith('-')) {
+        normalized.push(arg)
+      } else {
+        normalized.push(arg, normalizeExtendedContextModel(model))
+        i++
+      }
+      continue
+    }
+    if (arg.startsWith('--model=')) {
+      const model = arg.slice('--model='.length)
+      normalized.push(`--model=${normalizeExtendedContextModel(model)}`)
+      continue
+    }
+    normalized.push(arg)
+  }
+  return normalized
+}
+
 // Bare --resume is an interactive picker with no one to click it on relaunch →
 // convert it to --continue; --resume <id> is deterministic and kept as-is.
 export function relaunchCommand(cmdline: string[]): string {
   const args: string[] = []
   let resumable = false
   for (let i = 0; i < cmdline.length; i++) {
-    const a = cmdline[i]
+    const a = cmdline[i]!
     if (a === '--resume') {
-      if (i + 1 < cmdline.length && !cmdline[i + 1].startsWith('-')) {
-        args.push(a, cmdline[++i])
+      if (i + 1 < cmdline.length && !cmdline[i + 1]!.startsWith('-')) {
+        args.push(a, cmdline[++i]!)
         resumable = true
       }
       continue
@@ -174,11 +220,11 @@ export function relaunchCommand(cmdline: string[]): string {
     }
     args.push(a)
   }
-  const out = ensureChannelFlags(args)
+  const out = ensureChannelFlags(normalizeClaudeExtendedContextModel(args))
   if (!resumable) {
     out.push('--continue')
   }
-  return shellQuote(out)
+  return withClaudeEnvironment(shellQuote(out))
 }
 
 // `claude -p '<prompt>'` / `--print` is a one-shot headless run: it answers once and exits. Such a
@@ -348,16 +394,16 @@ export function ensureChannelFlags(argv: string[]): string[] {
 }
 
 export function buildLaunch(saved: string[] | undefined, mode: LaunchMode, sessionId?: string): string {
-  const base = ensureChannelFlags(stripResumeFlags(saved?.length ? saved : DEFAULT_CLAUDE_ARGV))
+  const base = ensureChannelFlags(normalizeClaudeExtendedContextModel(stripResumeFlags(saved?.length ? saved : DEFAULT_CLAUDE_ARGV)))
   // fork = ветка: та же история до точки разветвления, но своя дальнейшая жизнь. --fork-session
   // без --resume бессмыслен, поэтому без id это обычный старт.
   if (mode === 'fork') {
-    return shellQuote(sessionId ? [...base, '--resume', sessionId, '--fork-session'] : base)
+    return withClaudeEnvironment(shellQuote(sessionId ? [...base, '--resume', sessionId, '--fork-session'] : base))
   }
   if (mode !== 'resume') {
-    return shellQuote(base)
+    return withClaudeEnvironment(shellQuote(base))
   }
-  return shellQuote(sessionId ? [...base, '--resume', sessionId] : [...base, '--continue'])
+  return withClaudeEnvironment(shellQuote(sessionId ? [...base, '--resume', sessionId] : [...base, '--continue']))
 }
 
 export type LaunchMode = 'resume' | 'new' | 'fork'

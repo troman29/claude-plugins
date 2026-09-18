@@ -1,7 +1,7 @@
 {
   "name": "telegram-tmux-channels",
   "description": "Telegram tmux bridge for Claude Code and Codex: one bot, many sessions, per-topic agent adapters, lifecycle controls, pickers, permissions and status hooks.",
-  "version": "2.13.1",
+  "version": "2.13.2",
   "keywords": [
     "telegram",
     "messaging",

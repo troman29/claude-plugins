@@ -396,7 +396,7 @@ Environment, in `~/.claude/channels/telegram/.env`:
 | `TELEGRAM_ADMINS` | — | Admin user ids, comma-separated |
 | `TELEGRAM_LANG` | `en` | Initial UI language (`en`/`ru`); `/lang` overrides at runtime |
 | `TELEGRAM_PROJECTS_DIR` | `$HOME/projects` | Where `/bind <name>` looks |
-| `TELEGRAM_LAUNCH_CMD` | `claude --permission-mode bypassPermissions` | Claude launch command; Codex defaults to `codex` and learns its live argv |
+| `TELEGRAM_LAUNCH_CMD` | `claude --permission-mode bypassPermissions` | Claude launch command; хаб читает `~/.claude/claude.env` перед start/restart и нормализует сохранённые Opus/Sonnet/Fable aliases в `[1m]`; Codex defaults to `codex` and learns its live argv |
 | `TELEGRAM_CODEX_APPROVALS` | off | `1` keeps Codex sandboxed and asks for approvals in the topic instead of running with full access |
 | `TELEGRAM_IDLE_UNLOAD_MINUTES` | `0` | Idle minutes before a session is stopped; `0` disables |
 | `TELEGRAM_MEMORY_MAX` | — | Per-session memory cap (e.g. `12G`) via `systemd-run --scope`, so a runaway session dies alone instead of OOM-ing the host. It caps the session AND everything it starts: a child wrapped in its own `systemd-run --scope -p MemoryMax=…` still counts here, and the parent kills first. Linux/systemd only |
