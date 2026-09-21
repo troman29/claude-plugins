@@ -1951,11 +1951,21 @@ async function handleSubagentEvent(msg: Extract<StubToHub, { op: 'subagent' }>):
       }
       continue
     }
-    const { state, fresh } = beginStatusBatch(key)
     const description = pendingDescriptions.get(msg.promptId)
     if (description) {
       pendingDescriptions.delete(msg.promptId)
     }
+    // Продолжение агента через SendMessage шлёт SubagentStart с тем же id и без описания:
+    // это не новый запуск — пузырь и имя остаются прежними.
+    const current = statusState.get(key)
+    const resumed = current?.agents.get(msg.agentId)
+    if (current && resumed) {
+      resumed.done = false
+      log(`subagent: resume key=${key} agentId=${msg.agentId} name="${resumed.name}"`)
+      await statusPost.refresh(key, () => renderStatus(current))
+      continue
+    }
+    const { state, fresh } = beginStatusBatch(key)
     state.agents.set(msg.agentId, { name: description ?? msg.agentType, done: false })
     log(`subagent: start key=${key} agentId=${msg.agentId} type=${msg.agentType} fresh=${fresh} name="${description ?? msg.agentType}"`)
     // live thunk (not a snapshot): the post-send re-render inside update() must see state that
