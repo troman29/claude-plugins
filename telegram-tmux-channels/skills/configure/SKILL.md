@@ -75,7 +75,7 @@ Optional (all have working defaults — mention them only if asked):
 1. **Find the stub**:
    `ls -d ~/.claude/plugins/cache/*/telegram-tmux-channels/*/src/stub.ts | tail -1`
 2. **Register it for every session** (skip the Codex command when installed as a Codex plugin;
-   its `.mcp.json` registers the bundled server automatically):
+   its `codex.mcp.json` registers the bundled server automatically):
    `claude mcp add --scope user telegram -- bun run <that stub.ts path>`
    For Codex too: `codex mcp add telegram -- bun run <that stub.ts path>`.
    Needs [Bun](https://bun.sh); tmux is needed too for session control (see the README).

@@ -10,7 +10,10 @@ describe('Codex plugin package', () => {
       name: string; mcpServers?: string
     }
     expect(manifest.name).toBe('telegram-tmux-channels')
-    expect(manifest.mcpServers).toBe('./.mcp.json')
+    expect(manifest.mcpServers).toBe('./codex.mcp.json')
+    // Claude Code сам подхватывает `.mcp.json` из корня плагина и резолвит `cwd: "."` в папку сессии:
+    // там стаба нет, и сервер падал в каждой сессии. Поэтому Codex-конфиг живёт под своим именем.
+    expect(existsSync(join(root, '.mcp.json'))).toBe(false)
 
     const config = JSON.parse(readFileSync(join(root, manifest.mcpServers!), 'utf8')) as {
       mcpServers?: Record<string, { command?: string; args?: string[]; cwd?: string }>
