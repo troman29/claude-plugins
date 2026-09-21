@@ -19,14 +19,17 @@ export function normalizeHookMessage(
   const toolResponse = data.tool_response as Record<string, unknown> | undefined
 
   if (mode === 'turnend') {
-    const bg = (Array.isArray(data.background_tasks) ? (data.background_tasks as Record<string, unknown>[]) : [])
+    const tasks = Array.isArray(data.background_tasks) ? (data.background_tasks as Record<string, unknown>[]) : undefined
+    const bg = (tasks ?? [])
       .filter(b => b.type === 'shell')
       .map(b => ({ command: String(b.command ?? ''), ...(b.description ? { description: String(b.description) } : {}) }))
       .filter(b => b.command)
     // Кроны/лупы сессии едут тем же сообщением: Stop приходит на каждом конце хода, и это
     // единственный payload, где Claude Code их отдаёт. Хабу они нужны, чтобы не погасить по
     // простою сессию, вместе с которой умрёт и расписание.
-    msg = { op: 'subagent', action: 'turnend', bindingKeys, bg, crons: parseSessionCrons(data.session_crons) }
+    // Id фоновой задачи субагента в Claude Code — это его agent_id из SubagentStart.
+    const agents = tasks?.filter(t => t.type === 'subagent').map(t => String(t.id ?? '')).filter(Boolean)
+    msg = { op: 'subagent', action: 'turnend', bindingKeys, bg, ...(agents ? { agents } : {}), crons: parseSessionCrons(data.session_crons) }
   } else if (mode === 'compaction-start' || mode === 'compaction-done') {
     const trigger = data.trigger === 'manual' || data.trigger === 'auto' ? data.trigger : undefined
     msg = { op: 'compaction', phase: mode === 'compaction-start' ? 'start' : 'done', bindingKeys, ...(trigger ? { trigger } : {}) }

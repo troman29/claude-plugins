@@ -70,4 +70,12 @@ describe('cross-agent hook normalization', () => {
       description: 'Audit delivery', sessionId: 's3',
     })
   })
+  test('конец хода передаёт живых фоновых субагентов, а у Codex поля нет вовсе', () => {
+    const msg = normalizeHookMessage('turnend', { session_id: 's1', background_tasks: [
+      { id: 'a1', type: 'subagent', status: 'running' },
+      { id: 'b1', type: 'shell', status: 'running', command: 'sleep 9' },
+    ] }, keys)
+    expect(msg).toMatchObject({ action: 'turnend', agents: ['a1'], bg: [{ command: 'sleep 9' }] })
+    expect(normalizeHookMessage('turnend', { session_id: 's1' }, keys)).not.toHaveProperty('agents')
+  })
 })

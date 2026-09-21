@@ -444,6 +444,7 @@ export const codexAdapter: AgentAdapter = {
     backgroundStatus: true,
     captureSessionIdAtLaunch: false,
     hookSessionIdReliable: false,
+    compactionProgressInPane: false,
   },
   isProcessArgv: isCodexArgv,
   isPaneCommand: command => /(^|\/)codex(?:\.exe)?$/i.test(command.trim()),

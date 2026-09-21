@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { deserializeStatus, emptyStatus, hasLiveWork, renderBg, renderStatus, serializeStatus, statusIsEmpty, syncBg, type BgTask } from '../src/status-render'
+import { deserializeStatus, emptyStatus, hasLiveWork, renderBg, renderStatus, serializeStatus, settleAgents, statusIsEmpty, syncBg, type BgTask } from '../src/status-render'
 
 describe('status-render', () => {
   test('status state survives JSON serialization without losing Map identity', () => {
@@ -74,5 +74,19 @@ describe('status-render', () => {
     const big = emptyStatus()
     for (let i = 0; i < 30; i++) big.tasks.set(String(i), { subject: `t${i}`, status: 'pending' })
     expect(renderStatus(big)).toContain('… +5')
+  })
+  // SubagentStop потерялся — без сверки агент числился живым вечно, батч не закрывался,
+  // и новые старты правили старый пузырь далеко вверху топика.
+  test('на конце хода живыми остаются только агенты, которых назвал Stop', () => {
+    const s = emptyStatus()
+    s.agents.set('lost', { name: 'потерял стоп', done: false })
+    s.agents.set('bg', { name: 'фоновый', done: false })
+    s.agents.set('old', { name: 'готов', done: true })
+    expect(settleAgents(s, ['bg'])).toBe(true)
+    expect(s.agents.get('lost')?.done).toBe(true)
+    expect(hasLiveWork(s)).toBe(true)
+    expect(settleAgents(s, ['bg'])).toBe(false)
+    expect(settleAgents(s, [])).toBe(true)
+    expect(hasLiveWork(s)).toBe(false)
   })
 })

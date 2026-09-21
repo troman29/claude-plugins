@@ -23,6 +23,9 @@ export type AgentCapabilities = {
   captureSessionIdAtLaunch: boolean
   // Whether a hook's session_id is safe to persist without transcript correlation.
   hookSessionIdReliable: boolean
+  // Whether the pane draws the session's own compaction progress.  Such agents fire the compaction
+  // hook for subagents too, with the parent's payload, so only the pane proves it is the session's.
+  compactionProgressInPane: boolean
 }
 
 /** `origin` — чат и топик первого сообщения из Telegram в сессии, если оно есть. */

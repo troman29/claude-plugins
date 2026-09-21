@@ -26,6 +26,7 @@ export const claudeAdapter: AgentAdapter = {
     backgroundStatus: true,
     captureSessionIdAtLaunch: true,
     hookSessionIdReliable: true,
+    compactionProgressInPane: true,
   },
   isProcessArgv: isClaudeArgv,
   isPaneCommand: command => /(^|\/)claude(?:\.exe)?$/i.test(command.trim()),

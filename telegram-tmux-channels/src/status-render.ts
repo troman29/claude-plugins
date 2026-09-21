@@ -70,6 +70,22 @@ export function syncBg(bg: BgTask[], live: BgTask[]): boolean {
   return changed
 }
 
+// SubagentStop теряется (агента прервали, хаб лежал), и такой «живой» агент навсегда держал батч
+// открытым: новые старты правили пузырь вековой давности наверху топика и в чате их не было видно.
+// На конце хода Stop называет фоновых агентов, которые ещё работают; остальные — закончили.
+// Returns whether anything changed, so the caller can skip a pointless Telegram edit.
+export function settleAgents(s: StatusState, live: string[]): boolean {
+  const running = new Set(live)
+  let changed = false
+  for (const [id, agent] of s.agents) {
+    if (!agent.done && !running.has(id)) {
+      agent.done = true
+      changed = true
+    }
+  }
+  return changed
+}
+
 // A batch stays open while any subagent is still running — a run_in_background agent outlives
 // the Stop hook, so "turn ended" alone must not close the bubble it is reporting into.
 export const hasLiveWork = (s: StatusState): boolean => [...s.agents.values()].some(a => !a.done)

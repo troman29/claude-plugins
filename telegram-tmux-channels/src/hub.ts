@@ -33,7 +33,7 @@ import {
   capturePane, capturePaneAnsi, type OpsCommand,
 } from './tmux-ops'
 import { ansiToImage } from './ansi-image'
-import { deserializeStatus, emptyStatus, hasLiveWork, renderBg, renderStatus, serializeStatus, statusIsEmpty, syncBg, type BgTask, type StatusState } from './status-render'
+import { deserializeStatus, emptyStatus, hasLiveWork, renderBg, renderStatus, serializeStatus, settleAgents, statusIsEmpty, syncBg, type BgTask, type StatusState } from './status-render'
 import { discoverGlobalSkills, discoverProjectSkills, findSkill, isSlashCommand, mangleCmd, skillInvocation, tgDescription, type Skill } from './skills'
 import { agentPidsInDir, cmdlineOf } from './proc'
 import { bySendTime, clampLines, rmQuiet } from './util'
@@ -1345,6 +1345,15 @@ async function pushStatus(key: string, state: StatusState, fresh: boolean): Prom
   }
   await statusPost.update(key, fresh, () => renderStatus(state))
 }
+async function settleFinishedAgents(key: string, live: string[] | undefined): Promise<void> {
+  const state = statusState.get(key)
+  if (!live || !state || !settleAgents(state, live)) {
+    return
+  }
+  log(`subagent: settled key=${key} — SubagentStop не пришёл, агент не числится живым на конце хода`)
+  await pushStatus(key, state, false)
+}
+
 // PreToolUse(Agent) fires before SubagentStart and carries the human description;
 // SubagentStart itself only has agent_id/agent_type — correlate the two via promptId.
 const pendingDescriptions = new Map<string, string>()
@@ -1910,10 +1919,11 @@ async function handleSubagentEvent(msg: Extract<StubToHub, { op: 'subagent' }>):
     return
   }
   if (msg.action === 'turnend') {
-    log(`subagent: turnend keys=${msg.bindingKeys.join(',')} bg=${msg.bg?.length ?? 0}${msg.crons?.length ? ` crons=${msg.crons.length}` : ''}`)
+    log(`subagent: turnend keys=${msg.bindingKeys.join(',')} bg=${msg.bg?.length ?? 0}${msg.agents ? ` agents=${msg.agents.length}` : ''}${msg.crons?.length ? ` crons=${msg.crons.length}` : ''}`)
     for (const key of msg.bindingKeys) {
       noteSessionCrons(key, msg.crons ?? [])
       await reconcileBg(key, msg.bg ?? []) // before endTurn: pushStatus clears the turn-ended flag
+      await settleFinishedAgents(key, msg.agents)
       statusPost.endTurn(key)
       await forwardFallbackReply(key) // agent didn't reply → forward its final text ourselves
       fallbackGate.endTurn(key) // ход закрыт: следующий начинается с чистого листа
@@ -2251,10 +2261,11 @@ async function handleBgEvent(msg: Extract<StubToHub, { op: 'bg' }>): Promise<voi
   }
 }
 
-// Хук знает точные старт и финиш, но не проценты; проценты дорисовывает скрейп пейна
-// в ТОТ ЖЕ пост (CompactionPosts). У Codex бара нет — там хук единственный источник.
+// Хук — единственный источник только там, где пейн не рисует бар (Codex). Claude Code шлёт
+// PreCompact и на компакцию СУБАГЕНТА, с payload родительской сессии (без agent_id), — отличить
+// её от своей можно лишь по бару в пейне, поэтому у Claude пост ведёт только скрейп.
 async function handleCompactionEvent(msg: Extract<StubToHub, { op: 'compaction' }>): Promise<void> {
-  for (const key of msg.bindingKeys) {
+  for (const key of msg.bindingKeys.filter(k => !adapterForKey(k).capabilities.compactionProgressInPane)) {
     if (msg.phase !== 'start') {
       await compactions.finished(key)
       continue

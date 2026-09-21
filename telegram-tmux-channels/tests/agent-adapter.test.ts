@@ -33,8 +33,10 @@ describe('agent adapter registry', () => {
   test('uses only reliable session-id sources for each CLI', () => {
     expect(claudeAdapter.capabilities.captureSessionIdAtLaunch).toBe(true)
     expect(claudeAdapter.capabilities.hookSessionIdReliable).toBe(true)
+    expect(claudeAdapter.capabilities.compactionProgressInPane).toBe(true)
     expect(codexAdapter.capabilities.captureSessionIdAtLaunch).toBe(false)
     expect(codexAdapter.capabilities.hookSessionIdReliable).toBe(false)
+    expect(codexAdapter.capabilities.compactionProgressInPane).toBe(false)
   })
 
   test('agent-specific launch environment stays behind the adapter contract', () => {
