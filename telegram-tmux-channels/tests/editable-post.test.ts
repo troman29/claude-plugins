@@ -28,4 +28,19 @@ describe('EditablePost restart contract', () => {
     expect(dropped).toBe(1)
     expect(persisted).toEqual([['topic', 99, false]])
   })
+
+  // Стоп фонового агента приходит уже после конца хода; сбрось он границу — старты следующего
+  // хода снова правили бы старый пузырь, уехавший вверх топика.
+  test('refresh правит пост, но оставляет ход закрытым', async () => {
+    const edited: number[] = []
+    const post = new EditablePost(
+      [['topic', { msgId: 42, turnEnded: true }]], () => {}, () => {},
+      { send: async () => 99, edit: async (_key, id) => { edited.push(id) } },
+    )
+    await post.refresh('topic', () => 'agent done')
+    expect(edited).toEqual([42])
+    expect(post.sinceTurnEnd('topic')).toBe(true)
+    await post.refresh('other', () => 'nothing sent yet')
+    expect(edited).toEqual([42])
+  })
 })

@@ -36,6 +36,15 @@ export class EditablePost {
     this.drop(key)
   }
 
+  /** Перерисовать уже отправленный пост, не трогая границу хода: итог прошлого хода (стоп
+   *  фонового агента) не должен приклеивать к старому посту события следующего. */
+  async refresh(key: string, render: () => string): Promise<void> {
+    const existing = this.msg.get(key)
+    if (existing === undefined || existing === -1) return
+    await this.transport.edit(key, existing, render())
+    this.persist(key, existing, this.turnEnded.get(key) ?? false)
+  }
+
   async update(key: string, fresh: boolean, render: () => string): Promise<void> {
     if (fresh) {
       this.msg.delete(key)

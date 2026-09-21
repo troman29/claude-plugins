@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { deserializeStatus, emptyStatus, hasLiveWork, renderBg, renderStatus, serializeStatus, settleAgents, statusIsEmpty, syncBg, type BgTask } from '../src/status-render'
+import { carryLiveWork, deserializeStatus, emptyStatus, hasLiveWork, renderBg, renderStatus, serializeStatus, settleAgents, statusIsEmpty, syncBg, type BgTask } from '../src/status-render'
 
 describe('status-render', () => {
   test('status state survives JSON serialization without losing Map identity', () => {
@@ -88,5 +88,15 @@ describe('status-render', () => {
     expect(settleAgents(s, ['bg'])).toBe(false)
     expect(settleAgents(s, [])).toBe(true)
     expect(hasLiveWork(s)).toBe(false)
+  })
+  test('новый пузырь забирает только живых агентов прошлого хода', () => {
+    const s = emptyStatus()
+    s.agents.set('bg', { name: 'фоновый', done: false })
+    s.agents.set('old', { name: 'готов', done: true })
+    s.tasks.set('t', { subject: 'задача', status: 'completed' })
+    const next = carryLiveWork(s)
+    expect([...next.agents.keys()]).toEqual(['bg'])
+    expect(next.tasks.size).toBe(0)
+    expect(next.agents.get('bg')).toBe(s.agents.get('bg'))
   })
 })

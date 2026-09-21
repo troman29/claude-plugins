@@ -86,9 +86,15 @@ export function settleAgents(s: StatusState, live: string[]): boolean {
   return changed
 }
 
-// A batch stays open while any subagent is still running — a run_in_background agent outlives
-// the Stop hook, so "turn ended" alone must not close the bubble it is reporting into.
 export const hasLiveWork = (s: StatusState): boolean => [...s.agents.values()].some(a => !a.done)
+
+// Новый ход открывает новый пузырь внизу топика, даже если фоновый агент прошлого хода ещё
+// работает: иначе старты правили пузырь, уехавший далеко вверх, и в чате их не было видно.
+// Живые агенты переезжают в новый пузырь, их SubagentStop отметит их уже там.
+export const carryLiveWork = (s: StatusState): StatusState => ({
+  ...emptyStatus(),
+  agents: new Map([...s.agents].filter(([, agent]) => !agent.done)),
+})
 
 const MAX_LINES = 25
 const cap = (lines: string[]): string[] =>

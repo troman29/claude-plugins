@@ -33,7 +33,7 @@ import {
   capturePane, capturePaneAnsi, type OpsCommand,
 } from './tmux-ops'
 import { ansiToImage } from './ansi-image'
-import { deserializeStatus, emptyStatus, hasLiveWork, renderBg, renderStatus, serializeStatus, settleAgents, statusIsEmpty, syncBg, type BgTask, type StatusState } from './status-render'
+import { carryLiveWork, deserializeStatus, emptyStatus, hasLiveWork, renderBg, renderStatus, serializeStatus, settleAgents, statusIsEmpty, syncBg, type BgTask, type StatusState } from './status-render'
 import { discoverGlobalSkills, discoverProjectSkills, findSkill, isSlashCommand, mangleCmd, skillInvocation, tgDescription, type Skill } from './skills'
 import { agentPidsInDir, cmdlineOf } from './proc'
 import { bySendTime, clampLines, rmQuiet } from './util'
@@ -1243,7 +1243,7 @@ async function detectPicker(pane: string, session: SessionInfo, text: string): P
 // of this logic — task and skill were missing the reservation and could double-send.
 //
 // The single status bubble owns the only instance; `fresh` comes from beginStatusBatch() below,
-// which combines sinceTurnEnd() with "nothing still running".
+// which opens a new bubble on the first event after the turn ended.
 const stateRepo = new HubStateRepository(log)
 const interactions = new InteractionRegistry(
   stateRepo.interactionSnapshot(),
@@ -1320,15 +1320,14 @@ const statusPost = new EditablePost(
   editableTransport,
 )
 
-// Returns the state to mutate, and whether this event opens a NEW bubble. A new batch starts
-// only once the turn ended AND nothing is still running — a run_in_background agent outlives
-// the Stop hook, and closing the bubble on Stop alone would abandon it half-reported.
+// Returns the state to mutate, and whether this event opens a NEW bubble: the first event after
+// the turn ended does, carrying agents that are still running (see carryLiveWork).
 function beginStatusBatch(key: string): { state: StatusState; fresh: boolean } {
   const prev = statusState.get(key)
-  if (prev && !(statusPost.sinceTurnEnd(key) && !hasLiveWork(prev))) {
+  if (prev && !statusPost.sinceTurnEnd(key)) {
     return { state: prev, fresh: false }
   }
-  const state = emptyStatus()
+  const state = prev ? carryLiveWork(prev) : emptyStatus()
   statusState.set(key, state)
   return { state, fresh: true } // first-ever event: nothing to reset, update() sends anyway
 }
@@ -1351,7 +1350,7 @@ async function settleFinishedAgents(key: string, live: string[] | undefined): Pr
     return
   }
   log(`subagent: settled key=${key} — SubagentStop не пришёл, агент не числится живым на конце хода`)
-  await pushStatus(key, state, false)
+  await statusPost.refresh(key, () => renderStatus(state))
 }
 
 // PreToolUse(Agent) fires before SubagentStart and carries the human description;
@@ -1948,7 +1947,7 @@ async function handleSubagentEvent(msg: Extract<StubToHub, { op: 'subagent' }>):
       }
       log(`subagent: stop key=${key} agentId=${msg.agentId} found=${!!existing}`)
       if (state && existing) {
-        await pushStatus(key, state, false)
+        await statusPost.refresh(key, () => renderStatus(state))
       }
       continue
     }
