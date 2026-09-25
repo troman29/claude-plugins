@@ -35,3 +35,15 @@ export function clampLines(text: string, maxChars: number): string {
   const lastBreak = cut.lastIndexOf('\n')
   return `${(lastBreak > maxChars / 2 ? cut.slice(0, lastBreak) : cut).trimEnd()}…`
 }
+
+/** То же, но оставляет ХВОСТ: у вывода упавшей команды вся суть в последних строках, а начало —
+ *  шум сборки. Слишком длинное сообщение Telegram отбивает целиком, и пользователь не видит
+ *  НИЧЕГО — ни ошибки, ни кнопок под ней. */
+export function clampTail(text: string, maxChars: number): string {
+  if (text.length <= maxChars) {
+    return text
+  }
+  const cut = text.slice(text.length - maxChars)
+  const firstBreak = cut.indexOf('\n')
+  return `…${(firstBreak !== -1 && firstBreak < maxChars / 2 ? cut.slice(firstBreak) : cut).trimStart()}`
+}

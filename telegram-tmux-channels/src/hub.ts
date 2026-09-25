@@ -36,7 +36,7 @@ import { ansiToImage } from './ansi-image'
 import { carryLiveWork, deserializeStatus, emptyStatus, hasLiveWork, renderBg, renderStatus, serializeStatus, settleAgents, statusIsEmpty, syncBg, type BgTask, type StatusState } from './status-render'
 import { discoverGlobalSkills, discoverProjectSkills, findSkill, isSlashCommand, mangleCmd, skillInvocation, tgDescription, type Skill } from './skills'
 import { agentPidsInDir, cmdlineOf } from './proc'
-import { bySendTime, clampLines, rmQuiet } from './util'
+import { bySendTime, clampLines, clampTail, rmQuiet } from './util'
 import { parsePicker, CHAT_ABOUT_INDEX, checkedIndexes, pickerCursorIndex, textBeforePicker, parseResumeList, fnv1a, hasPickerFooter, isStartupTrustPrompt, trustOptionIndex, isCodexStartupTrustScreen, isCodexHooksTrustScreen, isCodexOwnToolApproval, type Picker, type ResumeRow } from './picker'
 import { buildKeyboard, confirmAfterDigit, downsToChatAbout, parseCallback } from './picker-drive'
 import {
@@ -1425,6 +1425,8 @@ function resumeLaunchCapture(key: string, binding: BindingEntry): void {
   })
 }
 const FALLBACK_MAX_CHARS = 3500 // cap the safety-net forward; a huge answer gets truncated, not spammed
+// Вывод упавшего хука в отчёте о подъёме: остаток лимита Telegram уходит под заголовок и разметку.
+const SPAWN_FAIL_MAX_CHARS = 3500
 
 // ── restart-survivable interactive state (Stage 3) ──────────────────────────
 // An open picker outlives a hub restart: it is re-adopted only if the same pane still shows the same
@@ -3838,8 +3840,10 @@ async function runAutoTopic(
         },
       })
     }
+    // Хвост вывода хука, обрезанный под лимит Telegram: целиком он бывает в тысячи строк, и
+    // сообщение отбивается целиком — вместе с кнопкой повтора (25.09: юзер не увидел ничего).
     void bot.api
-      .sendMessage(chatId, t().sessionSpawnFail(escHtml(String(e))), {
+      .sendMessage(chatId, t().sessionSpawnFail(clampTail(escHtml(String(e)), SPAWN_FAIL_MAX_CHARS)), {
         ...inTopic(threadId),
         parse_mode: 'HTML',
         // Кнопка только там, где есть куда вернуться повтором — то есть в топике.

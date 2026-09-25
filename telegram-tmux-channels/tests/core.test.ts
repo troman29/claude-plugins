@@ -6,7 +6,7 @@ import { messageKey, keyToTarget, targetFor } from '../src/bindings'
 import { keysForDir, sessionOwner, setSessionId, resolveProjectDir, parseBindSpec, validBindings, type BindingEntry } from '../src/registry'
 import { makeLineDecoder, encode } from '../src/protocol'
 import { downsToChatAbout } from '../src/picker-drive'
-import { bySendTime, clampLines } from '../src/util'
+import { bySendTime, clampLines, clampTail } from '../src/util'
 import { Router } from '../src/router'
 import { chunk, planAttachments, CAPTION_LIMIT } from '../src/chunk'
 import { fmtUntil, formatLimits } from '../src/limits'
@@ -873,6 +873,12 @@ describe('обрезка длинного текста', () => {
 
   test('строка длиннее половины лимита — режем как есть, а не в ноль', () => {
     expect(clampLines('а'.repeat(50), 10)).toBe('а'.repeat(10) + '…')
+  })
+
+  test('хвостом оставляем конец вывода — там и стоит упавший шаг', () => {
+    expect(clampTail('раз\nдва', 100)).toBe('раз\nдва')
+    expect(clampTail('клон\nсборка\nшаг упал', 13)).toBe('…шаг упал')
+    expect(clampTail('я'.repeat(50), 10)).toBe('…' + 'я'.repeat(10))
   })
 })
 
