@@ -67,7 +67,8 @@ export interface AgentAdapter {
   transcriptSawIncoming(dir: string, sinceMs: number, needle: string): boolean
   sessionForIncoming(dir: string, sinceMs: number, needle: string): string | undefined
 
-  parseCompaction(pane: string): { pct: number; elapsed?: string } | undefined
+  /** Живая компакция в пейне: процент есть только у старого бара, у спиннера — только elapsed. */
+  parseCompaction(pane: string): { pct?: number; elapsed?: string } | undefined
   paneIsWorking(pane: string): boolean
   parseContextPct(pane: string): number | undefined
   parseError(pane: string): string | undefined

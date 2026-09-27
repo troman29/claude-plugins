@@ -86,6 +86,7 @@ Send <code>/tui</code> to see its terminal, or <code>/restart</code>.`,
   compaction: (bar: string, pct: string, elapsed: string) =>
     `🗜 <b>Compaction</b> ${bar} ${pct}%${elapsed ? ` <i>(${elapsed})</i>` : ''}`,
   compactionStarted: (trigger: string) => `🗜 <b>Compaction</b>${trigger ? ` <i>(${trigger})</i>` : ''}`,
+  compactionWorking: (elapsed: string) => `🗜 <b>Compaction</b>${elapsed ? ` — ${elapsed}` : ''}`,
   compactionDone: '✅ <b>Compaction done.</b>',
   workflow: (name: string, done: number, total: number) =>
     `${done >= total ? '✅' : '🤖'} <b>Workflow</b> <code>${name}</code> — ${done}/${total} agents`,

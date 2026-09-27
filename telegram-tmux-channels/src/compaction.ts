@@ -22,6 +22,8 @@ export type CompactionDeps = {
   render: {
     started(trigger: string): string
     bar(pct: number, elapsed?: string): string
+    /** Пейн показывает компакцию без процентов — ведём пост по времени. */
+    working(elapsed?: string): string
     done(): string
   }
   persist(post: CompactionPost): void
@@ -61,22 +63,24 @@ export class CompactionPosts {
     await this.open({ ...opts, lastPct: NO_PCT }, this.deps.render.started(opts.trigger))
   }
 
-  /** Скрейп пейна: очередной процент. */
+  /** Скрейп пейна: очередной кадр живой компакции — с процентом (старый бар) или без (спиннер). */
   async progress(opts: {
-    bindingKey: string; bindingDir: string; pane: string; target: CompactionTarget; pct: number; elapsed?: string
+    bindingKey: string; bindingDir: string; pane: string; target: CompactionTarget; pct?: number; elapsed?: string
   }): Promise<void> {
-    const html = this.deps.render.bar(opts.pct, opts.elapsed)
+    const html = opts.pct != null ? this.deps.render.bar(opts.pct, opts.elapsed) : this.deps.render.working(opts.elapsed)
+    // Без процентов версией кадра служит elapsed: он тикает, и пост правится не чаще раза в секунду.
+    const version = opts.pct ?? elapsedSeconds(opts.elapsed)
     const post = this.posts.get(opts.bindingKey)
     if (!post) {
-      await this.open({ ...opts, lastPct: opts.pct }, html)
+      await this.open({ ...opts, lastPct: version }, html)
       return
     }
     post.pane = opts.pane
     post.misses = 0
-    if (post.msgId === SENDING || post.lastPct === opts.pct) {
-      return // ещё отправляется, или бар не сдвинулся — Telegram лимитирует правки
+    if (post.msgId === SENDING || post.lastPct === version) {
+      return // ещё отправляется, или кадр не сдвинулся — Telegram лимитирует правки
     }
-    post.lastPct = opts.pct
+    post.lastPct = version
     await this.deps.edit(post, html)
     this.deps.persist(post)
   }
@@ -127,4 +131,13 @@ export class CompactionPosts {
     this.posts.set(bindingKey, post)
     this.deps.persist(post)
   }
+}
+
+/** Секунды из "2s · ↓ 26 tokens" или "1m 24s"; без них кадр считаем нулевым. */
+function elapsedSeconds(elapsed?: string): number {
+  if (!elapsed) {
+    return 0
+  }
+  const m = elapsed.match(/(?:(\d+)m\s*)?(\d+)s/)
+  return m ? Number(m[1] ?? 0) * 60 + Number(m[2]) : 0
 }

@@ -1977,8 +1977,8 @@ async function handleSubagentEvent(msg: Extract<StubToHub, { op: 'subagent' }>):
 }
 
 // Компакция: один пост на сеанс, два источника (см. src/compaction.ts). Скрейп пейна даёт
-// проценты — Claude Code рисует "✻ Compacting conversation… (elapsed)" + бар "▰▱… NN%";
-// хук даёт точные старт и финиш. capturePane изредка ловит кадр посреди перерисовки, БЕЗ
+// проценты — их рисует только старый бар "▰▱… NN%"; свежий Claude Code (2.1.283) показывает
+// одну строку "✻ Compacting conversation… (2s · ↓ 26 tokens)", и тогда пост ведём по времени. capturePane изредка ловит кадр посреди перерисовки, БЕЗ
 // этой строки, поэтому финал — только после двух промахов подряд (анти-мерцание).
 const PROGRESS_TTL_MS = 60 * 60 * 1000
 
@@ -2000,6 +2000,7 @@ const compactions = new CompactionPosts(
     render: {
       started: trigger => t().compactionStarted(trigger),
       bar: renderCompactBar,
+      working: elapsed => t().compactionWorking(elapsed ? escHtml(elapsed) : ''),
       done: () => t().compactionDone,
     },
     persist: post => interactions.set({
@@ -2027,7 +2028,10 @@ async function handleCompaction(pane: string, session: SessionInfo, text: string
   if (!target) {
     return
   }
-  await compactions.progress({ bindingKey, bindingDir, pane, target, pct: prog.pct, ...(prog.elapsed ? { elapsed: prog.elapsed } : {}) })
+  await compactions.progress({
+    bindingKey, bindingDir, pane, target,
+    ...(prog.pct != null ? { pct: prog.pct } : {}), ...(prog.elapsed ? { elapsed: prog.elapsed } : {}),
+  })
 }
 
 // Running-workflow status, scraped from the pane — hooks expose only "workflow-subagent" with

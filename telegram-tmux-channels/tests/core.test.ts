@@ -446,6 +446,13 @@ describe('tmux-ops', () => {
       .toEqual({ pct: 0 })
     // idle pane → nothing
     expect(parseCompaction('❯ yes, do the webhook\n  ◑ 39%  █░░░░░░░░░ 12%  ⏱ 1h50m')).toBeUndefined()
+
+    // Claude Code 2.1.283: бара нет, живой статус — одна строка со спиннером и временем.
+    expect(parseCompaction('✻ Compacting conversation… (2s · ↓ 26 tokens)'))
+      .toEqual({ elapsed: '2s · ↓ 26 tokens' })
+    expect(parseCompaction('· Compacting conversation… (0s)')).toEqual({ elapsed: '0s' })
+    // Те же слова текстом в истории — не статус: скобки со временем нет.
+    expect(parseCompaction('  ⎿  Compacting conversation is what /compact does')).toBeUndefined()
     // the words as scrollback CONTENT, bar not adjacent → must NOT match (the self-scrape bug)
     expect(parseCompaction('discussing Compacting conversation… (elapsed)\nsome other line\nmore text\n  ▰▰▰▰▰▰ 61% example')).toBeUndefined()
   })

@@ -2,7 +2,7 @@
 // lives outside claude, so /restart runs inline (graceful /exit → wait → relaunch).
 
 export type OpsCommand =
-  | 'compact' | 'clear' | 'esc' | 'enter' | 'restart' | 'resume' | 'new' | 'fork' | 'status' | 'doctor'
+  | 'compact' | 'clear' | 'esc' | 'enter' | 'restart' | 'restart_all' | 'resume' | 'new' | 'fork' | 'status' | 'doctor'
   | 'bind' | 'unbind' | 'allow' | 'model' | 'close' | 'screen' | 'tui' | 'delete' | 'skills' | 'reload'
   | 'stand_up' | 'stand_down' | 'pin' | 'unpin' | 'lang' | 'queue' | 'send'
 
@@ -16,7 +16,7 @@ export function parseOpsCommand(
   text: string,
 ): { cmd: OpsCommand; bot?: string; arg?: string } | undefined {
   const m =
-    /^\/(compact|clear|esc|enter|restart|resume|new|fork|status|doctor|bind|unbind|allow|model|close|stop|screen|tui|last|delete|skills|reload|stand_up|stand_down|pin|unpin|lang)(?:@(\w+))?(?:\s+(\S.*?))?\s*$/.exec(
+    /^\/(compact|clear|esc|enter|restart|restart_all|resume|new|fork|status|doctor|bind|unbind|allow|model|close|stop|screen|tui|last|delete|skills|reload|stand_up|stand_down|pin|unpin|lang)(?:@(\w+))?(?:\s+(\S.*?))?\s*$/.exec(
       text.trim(),
     ) ??
     // Отдельным разбором, потому что аргумент `/queue` — текст задачи, и он бывает
@@ -33,24 +33,24 @@ export function parseOpsCommand(
   }
 }
 
-// Parse Claude Code's compaction progress out of a pane snapshot. The live UI renders
-// "✻ Compacting conversation… (elapsed)" with the "▰▱… NN%" bar on the very next line, in
-// the bottom status area. Requiring that adjacency + only scanning the last lines avoids
-// false-triggering when those words merely appear as scrollback CONTENT (e.g. a session
-// discussing compaction, or showing this feature's own code). Pure — tested in core.test.ts.
-export function parseCompaction(text: string): { pct: number; elapsed?: string } | undefined {
+// Parse Claude Code's compaction progress out of a pane snapshot. Two live UIs, both in the
+// bottom status area: the spinner line "✻ Compacting conversation… (2s · ↓ 26 tokens)" (2.1.283)
+// and the older bar "▰▱… NN%" on the next line. Percent exists only in the second.
+// Мы принимаем строку, только когда она выглядит как ЖИВОЙ статус — спиннер со скобкой или бар
+// рядом: те же слова попадают в пейн и просто текстом (сессия обсуждает компакцию или показывает
+// этот самый код), и на них пост заводить нельзя. Pure — tested in core.test.ts.
+export function parseCompaction(text: string): { pct?: number; elapsed?: string } | undefined {
   const lines = text.split('\n').map(l => l.trimEnd()).filter(l => l !== '').slice(-10)
   const i = lines.findIndex(l => /Compacting conversation/.test(l))
   if (i === -1) {
     return undefined
   }
-  const barLine = [lines[i + 1], lines[i + 2]].find(l => l !== undefined && /[▰▱]{5,}\s*\d+%/.test(l))
-  if (!barLine) {
-    return undefined // "Compacting conversation" without an adjacent bar = it's content, not the live UI
-  }
-  const pct = Number(barLine.match(/[▰▱]{5,}\s*(\d+)%/)![1])
   const el = lines[i].match(/\(([^)]+)\)/)
-  return { pct, ...(el ? { elapsed: el[1] } : {}) }
+  const barLine = [lines[i + 1], lines[i + 2]].find(l => l !== undefined && /[▰▱]{5,}\s*\d+%/.test(l))
+  if (barLine) {
+    return { pct: Number(barLine.match(/[▰▱]{5,}\s*(\d+)%/)![1]), ...(el ? { elapsed: el[1] } : {}) }
+  }
+  return el && /^\s*\S?\s*Compacting conversation…/.test(lines[i]) ? { elapsed: el[1] } : undefined
 }
 
 // Claude Code's live "working" status footer: "<spinner> Gerund… (12s · ↓ 3.4k tokens · thinking)"

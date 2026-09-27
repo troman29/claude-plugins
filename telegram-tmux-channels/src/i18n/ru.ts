@@ -86,6 +86,7 @@ export const ru: Strings = {
   agentsHeader: '🤖 <b>Агенты</b>',
   compaction: (bar, pct, elapsed) => `🗜 <b>Компакция</b> ${bar} ${pct}%${elapsed ? ` <i>(${elapsed})</i>` : ''}`,
   compactionStarted: trigger => `🗜 <b>Компакция</b>${trigger ? ` <i>(${trigger})</i>` : ''}`,
+  compactionWorking: elapsed => `🗜 <b>Компакция</b>${elapsed ? ` — ${elapsed}` : ''}`,
   compactionDone: '✅ <b>Компакция готова.</b>',
   workflow: (name, done, total) => `${done >= total ? '✅' : '🤖'} <b>Воркфлоу</b> <code>${name}</code> — ${done}/${total} агентов`,
   workflowDone: (name, total) => `✅ <b>Воркфлоу</b> <code>${name}</code> готов (${total} агентов)`,

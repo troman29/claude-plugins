@@ -20,6 +20,7 @@ function deps(opts: { sendFails?: boolean } = {}) {
     render: {
       started: trigger => `start(${trigger})`,
       bar: (pct, elapsed) => `bar ${pct}%${elapsed ? ` ${elapsed}` : ''}`,
+      working: elapsed => `working${elapsed ? ` ${elapsed}` : ''}`,
       done: () => 'done',
     },
     persist: post => { persisted.push({ ...post }) },
