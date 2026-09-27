@@ -1546,7 +1546,7 @@ function paneBelongsToKey(pane: string, key: string): boolean {
 // so the menu re-registers (with translated descriptions) whenever /lang switches.
 const OPS_NAMES = new Set([
   'status', 'doctor', 'resume', 'screen', 'tui', 'new', 'fork', 'skills', 'stand_up', 'stand_down',
-  'pin', 'unpin', 'reload', 'compact', 'clear', 'esc', 'enter', 'model', 'close',
+  'pin', 'unpin', 'reload', 'compact', 'clear', 'esc', 'enter', 'now', 'model', 'close',
   'restart', 'bind', 'unbind', 'delete', 'allow', 'lang', 'send',
 ])
 function opsCommands(): { command: string; description: string }[] {
@@ -1570,6 +1570,7 @@ function opsCommands(): { command: string; description: string }[] {
     { command: 'esc', description: L.cmd_esc },
     { command: 'enter', description: L.cmd_enter },
     { command: 'queue', description: L.cmd_queue },
+    { command: 'now', description: L.cmd_now },
     { command: 'send', description: L.cmd_send },
     { command: 'model', description: L.cmd_model },
     { command: 'close', description: L.cmd_close },
@@ -2545,6 +2546,21 @@ async function pressChatAboutUnlocked(pane: string, picker: Picker): Promise<voi
   await sendKeys(pane, 'Enter')
 }
 
+/** Отдать очередь ввода в ТЕКУЩИЙ ход: «ctrl+x ctrl+s» у Claude Code. Это правка на ходу, а не
+ *  прерывание (/esc) — придержанный текст агент читает сразу, а запущенные тулы уходят в фон.
+ *  `false` = в очереди нечего отдавать, клавиши в пейн не полетели. */
+async function sendQueuedNow(session: SessionInfo, pane: string): Promise<boolean> {
+  if (!adapterForSession(session).hasQueuedInput(await capturePane(pane).catch(() => ''))) {
+    return false
+  }
+  await paneInput.run(pane, () => sendKeys(pane, 'C-x', 'C-s'))
+  return true
+}
+
+function sendNowKeyboard(key: string): { inline_keyboard: { text: string; callback_data: string }[][] } {
+  return { inline_keyboard: [[{ text: t().btnSendNow, callback_data: `sendnow:${key}` }]] }
+}
+
 /** Набрать слэш-команду самого CLI. Codex пачку «текст+Enter» одним send-keys принимает за
  *  вставку и Enter глотает: `/model` оставался в поле ввода, пока не нажмёшь Enter через /tui. */
 function typeCliCommand(session: SessionInfo, pane: string, command: string): Promise<void> {
@@ -2556,6 +2572,10 @@ function typeCliCommand(session: SessionInfo, pane: string, command: string): Pr
     await sendKeys(pane, command, 'Enter')
   })
 }
+
+// Сколько ждать, прежде чем смотреть, ушла набранная команда в ход или в очередь: подсказку
+// «send now» Claude Code дорисовывает не мгновенно.
+const QUEUED_ACK_MS = 800
 
 // Сколько ждать после цифры, прежде чем смотреть, что стало с пикером: следующая стадия /model
 // у Codex дорисовывается за ~300 мс.
@@ -5173,7 +5193,19 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
     return
   }
 
-  if (cmd === 'compact' || cmd === 'clear' || cmd === 'esc' || cmd === 'enter' || cmd === 'restart' || cmd === 'model' || cmd === 'close' || cmd === 'screen' || cmd === 'tui') {
+  if (cmd === 'compact' || cmd === 'clear' || cmd === 'esc' || cmd === 'enter' || cmd === 'now' || cmd === 'restart' || cmd === 'model' || cmd === 'close' || cmd === 'screen' || cmd === 'tui') {
+    // Slash-команда, набранная посреди хода, уходит в очередь Claude Code, а не в сессию: голое
+    // «отправлено» читается как «уже выполняется», и /compact выглядел зависшим (27.09).
+    const ackTyped = async (s: SessionInfo, pane: string, ack: string) => {
+      await new Promise(resolve => setTimeout(resolve, QUEUED_ACK_MS))
+      if (!adapterForSession(s).hasQueuedInput(await capturePane(pane).catch(() => ''))) {
+        void say(ack)
+        return
+      }
+      await bot.api
+        .sendMessage(chat_id, `${ack}\n${L.inputQueued}`, { ...threadOpt, parse_mode: 'HTML', reply_markup: sendNowKeyboard(key) })
+        .catch(() => {})
+    }
     // Одно и то же выполнение — сразу или после того, как пользователь ответит на вопрос,
     // с которым поднялась сессия.
     const runOnPanes = async (targets: typeof live) => {
@@ -5186,10 +5218,10 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
         try {
           if (cmd === 'compact') {
             await typeCliCommand(s, s.pane, '/compact')
-            void say(L.compactSent)
+            void ackTyped(s, s.pane, L.compactSent)
           } else if (cmd === 'clear') {
             await typeCliCommand(s, s.pane, '/clear')
-            void say(L.historyCleared)
+            void ackTyped(s, s.pane, L.historyCleared)
           } else if (cmd === 'esc') {
             // Interrupt the current turn AND drain the input queue. After an interrupt Claude Code
             // immediately starts the NEXT queued message, so a lone Escape looks like it "did
@@ -5216,6 +5248,8 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
             // typed but not sent) — a bare Enter, without typing anything.
             await paneInput.run(s.pane, () => sendKeys(s.pane!, 'Enter'))
             void say(L.enterSent)
+          } else if (cmd === 'now') {
+            void say(await sendQueuedNow(s, s.pane) ? L.nowSent : L.nowNothing)
           } else if (cmd === 'screen') {
             // Universal 1:1 view of the pane — the escape hatch for any TUI state the picker
             // bridge doesn't recognize. Live, self-updating message with a Close button (deletes
@@ -5237,7 +5271,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
             // Typed as real keystrokes (not a message-event) so the CLI opens its
             // native picker — pollScreens/detectPicker below turns it into buttons.
             await typeCliCommand(s, s.pane, '/model')
-            void say(L.modelSent)
+            void ackTyped(s, s.pane, L.modelSent)
           } else if (cmd === 'close') {
             if (!s.pid) {
               void say(L.stopNoProc)
@@ -5758,6 +5792,31 @@ bot.on('callback_query:data', async ctx => {
   }
   if (ctx.callbackQuery.data === TUI_NOOP_DATA) {
     await ctx.answerCallbackQuery().catch(() => {}) // пустая клетка сетки /tui — гасим «часики» и всё
+    return
+  }
+  // sendnow:<биндинг> — отдать придержанный ввод в идущий ход (кнопка под ack'ом команды).
+  const sn = /^sendnow:(.+)$/.exec(ctx.callbackQuery.data)
+  if (sn) {
+    const key = sn[1]!
+    const binding = loadBindings()[key]
+    const sender = String(ctx.from.id)
+    if (!isAdmin(sender) && !binding?.allow?.includes(sender)) {
+      await ctx.answerCallbackQuery({ text: t().toastNoAccess }).catch(() => {})
+      return
+    }
+    const conn = binding ? connsForBinding(key, binding.dir)[0] : undefined
+    const session = conn ? router.get(conn) : undefined
+    if (!session?.pane) {
+      await ctx.answerCallbackQuery({ text: t().toastSessionGoneResume }).catch(() => {})
+      return
+    }
+    const sent = await sendQueuedNow(session, session.pane)
+    log(`now: ${key} — очередь ввода ${sent ? 'отдана в ход' : 'пуста'}`)
+    // Кнопка одноразовая: отданный ввод уже в ходе, второй аккорд ушёл бы в пустоту.
+    if (sent) {
+      await ctx.editMessageReplyMarkup({}).catch(() => {})
+    }
+    await ctx.answerCallbackQuery({ text: sent ? t().toastSent : t().toastNothingQueued }).catch(() => {})
     return
   }
   const tk = /^tuikey:(\d+):(\w+)$/.exec(ctx.callbackQuery.data)

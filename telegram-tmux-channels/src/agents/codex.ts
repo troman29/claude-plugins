@@ -460,6 +460,9 @@ export const codexAdapter: AgentAdapter = {
   // Codex TUI parsing is intentionally explicit rather than reusing Claude signatures.
   // These are filled from captured 0.147 fixtures before hub routing is enabled.
   parseCompaction: noPct,
+  // У Codex придержанное посреди хода видно строкой `↳`, и аккорда «отдать сейчас» за ним не
+  // подсмотрено: не угадываем клавишу, а честно отвечаем «в очереди ничего нет».
+  hasQueuedInput: () => false,
   paneIsWorking: codexPaneIsWorking,
   parseContextPct: noPct,
   parseError: parseCodexError,

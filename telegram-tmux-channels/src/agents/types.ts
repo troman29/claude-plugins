@@ -69,6 +69,8 @@ export interface AgentAdapter {
 
   /** Живая компакция в пейне: процент есть только у старого бара, у спиннера — только elapsed. */
   parseCompaction(pane: string): { pct?: number; elapsed?: string } | undefined
+  /** Ждёт ли в пейне ввод, придержанный до конца хода: его можно отдать в ход немедленно. */
+  hasQueuedInput(pane: string): boolean
   paneIsWorking(pane: string): boolean
   parseContextPct(pane: string): number | undefined
   parseError(pane: string): string | undefined

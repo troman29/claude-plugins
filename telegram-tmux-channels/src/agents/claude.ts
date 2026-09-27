@@ -1,7 +1,8 @@
 import type { AgentAdapter } from './types'
 import { isClaudeArgv } from '../proc'
 import {
-  buildLaunch, isHeadlessArgv, paneIsWorking, parseCompaction, parseContextPct, parseError, parseWorkflow,
+  buildLaunch, hasQueuedInput, isHeadlessArgv, paneIsWorking, parseCompaction, parseContextPct, parseError,
+  parseWorkflow,
 } from '../tmux-ops'
 import {
   jsonlMtimes, lastAssistantText, newestJsonlSize, recentSessions, transcriptSawIncoming,
@@ -40,6 +41,7 @@ export const claudeAdapter: AgentAdapter = {
   transcriptSawIncoming,
   sessionForIncoming: () => undefined,
   parseCompaction,
+  hasQueuedInput,
   paneIsWorking,
   parseContextPct,
   parseError,

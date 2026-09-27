@@ -189,6 +189,7 @@ Sent in a bound topic or DM. These are handled by the bot and never reach the ag
 | `/compact` · `/clear` | Compact or clear the conversation |
 | `/esc` · `/stop` · `/enter` | Interrupt the current turn (`/stop` is the same) / submit what's sitting in the input line |
 | `/queue <text>` · `/q` | Hold the text until the current turn ends instead of cutting into it. A plain message reaches the agent right away, mid-turn — this one waits its turn (😴 while held). With the session idle it goes straight through |
+| `/now` | Hand input Claude Code has queued (typed mid-turn) to the **running** turn — the course correction its pane offers as `ctrl+x ctrl+s`. The agent reads it at once and running tools drop to the background; unlike `/esc` the turn is not killed. The same action rides as a ⚡ button under a command that landed in the queue |
 | `/send <text>` | Send text literally through the normal delivery path, even when it starts with a hub/CLI slash command. Bare `/send` as a reply sends the replied message's text or caption |
 | `/model` | The CLI's model picker, as buttons |
 

@@ -4,7 +4,7 @@
 export type OpsCommand =
   | 'compact' | 'clear' | 'esc' | 'enter' | 'restart' | 'restart_all' | 'resume' | 'new' | 'fork' | 'status' | 'doctor'
   | 'bind' | 'unbind' | 'allow' | 'model' | 'close' | 'screen' | 'tui' | 'delete' | 'skills' | 'reload'
-  | 'stand_up' | 'stand_down' | 'pin' | 'unpin' | 'lang' | 'queue' | 'send'
+  | 'stand_up' | 'stand_down' | 'pin' | 'unpin' | 'lang' | 'queue' | 'send' | 'now'
 
 // `/q` — короткий алиас `/queue`: команда набирается на бегу, посреди чужого хода.
 // /last — прежнее имя /tui: команду переименовали, привычку оставили работать.
@@ -16,7 +16,7 @@ export function parseOpsCommand(
   text: string,
 ): { cmd: OpsCommand; bot?: string; arg?: string } | undefined {
   const m =
-    /^\/(compact|clear|esc|enter|restart|restart_all|resume|new|fork|status|doctor|bind|unbind|allow|model|close|stop|screen|tui|last|delete|skills|reload|stand_up|stand_down|pin|unpin|lang)(?:@(\w+))?(?:\s+(\S.*?))?\s*$/.exec(
+    /^\/(compact|clear|esc|enter|restart|restart_all|resume|new|fork|status|doctor|bind|unbind|allow|model|close|stop|screen|tui|last|delete|skills|reload|stand_up|stand_down|pin|unpin|lang|now)(?:@(\w+))?(?:\s+(\S.*?))?\s*$/.exec(
       text.trim(),
     ) ??
     // Отдельным разбором, потому что аргумент `/queue` — текст задачи, и он бывает
@@ -62,6 +62,16 @@ export function parseCompaction(text: string): { pct?: number; elapsed?: string 
 export function paneIsWorking(text: string): boolean {
   const tail = text.split('\n').filter(l => l.trim() !== '').slice(-8)
   return tail.some(l => /(?:…|\.\.\.)\s*\(\s*\d/.test(l))
+}
+
+// Ввод, который пришёл посреди хода, Claude Code кладёт в свою очередь и подписывает
+// «ctrl+x ctrl+s to send now»: до конца хода агент его не увидит. Сверяем строку ЦЕЛИКОМ и
+// только в хвосте — те же слова попадают в пейн обычным текстом, когда сессия про них пишет.
+// Pure — tested in core.test.ts.
+const QUEUED_HINT = 'ctrl+x ctrl+s to send now'
+
+export function hasQueuedInput(text: string): boolean {
+  return text.split('\n').map(l => l.trim()).filter(l => l !== '').slice(-15).includes(QUEUED_HINT)
 }
 
 // Context-window usage % from the pane status line: "<pie> NN%  <bar> MM%  ⏱ …". The first

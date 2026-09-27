@@ -13,6 +13,7 @@ import { fmtUntil, formatLimits } from '../src/limits'
 import {
   parseOpsCommand, shellQuote, relaunchCommand, leftTui,
   stripResumeFlags, buildLaunch, DEFAULT_CLAUDE_ARGV,
+  hasQueuedInput,
   parseCompaction,
   parseContextPct,
   parseError,
@@ -455,6 +456,21 @@ describe('tmux-ops', () => {
     expect(parseCompaction('  ⎿  Compacting conversation is what /compact does')).toBeUndefined()
     // the words as scrollback CONTENT, bar not adjacent → must NOT match (the self-scrape bug)
     expect(parseCompaction('discussing Compacting conversation… (elapsed)\nsome other line\nmore text\n  ▰▰▰▰▰▰ 61% example')).toBeUndefined()
+  })
+
+  test('hasQueuedInput: the queued-input hint (real frame)', () => {
+    // 2.1.283, ход идёт, под придержанной строкой — подсказка аккорда
+    expect(hasQueuedInput([
+      '❯ напиши подробнейший текст на 400 строк про историю терминалов',
+      '❯ СТОП, вместо этого просто напиши слово ОК',
+      '  ctrl+x ctrl+s to send now',
+      '✽ Perusing… (7s · thinking)',
+      '❯ Press up to edit queued messages',
+    ].join('\n'))).toBe(true)
+    // свободный пейн
+    expect(hasQueuedInput('❯ \n  ◑ 39%  █░░░░░░░░░ 12%  ⏱ 1h50m')).toBe(false)
+    // те же слова внутри текста — не подсказка UI
+    expect(hasQueuedInput('  ⎿  press `ctrl+x ctrl+s to send now` to steer the turn')).toBe(false)
   })
 
   test('parseContextPct: pane status line', () => {
