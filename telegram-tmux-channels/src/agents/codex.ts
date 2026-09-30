@@ -435,7 +435,7 @@ export const codexAdapter: AgentAdapter = {
     nativeReplyTool: false,
     permissions: true,
     resume: true,
-    liveResumePicker: false,
+    resumeInPlace: false,
     fork: true,
     modelPicker: true,
     taskStatus: true,

@@ -37,7 +37,7 @@ import { carryLiveWork, deserializeStatus, emptyStatus, hasLiveWork, renderBg, r
 import { discoverGlobalSkills, discoverProjectSkills, findSkill, isSlashCommand, mangleCmd, skillInvocation, tgDescription, type Skill } from './skills'
 import { agentPidsInDir, cmdlineOf } from './proc'
 import { bySendTime, clampLines, clampTail, rmQuiet } from './util'
-import { parsePicker, CHAT_ABOUT_INDEX, checkedIndexes, pickerCursorIndex, textBeforePicker, parseResumeList, fnv1a, hasPickerFooter, isStartupTrustPrompt, trustOptionIndex, isCodexStartupTrustScreen, isCodexHooksTrustScreen, isCodexOwnToolApproval, type Picker, type ResumeRow } from './picker'
+import { parsePicker, CHAT_ABOUT_INDEX, checkedIndexes, pickerCursorIndex, textBeforePicker, fnv1a, hasPickerFooter, isStartupTrustPrompt, trustOptionIndex, isCodexStartupTrustScreen, isCodexHooksTrustScreen, isCodexOwnToolApproval, type Picker } from './picker'
 import { buildKeyboard, confirmAfterDigit, downsToChatAbout, parseCallback } from './picker-drive'
 import {
   loadTrustedGroups, isExcludedTopic, slugFromTopicName, modeLabel,
@@ -3850,6 +3850,18 @@ async function runAutoTopic(
       log(`auto-topic cancelled: ${key} was manually bound before launch`)
       return
     }
+    // В папке уже жили разговоры — какой поднять, решает человек: молчаливый старт нового
+    // прячет их, а имя топика в списке и есть самое полезное имя сессии.
+    const past = adapterForBinding(reg[key]).recentSessions(resolvedDir, SESSION_CANDIDATES)
+    if (past.length > 0) {
+      progress.settle(t().sessionPickOffer)
+      void bot.api
+        .sendMessage(chatId, t().whichSessionRaise, {
+          ...inTopic(threadId), parse_mode: 'HTML', reply_markup: startChoiceKeyboard(key, reg[key]),
+        })
+        .catch(e => log(`auto-topic session picker send failed: ${e}`))
+      return
+    }
     await spawnSession(key, reg[key], 'new', { say, progress })
   } catch (e) {
     // Причина почти всегда снаружи и чинится руками (заняты слоты, нет места, сеть). Кнопка
@@ -5396,77 +5408,14 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
       await spawnSession(key, binding, 'new', { say: html => void say(html) })
       return
     }
-    const liveAdapter = adapterForBinding(binding)
-    if (cmd === 'resume' && !liveAdapter.capabilities.liveResumePicker) {
-      // Codex 0.147 accepts `/resume` as ordinary composer text while a
-      // conversation is open; it has no selectable in-place history screen.
-      // Keep the current process intact until the user taps a concrete
-      // Telegram choice, which then follows the existing rs: stop→resume path.
+    if (cmd === 'resume') {
+      // Список строим сами: у нас есть индекс «сессия → топик», а у экрана CLI — только сырой
+      // текст первого сообщения. Разбор того экрана к тому же ломался от каждой правки TUI.
       void bot.api
         .sendMessage(chat_id, L.whichSessionRaise, {
           ...threadOpt, parse_mode: 'HTML', reply_markup: startChoiceKeyboard(key, binding),
         })
         .catch(e => log(`resume picker send failed: ${e}`))
-      return
-    }
-    if (cmd === 'resume' && session?.pane) {
-      // Live session → open the CLI's own /resume list and mirror EXACTLY what
-      // it shows; taps drive it with arrow keys (nr: callback). In-place switch,
-      // no process restart. Positions can't drift: buttons ARE the TUI's rows.
-      const pane = session.pane
-      await sendKeys(pane, '/resume', 'Enter')
-      // ponytail: the list loads asynchronously ("Loading conversations…") — poll up to 12s instead of a fixed 3s
-      let list: ReturnType<typeof parseResumeList> = undefined
-      for (let i = 0; i < 12 && !list?.rows.length; i++) {
-        await new Promise(r => setTimeout(r, 1000))
-        list = parseResumeList(await capturePane(pane).catch(() => ''))
-      }
-      if (!list?.rows.length) {
-        await sendKeys(pane, 'Escape').catch(() => {}) // don't leave the picker open in someone else's pane
-        log(`resume picker parse failed for pane ${pane}`)
-        void say(L.sessionListFail)
-        return
-      }
-      // ponytail: small TUI viewport — scroll with arrows and collect up to 10; if it all fit, don't scroll
-      const wanted = Math.min(list.count, 10)
-      const all: (ResumeRow | undefined)[] = list.rows.length >= wanted ? [...list.rows] : []
-      all[list.pos - 1] = list.rows[list.cursor]
-      for (let g = 0; list.pos < wanted && all.filter(Boolean).length < wanted && g < 12; g++) {
-        await sendKeys(pane, 'Down')
-        await new Promise(r => setTimeout(r, 200))
-        const next = parseResumeList(await capturePane(pane).catch(() => ''))
-        if (!next) {
-          break
-        }
-        list = next
-        all[list.pos - 1] = list.rows[list.cursor]
-      }
-      for (let g = 0; list.pos > 1 && g < 12; g++) {
-        await sendKeys(pane, 'Up')
-        await new Promise(r => setTimeout(r, 200))
-        const prev = parseResumeList(await capturePane(pane).catch(() => ''))
-        if (!prev) {
-          break
-        }
-        list = prev
-      }
-      const rows: ResumeRow[] = []
-      for (const r of all) {
-        if (!r || rows.length >= wanted) {
-          break // a gap = parse failure at this position; button indices must match the absolute ones
-        }
-        rows.push(r)
-      }
-      const kb = new InlineKeyboard()
-      rows.forEach((r, i) => {
-        kb.text(`${r.title.slice(0, 40)} · ${r.meta.split('·')[0].trim()}`, `nr:${key}:${i}:${fnv1a(r.title)}`).row()
-      })
-      kb.text(L.btnCancel, `nr:${key}:esc:00000000`).row()
-      void bot.api
-        .sendMessage(chat_id, L.switchSessionHdr(escHtml(list.total)), {
-          ...threadOpt, parse_mode: 'HTML', reply_markup: kb,
-        })
-        .catch(e => log(`native resume picker send failed: ${e}`))
       return
     }
     void say(L.alreadyConnected(session?.pane ? `<code>${escHtml(session.pane)}</code>` : L.alreadyConnectedNoTmux))
@@ -6012,7 +5961,6 @@ bot.on('callback_query:data', async ctx => {
     armPendingTopic(key, { cfg: pending.cfg, mode: 'folder', topicName: pending.topicName, say: pending.say })
     return
   }
-  // nr:<key>:<idx|esc>:<title-hash> = drive the CLI's own /resume list by arrows
   const bt = /^bindto:(.+):([^:]+)$/.exec(ctx.callbackQuery.data)
   if (bt) {
     const [, key, folder] = bt
@@ -6030,57 +5978,6 @@ bot.on('callback_query:data', async ctx => {
     return
   }
 
-  const nr = /^nr:(.+):(\d+|esc):([0-9a-f]{8})$/.exec(ctx.callbackQuery.data)
-  if (nr) {
-    const [, key, idxStr, hash] = nr
-    const senderId = String(ctx.from.id)
-    const binding = loadBindings()[key]
-    if (!binding) {
-      await ctx.answerCallbackQuery({ text: t().toastBindingGone }).catch(() => {})
-      return
-    }
-    if (!isAdmin(senderId) && !binding.allow?.includes(senderId)) {
-      await ctx.answerCallbackQuery({ text: t().toastNoAccess }).catch(() => {})
-      return
-    }
-    const conn = connsForBinding(key, binding.dir)[0]
-    const pane = conn ? router.get(conn)?.pane : undefined
-    if (!pane) {
-      await ctx.answerCallbackQuery({ text: t().toastSessionGoneResume }).catch(() => {})
-      return
-    }
-    if (idxStr === 'esc') {
-      await sendKeys(pane, 'Escape')
-      await ctx.answerCallbackQuery().catch(() => {})
-      await ctx.editMessageText(t().closedShort).catch(() => {})
-      return
-    }
-    const idx = Number(idxStr)
-    const stale = async (why: string) => {
-      await ctx.answerCallbackQuery({ text: why }).catch(() => {})
-    }
-    let list = parseResumeList(await capturePane(pane).catch(() => ''))
-    if (!list || idx >= list.count) {
-      return stale(t().staleListChanged)
-    }
-    // move cursor to the row (absolute position from the "(N of M)" header — the row may
-    // be outside the viewport), re-verify what's actually highlighted, only then Enter
-    const moves = idx + 1 - list.pos
-    for (let i = 0; i < Math.abs(moves); i++) {
-      await sendKeys(pane, moves > 0 ? 'Down' : 'Up')
-      await new Promise(r => setTimeout(r, 150))
-    }
-    await new Promise(r => setTimeout(r, 400))
-    list = parseResumeList(await capturePane(pane).catch(() => ''))
-    if (!list || list.pos !== idx + 1 || fnv1a(list.rows[list.cursor].title) !== hash) {
-      return stale(t().staleCursorMiss)
-    }
-    const title = list.rows[list.cursor].title
-    await sendKeys(pane, 'Enter')
-    await ctx.answerCallbackQuery({ text: t().toastSwitching }).catch(() => {})
-    await ctx.editMessageText(t().switchedTo(escHtml(title)), { parse_mode: 'HTML' }).catch(() => {})
-    return
-  }
   // rs:<key>:<uuid> = resume that session; ns:<key> = start fresh
   const start = /^rs:(.+):([0-9a-f-]{36})$/.exec(ctx.callbackQuery.data) ?? /^ns:(.+)$/.exec(ctx.callbackQuery.data)
   if (start) {
@@ -6101,6 +5998,15 @@ bot.on('callback_query:data', async ctx => {
       saveBindings(reg)
     }
     await ctx.answerCallbackQuery({ text: sessionId ? t().toastRaising : t().toastLaunching }).catch(() => {})
+    // Живая сессия переключает разговор своей же командой — процесс остаётся тем же, а с ним
+    // и очередь сообщений топика. Останавливать её ради смены разговора нечего.
+    const liveConn = connsForBinding(key, binding.dir)[0]
+    const liveSession = liveConn ? router.get(liveConn) : undefined
+    if (sessionId && liveSession?.pane && adapterForBinding(binding).capabilities.resumeInPlace) {
+      await typeCliCommand(liveSession, liveSession.pane, `/resume ${sessionId}`)
+      await ctx.editMessageText(t().resumingId(sessionId.slice(0, 8)), { parse_mode: 'HTML' }).catch(() => {})
+      return
+    }
     // a live session in the way → graceful stop before switching
     const liveConns = connsForBinding(key, binding.dir)
     if (liveConns.length > 0) {

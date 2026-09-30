@@ -11,7 +11,8 @@ export type AgentCapabilities = {
   resume: boolean
   // Whether a connected TUI can open and drive its own interactive history
   // picker.  Agents without one use the hub's Telegram picker instead.
-  liveResumePicker: boolean
+  /** Умеет сменить разговор в живой сессии, без перезапуска процесса (`/resume <id>`). */
+  resumeInPlace: boolean
   fork: boolean
   modelPicker: boolean
   taskStatus: boolean

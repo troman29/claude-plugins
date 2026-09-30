@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'fs'
 import { join } from 'path'
-import { parsePicker, trustOptionIndex, textBeforePicker, checkedIndexes, pickerCursorIndex, parseResumeList, paneReady, isStartupTrustPrompt, isCodexStartupTrustScreen, isCodexHooksTrustScreen, isCodexOwnToolApproval } from '../src/picker'
+import { parsePicker, trustOptionIndex, textBeforePicker, checkedIndexes, pickerCursorIndex, paneReady, isStartupTrustPrompt, isCodexStartupTrustScreen, isCodexHooksTrustScreen, isCodexOwnToolApproval } from '../src/picker'
 
 const fx = (name: string) => readFileSync(join(import.meta.dir, 'fixtures', name), 'utf8')
 
@@ -183,25 +183,6 @@ describe('checkedIndexes', () => {
   })
   test('single without checkboxes → []', () => {
     expect(checkedIndexes(fx('ask-single.txt'))).toEqual([])
-  })
-})
-
-describe('parseResumeList', () => {
-  test('real /resume snapshot: rows, cursor, total', () => {
-    const l = parseResumeList(fx('resume-list.txt'))!
-    expect(l.total).toBe('1 of 27')
-    expect(l.cursor).toBe(0)
-    expect(l.rows.map(r => r.title)).toEqual([
-      '(session)',
-      'commit changes in homelab and the plugin',
-      'Remind me of the last two days of work',
-      'Set up Telegram binding for Claude server',
-    ])
-    expect(l.rows[1].meta).toBe('1 day ago · main · 6.9MB')
-  })
-  test('plain screen without a list → undefined', () => {
-    expect(parseResumeList(fx('model-single.txt'))).toBeUndefined()
-    expect(parseResumeList('')).toBeUndefined()
   })
 })
 

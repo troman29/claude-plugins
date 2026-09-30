@@ -183,7 +183,7 @@ Sent in a bound topic or DM. These are handled by the bot and never reach the ag
 |---|---|
 | `/status` | Folder, branch, tmux name, session id, selected agent state, and supported usage/context data |
 | `/doctor` | Read-only checks for Telegram access, binding, folder, MCP routing, process, tmux/pane, resume id, and voice setup |
-| `/resume` | Bring the session back. `/resume <id>` picks one specific past conversation — works even with tmux down. The session list (here, after `/bind` and after `/close`) puts this topic's conversations first (📍) and names the topic every other one came from, deleted topics included |
+| `/resume` | Bring the session back, or switch a live one to another conversation — tapping a button types `/resume <id>` into the running agent, so the process (and the topic's queue) survives. `/resume <id>` picks one directly, even with tmux down. The list is built from the folder's own session archive: this topic's conversations first (📍), every other one named after the topic it came from (deleted topics included), and conversations that never belonged to a topic shown by their opening line. It appears wherever a conversation is chosen — a new topic with history behind it, `/bind`, `/close` |
 | `/new` | Start fresh |
 | `/restart` · `/close` | Graceful restart / close the session. A closed session stays closed across hub restarts and reboots until a message, `/restart` or a button brings it back |
 | `/compact` · `/clear` | Compact or clear the conversation |

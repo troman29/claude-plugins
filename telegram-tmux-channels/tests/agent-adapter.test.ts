@@ -26,8 +26,8 @@ describe('agent adapter registry', () => {
   })
 
   test('uses a native live history picker only where the TUI actually supports one', () => {
-    expect(claudeAdapter.capabilities.liveResumePicker).toBe(true)
-    expect(codexAdapter.capabilities.liveResumePicker).toBe(false)
+    expect(claudeAdapter.capabilities.resumeInPlace).toBe(true)
+    expect(codexAdapter.capabilities.resumeInPlace).toBe(false)
   })
 
   test('uses only reliable session-id sources for each CLI', () => {

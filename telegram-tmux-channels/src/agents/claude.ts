@@ -18,7 +18,7 @@ export const claudeAdapter: AgentAdapter = {
     nativeReplyTool: true,
     permissions: true,
     resume: true,
-    liveResumePicker: true,
+    resumeInPlace: true,
     fork: true,
     modelPicker: true,
     taskStatus: true,

@@ -123,7 +123,6 @@ export const ru: Strings = {
   toastNoRights: 'Нет прав',
   toastBindingGone: 'Привязка исчезла',
   toastSessionGoneResume: 'Сессия пропала — вызови /resume заново',
-  toastSwitching: 'Переключаю…',
   toastRaising: 'Поднимаю…',
   toastLaunching: 'Запускаю…',
   toastRun: name => `▶ /${name}`,
@@ -211,19 +210,14 @@ export const ru: Strings = {
   sessionOwnedByTopic: (id, topic) =>
     `⚠️ Сессия <code>${id}</code> уже привязана к ${topic}. Возобнови её там, не форкая историю.`,
   couldntStopCurrentScreen: '⚠️ Не смог остановить текущую сессию — глянь <code>/screen</code>.',
-  sessionListFail: '⚠️ Список сессий не открылся (агент занят?). Попробуй позже, глянь /screen, или /stop и затем /resume.',
-  switchSessionHdr: total => `⏪ <b>Переключить сессию</b> <i>(${total}, без перезапуска)</i>`,
   alreadyConnected: pane => `⚙️ Сессия уже подключена <i>(${pane})</i>.\n\nИспользуй <code>/restart</code> или <code>/compact</code>.`,
   alreadyConnectedNoTmux: 'не в tmux',
   foreignClaude: pids =>
     `⚠️ <b>Эту беседу уже ведёт claude вне хаба</b> <i>(pid ${pids})</i> — ` +
     'хаб им не управляет.\n\nНе поднимаю вторую: <code>/resume</code> форкнул бы её. ' +
     'Закрой ту сессию (или перезапусти её с dev-каналом) и повтори.',
+  sessionPickOffer: '📚 В папке уже есть разговоры — выбери ниже.',
   whichSessionRaise: '⏪ <b>Какую сессию поднять?</b> (сначала 📍 этого топика, потом свежие)',
-  switchedTo: title => `⏪ Переключился: <b>${title}</b>`,
-  staleListChanged: 'Список изменился — вызови /resume заново',
-  staleCursorMiss: 'Не попал по курсору — вызови /resume заново',
-  closedShort: '✖️ Закрыто.',
   stoppingCurrentSession: '🛑 Останавливаю текущую сессию…',
   couldntStopCurrentTmux: '⚠️ Не смог остановить текущую сессию — глянь в tmux.',
   resumingId: id => `⏪ Возобновляю <code>${id}…</code>`,
