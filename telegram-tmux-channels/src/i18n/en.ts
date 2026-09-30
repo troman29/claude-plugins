@@ -230,6 +230,12 @@ Send <code>/tui</code> to see its terminal, or <code>/restart</code>.`,
   whichSessionRaise: '⏪ <b>Which session to bring up?</b> (📍 this topic first, then the freshest)',
   stoppingCurrentSession: '🛑 Stopping the current session…',
   couldntStopCurrentTmux: '⚠️ Couldn\'t stop the current session — check tmux by hand.',
+  resumeSwitching: (label: string) => `⏪ Switching to ${label}…`,
+  resumeSwitched: (label: string) => `⏪ Now on ${label}`,
+  resumeQueued: (label: string) =>
+    `⏪ ${label} — the turn is still running, so the switch is queued behind it.`,
+  resumeUnconfirmed: (label: string) =>
+    `⏪ Sent the switch to ${label}, but nothing confirms it — check <code>/tui</code>.`,
   resumingId: (id: string) => `⏪ Resuming <code>${id}…</code>`,
   launchingNew: '🆕 Starting a new session…',
 

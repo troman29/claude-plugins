@@ -220,6 +220,11 @@ export const ru: Strings = {
   whichSessionRaise: '⏪ <b>Какую сессию поднять?</b> (сначала 📍 этого топика, потом свежие)',
   stoppingCurrentSession: '🛑 Останавливаю текущую сессию…',
   couldntStopCurrentTmux: '⚠️ Не смог остановить текущую сессию — глянь в tmux.',
+  resumeSwitching: label => `⏪ Переключаю на ${label}…`,
+  resumeSwitched: label => `⏪ Сейчас здесь: ${label}`,
+  resumeQueued: label => `⏪ ${label} — ход ещё идёт, переключение встало в очередь за ним.`,
+  resumeUnconfirmed: label =>
+    `⏪ Отправил переключение на ${label}, но подтверждения нет — глянь <code>/tui</code>.`,
   resumingId: id => `⏪ Возобновляю <code>${id}…</code>`,
   launchingNew: '🆕 Запускаю новую сессию…',
 

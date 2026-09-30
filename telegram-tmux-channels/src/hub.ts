@@ -5552,6 +5552,21 @@ function sessionMenu(key: string, binding: BindingEntry, page: number): SessionC
   return choices
 }
 
+// Возобновление пишет в транскрипт выбранного разговора сразу, ещё до первого хода: по росту
+// файла и видно, что агент правда переключился, а не проглотил команду посреди чужого хода.
+const RESUME_CONFIRM_MS = 12_000
+const RESUME_POLL_MS = 500
+
+async function resumeLanded(adapter: AgentAdapter, dir: string, sessionId: string, before: number): Promise<boolean> {
+  for (let waited = 0; waited < RESUME_CONFIRM_MS; waited += RESUME_POLL_MS) {
+    await new Promise(resolve => setTimeout(resolve, RESUME_POLL_MS))
+    if (adapter.transcriptSize(dir, sessionId) !== before) {
+      return true
+    }
+  }
+  return false
+}
+
 function startChoiceKeyboard(key: string, binding: BindingEntry, page = 0): InlineKeyboard {
   const { items, page: current, pages } = sessionPage(sessionMenu(key, binding, page), page, SESSION_BUTTONS)
   const kb = new InlineKeyboard()
@@ -6039,9 +6054,22 @@ bot.on('callback_query:data', async ctx => {
     // и очередь сообщений топика. Останавливать её ради смены разговора нечего.
     const liveConn = connsForBinding(key, binding.dir)[0]
     const liveSession = liveConn ? router.get(liveConn) : undefined
-    if (sessionId && liveSession?.pane && adapterForBinding(binding).capabilities.resumeInPlace) {
-      await typeCliCommand(liveSession, liveSession.pane, `/resume ${sessionId}`)
-      await ctx.editMessageText(t().resumingId(sessionId.slice(0, 8)), { parse_mode: 'HTML' }).catch(() => {})
+    const adapter = adapterForBinding(binding)
+    if (sessionId && liveSession?.pane && adapter.capabilities.resumeInPlace) {
+      const pane = liveSession.pane
+      const label = sessionMenus.get(key)?.choices.find(choice => choice.id === sessionId)?.label
+        ?? `<code>${sessionId.slice(0, 8)}</code>`
+      const before = adapter.transcriptSize(binding.dir, sessionId)
+      await typeCliCommand(liveSession, pane, `/resume ${sessionId}`)
+      await ctx.editMessageText(t().resumeSwitching(label), { parse_mode: 'HTML' }).catch(() => {})
+      const landed = await resumeLanded(adapter, binding.dir, sessionId, before)
+      const queued = !landed && adapter.hasQueuedInput(await capturePane(pane).catch(() => ''))
+      await ctx
+        .editMessageText(
+          landed ? t().resumeSwitched(label) : queued ? t().resumeQueued(label) : t().resumeUnconfirmed(label),
+          { parse_mode: 'HTML', ...(queued ? { reply_markup: sendNowKeyboard(key) } : {}) },
+        )
+        .catch(() => {})
       return
     }
     // a live session in the way → graceful stop before switching
