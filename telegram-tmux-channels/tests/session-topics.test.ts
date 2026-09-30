@@ -1,7 +1,7 @@
 // Страж 17.09: в списке «какую сессию поднять» было не понять, из какого топика каждая сессия,
 // а после /unbind и повторного /bind связь терялась совсем.
 import { describe, expect, test } from 'bun:test'
-import { originKey, sessionChoices, telegramOrigin } from '../src/session-topics'
+import { originKey, sessionChoices, sessionPage, telegramOrigin } from '../src/session-topics'
 import { pickUserSnippet } from '../src/session-id'
 
 describe('telegramOrigin', () => {
@@ -62,5 +62,24 @@ describe('sessionChoices', () => {
     })
     expect(got).toHaveLength(2)
     expect(got[0]!.label).not.toContain('«')
+  })
+})
+
+describe('sessionPage', () => {
+  const choices = Array.from({ length: 14 }, (_, i) => ({ id: String(i), label: `⏪ ${i}` }))
+
+  test('страницы режутся по размеру, последняя неполная', () => {
+    expect(sessionPage(choices, 0, 6)).toMatchObject({ page: 0, pages: 3 })
+    expect(sessionPage(choices, 0, 6).items).toHaveLength(6)
+    expect(sessionPage(choices, 2, 6).items.map(item => item.id)).toEqual(['12', '13'])
+  })
+
+  test('номер вне диапазона прижимается к краю', () => {
+    expect(sessionPage(choices, 9, 6).page).toBe(2)
+    expect(sessionPage(choices, -3, 6).page).toBe(0)
+  })
+
+  test('пустой список — одна страница без кнопок', () => {
+    expect(sessionPage([], 0, 6)).toEqual({ items: [], page: 0, pages: 1 })
   })
 })

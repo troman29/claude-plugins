@@ -92,3 +92,12 @@ function choiceLabel(session: ListedSession, place: string | undefined): string 
   const where = place === OWN_TOPIC_MARK ? `${OWN_TOPIC_MARK} ` : place ? `«${place.slice(0, TITLE_CHARS)}» ` : ''
   return `⏪ ${when} · ${where}${session.snippet.slice(0, SNIPPET_CHARS) || session.id.slice(0, 8)}`
 }
+
+/** Страница списка разговоров и сколько их всего; номер вне диапазона прижимается к краю. */
+export function sessionPage(
+  choices: SessionChoice[], page: number, perPage: number,
+): { items: SessionChoice[]; page: number; pages: number } {
+  const pages = Math.max(1, Math.ceil(choices.length / perPage))
+  const current = Math.min(Math.max(0, page), pages - 1)
+  return { items: choices.slice(current * perPage, (current + 1) * perPage), page: current, pages }
+}

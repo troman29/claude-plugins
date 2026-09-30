@@ -55,7 +55,7 @@ import { FallbackGate } from './fallback-gate'
 import { topic as inTopic } from './chat'
 import { HubStateRepository, type PersistedPicker, type PersistedInbound, type PersistedLaunchCapture } from './state-repo'
 import { recordChat, recordTopic, topicTitle, chatLabel, loadKnownChats } from './known-chats'
-import { loadSessionTopics, sessionChoices } from './session-topics'
+import { loadSessionTopics, sessionChoices, sessionPage, type SessionChoice } from './session-topics'
 import { workflowCounter, workflowStep, type WorkflowPanel } from './workflow-panel'
 import { agentAdapter, forgetForeignConversation, installedAgents, mayLearn, type AgentAdapter, type AgentKind, type AgentStatusPanel } from './agents'
 import { renderDoctor, type DoctorCheck } from './doctor'
@@ -5526,22 +5526,47 @@ async function closeSession(target: {
 }
 
 // Сессий папки смотрим больше, чем кнопок: сессии этого топика идут первыми, даже если соседние
-// топики той же папки писали позже.
-const SESSION_CANDIDATES = 40
+// топики той же папки писали позже. Дальше этого числа разговоры уже не листают, а чтение
+// каждого файла ради подписи стоит миллисекунд (100 файлов ≈ 0.25 с).
+const SESSION_CANDIDATES = 100
 const SESSION_BUTTONS = 6
+const SESSION_MENU_TTL_MS = 10 * 60_000
 
-function startChoiceKeyboard(key: string, binding: BindingEntry): InlineKeyboard {
-  const kb = new InlineKeyboard()
-  kb.text(t().btnNewSession, `ns:${key}`).row()
+// Листаем снимок, а не свежий скан: иначе половина секунды на каждый тап, да ещё строки
+// съезжают под пальцем, стоит появиться новому разговору.
+const sessionMenus = new Map<string, { choices: SessionChoice[]; at: number }>()
+
+function sessionMenu(key: string, binding: BindingEntry, page: number): SessionChoice[] {
+  const cached = sessionMenus.get(key)
+  if (cached && page > 0 && Date.now() - cached.at < SESSION_MENU_TTL_MS) {
+    return cached.choices
+  }
   const choices = sessionChoices({
     sessions: adapterForBinding(binding).recentSessions(binding.dir, SESSION_CANDIDATES),
     key,
     index: loadSessionTopics(),
     titleOf: topicLabel,
-    limit: SESSION_BUTTONS,
+    limit: SESSION_CANDIDATES,
   })
-  for (const choice of choices) {
+  sessionMenus.set(key, { choices, at: Date.now() })
+  return choices
+}
+
+function startChoiceKeyboard(key: string, binding: BindingEntry, page = 0): InlineKeyboard {
+  const { items, page: current, pages } = sessionPage(sessionMenu(key, binding, page), page, SESSION_BUTTONS)
+  const kb = new InlineKeyboard()
+  kb.text(t().btnNewSession, `ns:${key}`).row()
+  for (const choice of items) {
     kb.text(choice.label, `rs:${key}:${choice.id}`).row()
+  }
+  if (pages > 1) {
+    if (current > 0) {
+      kb.text('◀', `sspg:${key}:${current - 1}`)
+    }
+    kb.text(`${current + 1}/${pages}`, `sspg:${key}:${current}`) // середина = текущая страница, тап вхолостую
+    if (current < pages - 1) {
+      kb.text('▶', `sspg:${key}:${current + 1}`)
+    }
   }
   return kb
 }
@@ -5797,6 +5822,18 @@ bot.on('callback_query:data', async ctx => {
       return
     }
     await ctx.editMessageReplyMarkup({ reply_markup: skillMenuKeyboard(sp[1]!, menu.names, Number(sp[2])) }).catch(() => {})
+    await ctx.answerCallbackQuery().catch(() => {})
+    return
+  }
+  // sspg:<биндинг>:<страница> — листание списка разговоров (правим клавиатуру на месте).
+  const ssp = /^sspg:(.+):(\d+)$/.exec(ctx.callbackQuery.data)
+  if (ssp) {
+    const binding = loadBindings()[ssp[1]!]
+    if (!binding) {
+      await ctx.answerCallbackQuery({ text: t().toastBindingGone }).catch(() => {})
+      return
+    }
+    await ctx.editMessageReplyMarkup({ reply_markup: startChoiceKeyboard(ssp[1]!, binding, Number(ssp[2])) }).catch(() => {})
     await ctx.answerCallbackQuery().catch(() => {})
     return
   }
