@@ -29,6 +29,7 @@ export const en = {
   cmd_model: 'Pick a model (interactive, buttons)',
   cmd_close: 'Close the session (graceful /exit); /stop interrupts the turn',
   cmd_restart: 'Gracefully restart the session',
+  cmd_restart_all: 'Restart all live Claude and Codex sessions (admin)',
   cmd_bind: 'Bind this chat/topic to a project folder (admin)',
   cmd_unbind: 'Remove the binding (admin)',
   cmd_delete: 'Remove binding + delete the topic (admin)',
@@ -273,6 +274,16 @@ Send <code>/tui</code> to see its terminal, or <code>/restart</code>.`,
   restartReady: (seconds: number) => `✅ <b>Session restarted</b> in ${seconds}s`,
   restartNotReady: (seconds: number) => `⚠️ <b>No connection after ${seconds}s</b> — check <code>/tui</code>`,
   restartFail: (err: string) => `⚠️ Restart failed: ${err}`,
+  restartAllNone: '🤷 No live sessions to restart.',
+  restartAllStarting: (count: number) => `♻️ <b>Restarting live sessions: ${count}</b>`,
+  restartAllWaiting: (seconds: number) => `⏳ Waiting for them to come back… ${seconds}s`,
+  restartAllDone: (r: { seconds: number; ready: number; notReady: string[]; failed: string[]; skipped: string[] }) =>
+    [
+      `✅ Back up: ${r.ready} in ${r.seconds}s`,
+      r.notReady.length ? `⚠️ Not connected — check <code>/tui</code> there: ${r.notReady.join(', ')}` : '',
+      r.failed.length ? `❌ Failed: ${r.failed.join(', ')}` : '',
+      r.skipped.length ? `⏭ Skipped (starting up or process unknown): ${r.skipped.join(', ')}` : '',
+    ].filter(Boolean).join('\n'),
   cmdFail: (cmd: string, err: string) => `⚠️ <b>${cmd} failed</b>: ${err}`,
 
   // ── status ──

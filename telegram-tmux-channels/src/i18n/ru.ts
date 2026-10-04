@@ -30,6 +30,7 @@ export const ru: Strings = {
   cmd_model: 'Выбрать модель (интерактивно, кнопками)',
   cmd_close: 'Закрыть сессию (graceful /exit); /stop прерывает ход',
   cmd_restart: 'Аккуратный перезапуск сессии',
+  cmd_restart_all: 'Перезапустить все живые Claude и Codex сессии (админ)',
   cmd_bind: 'Привязать этот чат/топик к папке проекта (админ)',
   cmd_unbind: 'Снять привязку (админ)',
   cmd_delete: 'Снять привязку + удалить топик (админ)',
@@ -262,6 +263,16 @@ export const ru: Strings = {
   restartReady: (seconds: number) => `✅ <b>Сессия перезапущена</b> за ${seconds} с`,
   restartNotReady: (seconds: number) => `⚠️ <b>За ${seconds} с не подключилась</b> — посмотри <code>/tui</code>`,
   restartFail: err => `⚠️ Рестарт не удался: ${err}`,
+  restartAllNone: '🤷 Живых сессий для рестарта нет.',
+  restartAllStarting: count => `♻️ <b>Перезапускаю живые сессии: ${count}</b>`,
+  restartAllWaiting: seconds => `⏳ Жду, пока поднимутся… ${seconds} с`,
+  restartAllDone: r =>
+    [
+      `✅ Поднялись: ${r.ready} за ${r.seconds} с`,
+      r.notReady.length ? `⚠️ Не подключились — загляни туда в <code>/tui</code>: ${r.notReady.join(', ')}` : '',
+      r.failed.length ? `❌ Не удалось: ${r.failed.join(', ')}` : '',
+      r.skipped.length ? `⏭ Пропущены (поднимаются или процесс не опознан): ${r.skipped.join(', ')}` : '',
+    ].filter(Boolean).join('\n'),
   cmdFail: (cmd, err) => `⚠️ <b>${cmd} не удалось</b>: ${err}`,
 
   // ── status ──

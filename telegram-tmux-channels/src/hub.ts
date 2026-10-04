@@ -70,6 +70,7 @@ import { cronHold, type SessionCron } from './session-crons'
 import { startupAckKey } from './startup-ack'
 import { WORKFLOW_SUBAGENT } from './hook-normalize'
 import { replyContext, type ReplyContext } from './reply-context'
+import { selectRestartTargets, summarizeRestarts, type RestartableSession, type RestartOutcome } from './restart-all'
 
 const log = (s: string) => process.stderr.write(`telegram hub: ${s}\n`)
 
@@ -1547,7 +1548,7 @@ function paneBelongsToKey(pane: string, key: string): boolean {
 const OPS_NAMES = new Set([
   'status', 'doctor', 'resume', 'screen', 'tui', 'new', 'fork', 'skills', 'stand_up', 'stand_down',
   'pin', 'unpin', 'reload', 'compact', 'clear', 'esc', 'enter', 'now', 'model', 'close',
-  'restart', 'bind', 'unbind', 'delete', 'allow', 'lang', 'send',
+  'restart', 'restart_all', 'bind', 'unbind', 'delete', 'allow', 'lang', 'send',
 ])
 function opsCommands(): { command: string; description: string }[] {
   const L = t()
@@ -1575,6 +1576,7 @@ function opsCommands(): { command: string; description: string }[] {
     { command: 'model', description: L.cmd_model },
     { command: 'close', description: L.cmd_close },
     { command: 'restart', description: L.cmd_restart },
+    { command: 'restart_all', description: L.cmd_restart_all },
     { command: 'bind', description: L.cmd_bind },
     { command: 'unbind', description: L.cmd_unbind },
     { command: 'delete', description: L.cmd_delete },
@@ -4656,6 +4658,68 @@ async function deleteTopicFlow(
   void bot.api.sendMessage(chatId, `${spent}${note}\n${delNote}`, { parse_mode: 'HTML' }).catch(() => {})
 }
 
+/**
+ * Перезапуск живой сессии биндинга: возвращается, когда подключился стаб новой сессии или вышел
+ * срок. Пока он идёт, входящие биндинга придерживаются в очереди лейна и уходят после.
+ */
+async function restartLiveSession(key: string, binding: BindingEntry, s: RestartableSession): Promise<RestartOutcome> {
+  // Пока идёт рестарт, ключ считается поднимающимся: входящие встают в очередь, а не уходят
+  // в ревайв — иначе он не видел живой сессии и печатал ВТОРОЙ запуск в пейн.
+  spawningBindings.add(key)
+  expectedDisconnect.add(key)
+  const oldConns = new Set(connsForBinding(key, binding.dir))
+  const restartKeys = s.bindingKeys?.length ? s.bindingKeys : [key]
+  const adapter = adapterForSession(s)
+  try {
+    if (adapter.capabilities.nativeInboundTransport) {
+      await restartSession(s.pane, s.pid, s.cmdline, restartKeys, log)
+    } else {
+      if (!(await stopSession(s.pane, s.pid, log))) {
+        throw new Error('process did not stop')
+      }
+      await new Promise(r => setTimeout(r, 1000))
+      await typeLine(s.pane, adapter.launchEnvPrefix(restartKeys) + ' ' + memoryCapPrefix() + adapter.buildLaunch(s.cmdline, 'resume', binding.sessionId))
+    }
+    const conns = await waitForNewBinding(key, oldConns, RESTART_WAIT_MS)
+    return conns.length ? { kind: 'ready' } : { kind: 'not-ready' }
+  } catch (error) {
+    log(`restart ${key} failed: ${error instanceof Error ? error.stack : error}`)
+    return { kind: 'failed', error }
+  } finally {
+    spawningBindings.delete(key)
+    setTimeout(() => expectedDisconnect.delete(key), 90_000)
+    flushQueuedInLane(key) // всё, что придержали, пока сессия перезапускалась
+  }
+}
+
+/** `/restart_all`: все живые сессии разом, один пост с итогом в топике, откуда позвали. */
+async function restartAll(chatId: string, threadId: number | undefined): Promise<void> {
+  const L = t()
+  const reg = loadBindings()
+  const sessions = router.all().map(conn => router.get(conn)).filter((s): s is SessionInfo => !!s)
+  const { targets, skipped } = selectRestartTargets(sessions, key => !!reg[key], key => spawningBindings.has(key))
+  if (targets.length === 0) {
+    void bot.api.sendMessage(chatId, L.restartAllNone, { ...inTopic(threadId), parse_mode: 'HTML' }).catch(() => {})
+    return
+  }
+  const post = progressPost(chatId, threadId, [L.restartAllStarting(targets.length)])
+  const startedAt = Date.now()
+  post.running(seconds => L.restartAllWaiting(seconds))
+  log(`restart_all: ${targets.map(target => target.key).join(', ')}; skipped: ${skipped.join(', ') || '-'}`)
+  const results = await Promise.all(
+    targets.map(async target => ({ key: target.key, outcome: await restartLiveSession(target.key, reg[target.key], target.session) })),
+  )
+  const summary = summarizeRestarts(results, skipped)
+  const label = (key: string) => escHtml(basename(reg[key]?.dir ?? key))
+  post.settle(L.restartAllDone({
+    seconds: Math.round((Date.now() - startedAt) / 1000),
+    ready: summary.ready.length,
+    notReady: summary.notReady.map(label),
+    failed: summary.failed.map(label),
+    skipped: summary.skipped.map(label),
+  }))
+}
+
 async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: OpsRequest): Promise<void> {
   const L = t()
   const threadOpt = inTopic(threadId)
@@ -4688,6 +4752,15 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
     void say(L.rescanning)
     const summary = await refreshCommands()
     void say(summary)
+    return
+  }
+
+  if (cmd === 'restart_all') {
+    if (!isAdmin(senderId)) {
+      void say(L.adminOnly(cmd))
+      return
+    }
+    void restartAll(chat_id, threadId)
     return
   }
 
@@ -5299,39 +5372,19 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
               void say(L.spawnInProgress) // рестарт уже идёт — второй набор в тот же пейн не нужен
               continue
             }
-            // Пока идёт рестарт, ключ считается поднимающимся: входящие встают в очередь, а не
-            // уходят в ревайв — иначе он не видел живой сессии и печатал ВТОРОЙ запуск в пейн.
-            spawningBindings.add(key)
-            expectedDisconnect.add(key)
-            const post = progressPost(chat_id, threadId, [L.restarting])
-            const startedAt = Date.now()
-            const oldConns = new Set(connsForBinding(key, binding.dir))
-            const restartKeys = s.bindingKeys?.length ? s.bindingKeys : [key]
-            const adapter = adapterForSession(s)
-            const restart = adapter.capabilities.nativeInboundTransport
-              ? restartSession(s.pane, s.pid, s.cmdline, restartKeys, log)
-              : stopSession(s.pane, s.pid, log).then(async ok => {
-                  if (!ok) throw new Error('process did not stop')
-                  await new Promise(r => setTimeout(r, 1000))
-                  await typeLine(s.pane!, adapter.launchEnvPrefix(restartKeys) + ' ' + memoryCapPrefix() + adapter.buildLaunch(s.cmdline, 'resume', binding.sessionId))
-                })
             // Пост живёт до РЕАЛЬНОГО подключения стаба, а не до «команда набрана»: раньше
             // приходило «Restart sent», и было непонятно, поднялась сессия или нет.
+            const post = progressPost(chat_id, threadId, [L.restarting])
+            const startedAt = Date.now()
             post.running(seconds => L.restartWaiting(seconds))
-            void (async () => {
-              try {
-                await restart
-                const conns = await waitForNewBinding(key, oldConns, RESTART_WAIT_MS)
-                const seconds = Math.round((Date.now() - startedAt) / 1000)
-                post.settle(conns.length ? L.restartReady(seconds) : L.restartNotReady(seconds))
-              } catch (e) {
-                post.settle(L.restartFail(escHtml(String(e))))
-              } finally {
-                spawningBindings.delete(key)
-                setTimeout(() => expectedDisconnect.delete(key), 90_000)
-                flushQueuedInLane(key) // всё, что придержали, пока сессия перезапускалась
-              }
-            })()
+            void restartLiveSession(key, binding, s as RestartableSession).then(outcome => {
+              const seconds = Math.round((Date.now() - startedAt) / 1000)
+              post.settle(
+                outcome.kind === 'ready' ? L.restartReady(seconds)
+                  : outcome.kind === 'not-ready' ? L.restartNotReady(seconds)
+                    : L.restartFail(escHtml(String(outcome.error))),
+              )
+            })
           }
         } catch (e) {
           void say(L.cmdFail(escHtml(cmd), escHtml(String(e))))
