@@ -1,7 +1,7 @@
 import type { SessionInfo } from './protocol'
 import { uniqueByPane } from './screen-poll'
 
-export type RestartableSession = SessionInfo & { pane: string; pid: number; cmdline: string[] }
+export type RestartableSession = SessionInfo & { pane: string; pid: number }
 
 export type RestartTarget = { key: string; session: RestartableSession }
 
@@ -28,7 +28,7 @@ export function selectRestartTargets(
   const targets: RestartTarget[] = []
   const skipped: string[] = []
   for (const { key, session } of bound) {
-    if (session.pid && session.cmdline?.length && !isSpawning(key)) {
+    if (session.pid && !isSpawning(key)) {
       targets.push({ key, session: session as RestartableSession })
     } else {
       skipped.push(key)

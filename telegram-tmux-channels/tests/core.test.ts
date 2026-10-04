@@ -11,7 +11,7 @@ import { Router } from '../src/router'
 import { chunk, planAttachments, CAPTION_LIMIT } from '../src/chunk'
 import { fmtUntil, formatLimits } from '../src/limits'
 import {
-  parseOpsCommand, shellQuote, relaunchCommand, leftTui,
+  parseOpsCommand, shellQuote, leftTui,
   stripResumeFlags, buildLaunch, DEFAULT_CLAUDE_ARGV,
   hasQueuedInput,
   parseCompaction,
@@ -25,11 +25,6 @@ import {
   isExitConfirm,
   isFeedbackDraftPrompt,
   tmuxSessionName,
-  transientScopeOf,
-  scopeUnitName,
-  freeScopeUnitName,
-  deadScopes,
-  memoryCapPrefix,
   normalizeClaudeExtendedContextModel,
 } from '../src/tmux-ops'
 import { discoverProjectSkills, findSkill, isSlashCommand, skillInvocation, mangleCmd as mangleSkillCmd } from '../src/skills'
@@ -522,19 +517,18 @@ describe('tmux-ops', () => {
     expect(stripResumeFlags(['claude', '--resume', '--verbose'])).toEqual(['claude', '--verbose'])
     expect(stripResumeFlags(['claude', '--resume=abc'])).toEqual(['claude'])
   })
-  test('buildLaunch: learned argv or default; channel flags and Claude env always added', () => {
-    expect(buildLaunch(['claude', '--resume', 'x'], 'resume')).toContain('"$HOME/.claude/claude.env"')
-    expect(buildLaunch(['claude', '--resume', 'x'], 'resume')).toContain('exec claude --dangerously-load-development-channels server:telegram --continue')
-    expect(buildLaunch(['claude', '--resume', 'x'], 'resume')).toBe(
-      `sh -c 'if [ -r "$HOME/.claude/claude.env" ]; then . "$HOME/.claude/claude.env" || exit $?; fi; exec claude --dangerously-load-development-channels server:telegram --continue'`,
+  const launch = (...args: Parameters<typeof buildLaunch>) => buildLaunch(...args).join(' ')
+  test('buildLaunch: learned argv or default; channel flags always added', () => {
+    expect(launch(['claude', '--resume', 'x'], 'resume')).toBe(
+      `claude --dangerously-load-development-channels server:telegram --continue`,
     )
-    expect(buildLaunch(['claude', '--continue'], 'new')).toBe(
-      `sh -c 'if [ -r "$HOME/.claude/claude.env" ]; then . "$HOME/.claude/claude.env" || exit $?; fi; exec claude --dangerously-load-development-channels server:telegram'`,
+    expect(launch(['claude', '--continue'], 'new')).toBe(
+      `claude --dangerously-load-development-channels server:telegram`,
     )
     // default argv (from env/default) has NO channel flags; buildLaunch adds them
-    const withChannel = `sh -c 'if [ -r "$HOME/.claude/claude.env" ]; then . "$HOME/.claude/claude.env" || exit $?; fi; exec ${DEFAULT_CLAUDE_ARGV.join(' ')} --dangerously-load-development-channels server:telegram'`
-    expect(buildLaunch(undefined, 'new')).toBe(withChannel)
-    expect(buildLaunch([...DEFAULT_CLAUDE_ARGV], 'new')).toBe(withChannel)
+    const withChannel = `${DEFAULT_CLAUDE_ARGV.join(' ')} --dangerously-load-development-channels server:telegram`
+    expect(launch(undefined, 'new')).toBe(withChannel)
+    expect(launch([...DEFAULT_CLAUDE_ARGV], 'new')).toBe(withChannel)
   })
   test('normalizeClaudeExtendedContextModel: extends documented Claude models only', () => {
     expect(normalizeClaudeExtendedContextModel(['claude', '--model', 'opus'])).toEqual(['claude', '--model', 'opus[1m]'])
@@ -546,57 +540,44 @@ describe('tmux-ops', () => {
     expect(normalizeClaudeExtendedContextModel(['claude', '--model', 'gpt-5.6-terra'])).toEqual(['claude', '--model', 'gpt-5.6-terra'])
     expect(normalizeClaudeExtendedContextModel(['claude', '--model', '--verbose'])).toEqual(['claude', '--model', '--verbose'])
   })
-  test('buildLaunch and relaunchCommand extend stale Claude model aliases', () => {
-    expect(buildLaunch(['claude', '--model', 'opus'], 'resume', 'abc-123')).toContain("exec claude --model '\\''opus[1m]'\\'' --dangerously-load-development-channels server:telegram --resume abc-123")
-    expect(relaunchCommand(['claude', '--model=sonnet', '--resume', 'abc-123'])).toContain("exec claude '\\''--model=sonnet[1m]'\\'' --resume abc-123 --dangerously-load-development-channels server:telegram")
+  test('buildLaunch extends stale Claude model aliases', () => {
+    expect(launch(['claude', '--model', 'opus'], 'resume', 'abc-123')).toBe("claude --model opus[1m] --dangerously-load-development-channels server:telegram --resume abc-123")
   })
   test('buildLaunch: a learned argv never carries --fork-session into a plain resume', () => {
     // ветка выучивает свой argv с --fork-session; без вычистки она форкалась бы при каждом подъёме
     const learned = ['claude', '--fork-session', '--resume', 'parent-id']
-    expect(buildLaunch(learned, 'resume', 'branch-id')).toBe(
-      `sh -c 'if [ -r "$HOME/.claude/claude.env" ]; then . "$HOME/.claude/claude.env" || exit $?; fi; exec claude --dangerously-load-development-channels server:telegram --resume branch-id'`,
+    expect(launch(learned, 'resume', 'branch-id')).toBe(
+      `claude --dangerously-load-development-channels server:telegram --resume branch-id`,
     )
   })
   test('buildLaunch: fork → --resume <id> --fork-session; no id → plain start', () => {
-    expect(buildLaunch(['claude'], 'fork', 'abc-123')).toBe(
-      `sh -c 'if [ -r "$HOME/.claude/claude.env" ]; then . "$HOME/.claude/claude.env" || exit $?; fi; exec claude --dangerously-load-development-channels server:telegram --resume abc-123 --fork-session'`,
+    expect(launch(['claude'], 'fork', 'abc-123')).toBe(
+      `claude --dangerously-load-development-channels server:telegram --resume abc-123 --fork-session`,
     )
     // --fork-session without --resume is meaningless — CLI would reject it
-    expect(buildLaunch(['claude'], 'fork')).toBe(
-      `sh -c 'if [ -r "$HOME/.claude/claude.env" ]; then . "$HOME/.claude/claude.env" || exit $?; fi; exec claude --dangerously-load-development-channels server:telegram'`,
+    expect(launch(['claude'], 'fork')).toBe(
+      `claude --dangerously-load-development-channels server:telegram`,
     )
   })
   test('buildLaunch: explicit sessionId → --resume <id>, not --continue', () => {
-    expect(buildLaunch(['claude'], 'resume', 'abc-123')).toBe(
-      `sh -c 'if [ -r "$HOME/.claude/claude.env" ]; then . "$HOME/.claude/claude.env" || exit $?; fi; exec claude --dangerously-load-development-channels server:telegram --resume abc-123'`,
+    expect(launch(['claude'], 'resume', 'abc-123')).toBe(
+      `claude --dangerously-load-development-channels server:telegram --resume abc-123`,
     )
-    expect(buildLaunch(['claude'], 'resume')).toBe(
-      `sh -c 'if [ -r "$HOME/.claude/claude.env" ]; then . "$HOME/.claude/claude.env" || exit $?; fi; exec claude --dangerously-load-development-channels server:telegram --continue'`,
-    )
-  })
-  test('relaunchCommand: bare --resume → --continue; --resume <id> kept', () => {
-    const withClaudeEnvironment = (command: string) => `sh -c 'if [ -r "$HOME/.claude/claude.env" ]; then . "$HOME/.claude/claude.env" || exit $?; fi; exec ${command}'`
-    expect(relaunchCommand(['claude', '--resume'])).toBe(
-      withClaudeEnvironment('claude --dangerously-load-development-channels server:telegram --continue'),
-    )
-    expect(relaunchCommand(['claude', '--resume', 'abc-123'])).toBe(
-      withClaudeEnvironment('claude --resume abc-123 --dangerously-load-development-channels server:telegram'),
-    )
-    expect(relaunchCommand(['claude', '--permission-mode', 'bypassPermissions'])).toBe(
-      withClaudeEnvironment('claude --permission-mode bypassPermissions --dangerously-load-development-channels server:telegram --continue'),
+    expect(launch(['claude'], 'resume')).toBe(
+      `claude --dangerously-load-development-channels server:telegram --continue`,
     )
   })
   test('ensureChannelFlags rewrites any old channel flags to canon', () => {
     // learned argv with an old plugin channel → the plugin ref is dropped
     expect(
-      buildLaunch(['claude', '--channels', 'plugin:telegram@claude-plugins-official', '--resume'], 'resume'),
+      launch(['claude', '--channels', 'plugin:telegram@claude-plugins-official', '--resume'], 'resume'),
     ).toBe(
-      `sh -c 'if [ -r "$HOME/.claude/claude.env" ]; then . "$HOME/.claude/claude.env" || exit $?; fi; exec claude --dangerously-load-development-channels server:telegram --continue'`,
+      `claude --dangerously-load-development-channels server:telegram --continue`,
     )
     // a flag without its argument (broken argv) is normalised too
     expect(
-      buildLaunch(['claude', '--channels', 'server:telegram', '--dangerously-load-development-channels'], 'new'),
-    ).toBe(`sh -c 'if [ -r "$HOME/.claude/claude.env" ]; then . "$HOME/.claude/claude.env" || exit $?; fi; exec claude --dangerously-load-development-channels server:telegram'`)
+      launch(['claude', '--channels', 'server:telegram', '--dangerously-load-development-channels'], 'new'),
+    ).toBe(`claude --dangerously-load-development-channels server:telegram`)
   })
   test('isClaudeArgv recognises the binary and cli.js', () => {
     expect(isClaudeArgv(['node', '/usr/lib/claude/cli.js', '--resume'])).toBe(true)
@@ -772,102 +753,6 @@ describe('md-html', () => {
   test('mdToHtml: bold inside link, bullet star not italic', () => {
     expect(mdToHtml('[**t**](u)')).toBe('<a href="u"><b>t</b></a>')
     expect(mdToHtml('* item')).toBe('• item')
-  })
-})
-
-// 2026-08-18: у transient-scope нет главного процесса — он держится, пока внутри есть хоть кто-то.
-// Браузер, поднятый агентом, пережил сессию и сутки держал её cgroup на 460 МБ. Гасим scope сами,
-// но ТОЛЬКО свой: `session-*.scope` — это логин-сессия Ромы, её остановка выкинет его из системы.
-describe('scope сессии', () => {
-  test('узнаём свой transient-scope', () => {
-    const cg = '0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-p252476-i17009825.scope'
-    expect(transientScopeOf(cg)).toBe('run-p252476-i17009825.scope')
-  })
-
-  test('чужие cgroup не трогаем', () => {
-    expect(transientScopeOf('0::/user.slice/user-1000.slice/session-3.scope')).toBeUndefined()
-    expect(transientScopeOf('0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-ghostty.scope')).toBeUndefined()
-    expect(transientScopeOf('0::/system.slice/docker-abc.scope')).toBeUndefined()
-    expect(transientScopeOf('')).toBeUndefined()
-  })
-})
-
-// Метка владения: без неё cgroup сессии не отличить от ручных `systemd-run --scope` хозяина
-// машины (под ними идут озвучки vot), и уборка превращается в угадайку.
-describe('уборка брошенных scope', () => {
-  test('имя scope выводится из ключа биндинга и годится для systemd', () => {
-    expect(scopeUnitName('-1004495746357/1839')).toBe('tgc-1004495746357-1839.scope')
-    expect(scopeUnitName('dm:7')).toBe('tgc-dm-7.scope')
-  })
-
-  test('гасим только свои и только без агента внутри', () => {
-    const scopes = [
-      { name: 'tgc-a.scope', commands: ['/opt/google/chrome/chrome --headless', 'node vite'] },
-      { name: 'tgc-b.scope', commands: ['/home/user/.local/bin/claude --permission-mode bypassPermissions'] },
-      { name: 'tgc-c.scope', commands: ['/home/user/.local/bin/codex --sandbox danger-full-access'] },
-      { name: 'run-p252476.scope', commands: [] }, // чужой transient — не наш, не трогаем
-    ]
-    expect(deadScopes(scopes)).toEqual(['tgc-a.scope'])
-  })
-
-  test('пустой scope тоже наш мусор', () => {
-    expect(deadScopes([{ name: 'tgc-empty.scope', commands: [] }])).toEqual(['tgc-empty.scope'])
-  })
-})
-
-// Потолок на сессию — не бюджет: семеро по 6G имеют право на 42G там, где есть 20. Общий slice
-// заставляет их тесниться друг о друга. И своп сессиям больше не запрещаем: `MemorySwapMax=0`
-// делал их память неизымаемой, и на диск уезжали соседи по машине, а не спящая сессия.
-describe('запуск сессии под лимитом', () => {
-  const withEnv = (env: Record<string, string | undefined>, fn: () => void) => {
-    const saved = { ...process.env }
-    Object.assign(process.env, env)
-    try {
-      fn()
-    } finally {
-      process.env = saved
-    }
-  }
-
-  test('без TELEGRAM_MEMORY_MAX префикса нет вовсе', () => {
-    withEnv({ TELEGRAM_MEMORY_MAX: undefined, TELEGRAM_MEMORY_SLICE: undefined }, () => {
-      expect(memoryCapPrefix('tgc-100-7.scope')).toBe('')
-    })
-  })
-
-  test('кап есть, slice не задан — запуск в своём scope', () => {
-    withEnv({ TELEGRAM_MEMORY_MAX: '6G', TELEGRAM_MEMORY_SLICE: undefined }, () => {
-      expect(memoryCapPrefix(scopeUnitName('-100/7'))).toBe('systemd-run --user --scope --quiet --unit=tgc-100-7.scope -p MemoryMax=6G -p ManagedOOMPreference=avoid ')
-    })
-  })
-
-  // Без systemd (macOS, docker-стенд) префикс превращал запуск в «systemctl not found»,
-  // и топик молча оставался без сессии — capability нет, значит и обёртки нет.
-  // Мёртвый scope имя не освобождает: зомби в его cgroup держит unit, а stop/reset-failed на
-  // такой husk не действуют (хост, 27.08). Занятое имя валило подъём топика целиком.
-  test('имя scope занято husk-ой — берём соседнее, а не падаем', async () => {
-    const taken = new Set(['tgc-100-7.scope', 'tgc-100-7-2.scope'])
-    const isLoaded = async (unit: string) => taken.has(unit)
-    expect(await freeScopeUnitName('-100/7', { isLoaded })).toBe('tgc-100-7-3.scope')
-    expect(await freeScopeUnitName('-100/7', { isLoaded: async () => false })).toBe('tgc-100-7.scope')
-  })
-
-  test('все имена заняты — возвращаем базовое, запуск решает systemd', async () => {
-    expect(await freeScopeUnitName('-100/7', { isLoaded: async () => true, limit: 3 })).toBe('tgc-100-7.scope')
-  })
-
-  test('systemd-run недоступен — кап молча отключается, а не ломает запуск', () => {
-    withEnv({ TELEGRAM_MEMORY_MAX: '6G', TELEGRAM_MEMORY_SLICE: 'tgc-agents' }, () => {
-      expect(memoryCapPrefix('tgc-100-7.scope', null)).toBe('')
-    })
-  })
-
-  test('со slice сессии делят общий бюджет, своп не запрещаем', () => {
-    withEnv({ TELEGRAM_MEMORY_MAX: '6G', TELEGRAM_MEMORY_SLICE: 'tgc-agents' }, () => {
-      const cmd = memoryCapPrefix(scopeUnitName('-100/7'))
-      expect(cmd).toContain('--slice=tgc-agents')
-      expect(cmd).not.toContain('MemorySwapMax')
-    })
   })
 })
 

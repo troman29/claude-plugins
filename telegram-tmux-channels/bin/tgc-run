@@ -1,0 +1,7 @@
+#!/bin/sh
+# Запуск агента под биндинг хаба Telegram: tgc-run <ключ[,ключ…]> new|resume|fork [id сессии].
+# Команду собирает launch-cli.ts по bindings.json; exec оставляет в пейне самого агента, без обёрток.
+set -e
+root=$(dirname "$(dirname "$(readlink -f "$0")")")
+script=$(bun "$root/src/launch-cli.ts" "$@")
+eval "$script"

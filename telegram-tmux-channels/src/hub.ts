@@ -13,6 +13,8 @@ import { join, sep, basename } from 'path'
 import { homedir } from 'os'
 import type { Socket } from 'bun'
 
+// Первым: модули ниже читают настройки хаба из env прямо при загрузке.
+import './state-env'
 import { STATE_DIR, ENV_FILE, INBOX_DIR, PID_FILE, SOCK_PATH } from './paths'
 import { messageKey, keyToTarget, targetFor, type Target } from './bindings'
 import {
@@ -23,13 +25,10 @@ import { Router } from './router'
 import { chunk, MAX_CHUNK_LIMIT, MAX_RICH_LIMIT, MAX_ATTACHMENT_BYTES, planAttachments } from './chunk'
 import { escapeForRich, mdToHtml, needsRich } from './md-html'
 import {
-  parseOpsCommand, paneDigest, sendKeys, typeLine, typeText, typeSlashCommand, selectOption, restartSession, stopSession, alive,
+  parseOpsCommand, paneDigest, sendKeys, typeLine, typeText, typeSlashCommand, selectOption, stopSession, alive,
   hasTmuxSession, ensureTmuxSession, killTmuxSession, shellQuote, isIdleToUnload, tmuxSessionName,
   paneCurrentCommand,
   type LaunchMode,
-  memoryCapPrefix,
-  reapDeadScopes,
-  freeScopeUnitName,
   capturePane, capturePaneAnsi, type OpsCommand,
 } from './tmux-ops'
 import { ansiToImage } from './ansi-image'
@@ -70,6 +69,7 @@ import { cronHold, type SessionCron } from './session-crons'
 import { startupAckKey } from './startup-ack'
 import { WORKFLOW_SUBAGENT } from './hook-normalize'
 import { replyContext, type ReplyContext } from './reply-context'
+import { installLauncher, launchLine } from './launch'
 import { selectRestartTargets, summarizeRestarts, type RestartableSession, type RestartOutcome } from './restart-all'
 
 const log = (s: string) => process.stderr.write(`telegram hub: ${s}\n`)
@@ -203,16 +203,6 @@ function typing(chatId: string, threadId?: number): void {
     })
 }
 
-// token and admins from state .env; the real env wins
-try {
-  chmodSync(ENV_FILE, 0o600)
-  for (const line of readFileSync(ENV_FILE, 'utf8').split('\n')) {
-    const m = line.match(/^(\w+)=(.*)$/)
-    if (m && process.env[m[1]] === undefined) {
-      process.env[m[1]] = m[2]
-    }
-  }
-} catch {} // no .env file — token may come from the real env
 // Проверка токена — в start(), а не здесь: иначе импорт модуля из теста просто убивал бы
 // процесс. Всё, что лезет наружу (сокет, поллинг, таймеры, pid-файл), тоже живёт в start().
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN
@@ -877,7 +867,7 @@ function isAutoAckPrompt(picker: Picker): boolean {
   return isStartupTrustPrompt(picker)
 }
 
-// spawnSession/restartSession also ack these, but only inside a fixed 30s window after typing the
+// spawnSession and /restart also ack these, but only inside a fixed 30s window after typing the
 // launch — a slow start (host reboot with several sessions coming up at once) misses it and the
 // pane then sits on the prompt forever, session dead to the chat. The poll loop sees every pane
 // every tick, so ack here too: whenever a startup prompt shows up, regardless of how it got there
@@ -1073,7 +1063,7 @@ async function relaunchForHeldMessages(key: string, binding: BindingEntry, targe
   }
   log(`prestart: ${key} — очередь ждёт, агента в пейне нет (${command || '?'}); поднимаю`)
   // Сторож взводим ЗДЕСЬ, а не надеемся на spawnSession: она может отказаться ещё до набора
-  // запуска (чужой агент в пейне, нет каталога, упал reapDeadScopes) — и тогда не взводила
+  // запуска (чужой агент в пейне, нет каталога) — и тогда не взводила
   // ничего. Скан видел ту же очередь и тот же пустой пейн и повторял попытку каждый тик:
   // 18 сообщений «resume failed» в чат за несколько секунд (поймано в стенде 24.08).
   armBringUp(key)
@@ -2452,15 +2442,6 @@ async function pollScreens(): Promise<void> {
 }
 const startScreenPoll = (): void => void setInterval(() => void pollScreens(), SCREEN_POLL_MS)
 
-// Явного гашения scope при остановке сессии мало: агент умирает и от OOM, и вместе с tmux
-// (`/unbind`), и при падении хаба — тогда его браузер и dev-серверы держат cgroup дальше.
-// Поэтому сверка: раз в пять минут гасим НАШИ scope'ы, где живого агента уже нет.
-const SCOPE_REAP_MS = 5 * 60_000
-const startScopeReaper = (): void => {
-  void reapDeadScopes(log)
-  setInterval(() => void reapDeadScopes(log), SCOPE_REAP_MS)
-}
-
 // Кроны и лупы сессии: приходят с каждым концом хода (Stop-хук). Держим их в памяти, а не на
 // диске, намеренно — они и сами живут только пока жива сессия, и переживать рестарт хабу нечего.
 const sessionCrons = new Map<string, { crons: SessionCron[]; seenAt: number }>()
@@ -2918,6 +2899,7 @@ function connsForBinding(key: string, _dir: string): Socket<undefined>[] {
 }
 
 const RESTART_WAIT_MS = 90_000
+const RELAUNCH_PAUSE_MS = 3000
 
 /** Дождаться НОВОГО подключения стаба. Старое висит в роутере ещё миллисекунды после смерти
  *  процесса, и обычный waitForBinding вернул бы его — рестарт отчитался бы готовностью,
@@ -3353,18 +3335,12 @@ async function spawnSession(
         return
       }
     }
-    const launch = adapter.buildLaunch(binding.cmdline, launchMode, resumeId)
     if (lostConversation) {
       log(`spawn: ${adapter.kind} conversation ${lostId} not on disk — starting fresh for ${key}`)
       say(t().conversationGone)
     }
     chatter(t().sessionFolder(codePath(binding.dir)))
-    const envPrefix = adapter.launchEnvPrefix([key])
-    await reapDeadScopes(log) // тёзка мог остаться от прошлой сессии — systemd-run на занятое имя не встанет
-    // ...а если тёзку не погасить (зомби в cgroup держит unit), берём соседнее имя: подняться
-    // под `-2` лучше, чем не подняться вовсе.
-    const scopeUnit = await freeScopeUnitName(key)
-    await typeLine(`=${name}:`, `cd ${shellQuote([binding.dir])} && ${envPrefix} ${memoryCapPrefix(scopeUnit)}${launch}`)
+    await typeLine(`=${name}:`, launchLine({ keys: [key], mode: launchMode, ...(resumeId ? { sessionId: resumeId } : {}) }))
     launchIssued = true
     armBringUp(key) // с этой секунды подъём под сторожем — снимет его handshake стаба
     // A broken launch must not wedge future retries forever. Successful launches
@@ -4668,18 +4644,13 @@ async function restartLiveSession(key: string, binding: BindingEntry, s: Restart
   spawningBindings.add(key)
   expectedDisconnect.add(key)
   const oldConns = new Set(connsForBinding(key, binding.dir))
-  const restartKeys = s.bindingKeys?.length ? s.bindingKeys : [key]
-  const adapter = adapterForSession(s)
+  const keys = s.bindingKeys?.length ? s.bindingKeys : [key]
   try {
-    if (adapter.capabilities.nativeInboundTransport) {
-      await restartSession(s.pane, s.pid, s.cmdline, restartKeys, log)
-    } else {
-      if (!(await stopSession(s.pane, s.pid, log))) {
-        throw new Error('process did not stop')
-      }
-      await new Promise(r => setTimeout(r, 1000))
-      await typeLine(s.pane, adapter.launchEnvPrefix(restartKeys) + ' ' + memoryCapPrefix() + adapter.buildLaunch(s.cmdline, 'resume', binding.sessionId))
+    if (!(await stopSession(s.pane, s.pid, log))) {
+      throw new Error('process did not stop')
     }
+    await new Promise(r => setTimeout(r, RELAUNCH_PAUSE_MS))
+    await typeLine(s.pane, launchLine({ keys, mode: 'resume', ...(binding.sessionId ? { sessionId: binding.sessionId } : {}) }))
     const conns = await waitForNewBinding(key, oldConns, RESTART_WAIT_MS)
     return conns.length ? { kind: 'ready' } : { kind: 'not-ready' }
   } catch (error) {
@@ -5364,7 +5335,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
             }
             await closeSession({ key, binding, pane: s.pane, pid: s.pid, chatId: chat_id, threadId })
           } else {
-            if (!s.pid || !s.cmdline?.length) {
+            if (!s.pid) {
               void say(L.restartNoProc)
               continue
             }
@@ -6210,7 +6181,7 @@ export async function start(): Promise<void> {
   listenForStubs()
   void closeStalePickers() // кнопки, пережившие рестарт, гасим сразу — иначе они врут, что живы
   startScreenPoll()
-  startScopeReaper()
+  installLauncher(log)
   await pollForever()
 }
 

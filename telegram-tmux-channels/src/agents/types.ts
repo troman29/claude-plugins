@@ -56,7 +56,7 @@ export interface AgentAdapter {
   // argv inspection: use it only to avoid typing a launch into a foreign live TUI.
   isPaneCommand(command: string): boolean
   isHeadlessArgv(argv: string[]): boolean
-  buildLaunch(saved: string[] | undefined, mode: LaunchMode, sessionId?: string): string
+  buildLaunch(saved: string[] | undefined, mode: LaunchMode, sessionId?: string): string[]
 
   sessionMtimes(dir: string): Map<string, number>
   recentSessions(dir: string, limit?: number): RecentAgentSession[]
@@ -93,5 +93,7 @@ export interface AgentAdapter {
   // Agent-owned status sources that do not require poking the live pane (e.g. Claude's
   // statusline cache). The hub only renders the returned lines.
   cachedStatusLines(dir: string, nowMs: number): string[]
-  launchEnvPrefix(bindingKeys: string[]): string
+  launchEnv(bindingKeys: string[]): Record<string, string>
+  /** Shell-файл окружения агента: запуск подгружает его, если он читается. */
+  envFile?: string
 }

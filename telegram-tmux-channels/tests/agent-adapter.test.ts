@@ -40,10 +40,13 @@ describe('agent adapter registry', () => {
   })
 
   test('agent-specific launch environment stays behind the adapter contract', () => {
-    expect(claudeAdapter.launchEnvPrefix(['dm:7'])).toContain('CLAUDE_CODE_RESUME_TOKEN_THRESHOLD=')
-    expect(claudeAdapter.launchEnvPrefix(['dm:7'])).toContain('TELEGRAM_BINDING_KEYS')
-    expect(codexAdapter.launchEnvPrefix(['dm:7'])).toContain('TELEGRAM_BINDING_KEYS')
-    expect(codexAdapter.launchEnvPrefix(['dm:7'])).not.toContain('CLAUDE_CODE_RESUME_TOKEN_THRESHOLD')
+    expect(claudeAdapter.launchEnv(['dm:7', 'dm:8'])).toMatchObject({
+      CLAUDE_CODE_RESUME_TOKEN_THRESHOLD: '999999999',
+      TELEGRAM_BINDING_KEYS: 'dm:7,dm:8',
+    })
+    expect(claudeAdapter.envFile).toEndWith('/.claude/claude.env')
+    expect(codexAdapter.launchEnv(['dm:7'])).toEqual({ TELEGRAM_BINDING_KEYS: 'dm:7' })
+    expect(codexAdapter.envFile).toBeUndefined()
   })
 
   test('recognises only its own live pane command for foreign-pane protection', () => {
@@ -86,11 +89,11 @@ describe('Codex CLI adapter', () => {
   // а первым же вопросом на одобрение становится наш собственный `reply` (см. describe ниже).
   test('builds deterministic new, resume and fork launches', () => {
     const A = '--ask-for-approval never --sandbox danger-full-access'
-    expect(buildCodexLaunch(['codex', '--no-alt-screen'], 'new')).toBe(`codex ${A} --no-alt-screen`)
-    expect(buildCodexLaunch(['codex', '--no-alt-screen'], 'resume', 'abc')).toBe(`codex ${A} --no-alt-screen resume abc`)
-    expect(buildCodexLaunch(['codex'], 'resume')).toBe(`codex ${A} resume --last`)
-    expect(buildCodexLaunch(['codex'], 'fork', 'abc')).toBe(`codex ${A} fork abc`)
-    expect(buildCodexLaunch(['codex', 'resume', 'old'], 'fork', 'new')).toBe(`codex ${A} fork new`)
+    expect(buildCodexLaunch(['codex', '--no-alt-screen'], 'new').join(' ')).toBe(`codex ${A} --no-alt-screen`)
+    expect(buildCodexLaunch(['codex', '--no-alt-screen'], 'resume', 'abc').join(' ')).toBe(`codex ${A} --no-alt-screen resume abc`)
+    expect(buildCodexLaunch(['codex'], 'resume').join(' ')).toBe(`codex ${A} resume --last`)
+    expect(buildCodexLaunch(['codex'], 'fork', 'abc').join(' ')).toBe(`codex ${A} fork abc`)
+    expect(buildCodexLaunch(['codex', 'resume', 'old'], 'fork', 'new').join(' ')).toBe(`codex ${A} fork new`)
   })
 
   test('recognises real 0.147 idle/working panes and errors', () => {
@@ -223,12 +226,12 @@ describe('чему верить от живой сессии (mayLearn)', () => 
 // в пикер вместо чата. За терминалом никого нет — одобрять некому.
 describe('запуск Codex без запросов одобрения', () => {
   test('флаг добавляется к обычному старту', () => {
-    expect(buildCodexLaunch(undefined, 'new'))
+    expect(buildCodexLaunch(undefined, 'new').join(' '))
       .toBe('codex --ask-for-approval never --sandbox danger-full-access')
   })
 
   test('и к resume, перед подкомандой', () => {
-    expect(buildCodexLaunch(['codex'], 'resume', 'abc'))
+    expect(buildCodexLaunch(['codex'], 'resume', 'abc').join(' '))
       .toBe('codex --ask-for-approval never --sandbox danger-full-access resume abc')
   })
 
@@ -237,16 +240,16 @@ describe('запуск Codex без запросов одобрения', () => 
   test('с TELEGRAM_CODEX_APPROVALS спрашиваем в чате и оставляем песочницу', () => {
     process.env.TELEGRAM_CODEX_APPROVALS = '1'
     try {
-      expect(buildCodexLaunch(undefined, 'new')).toBe('codex --ask-for-approval on-request')
+      expect(buildCodexLaunch(undefined, 'new').join(' ')).toBe('codex --ask-for-approval on-request')
     } finally {
       delete process.env.TELEGRAM_CODEX_APPROVALS
     }
   })
 
   test('чужой выбор не перетираем', () => {
-    expect(buildCodexLaunch(['codex', '--ask-for-approval', 'on-request'], 'new'))
+    expect(buildCodexLaunch(['codex', '--ask-for-approval', 'on-request'], 'new').join(' '))
       .toBe('codex --sandbox danger-full-access --ask-for-approval on-request')
-    expect(buildCodexLaunch(['codex', '-s', 'read-only'], 'new'))
+    expect(buildCodexLaunch(['codex', '-s', 'read-only'], 'new').join(' '))
       .toBe('codex --ask-for-approval never -s read-only')
   })
 })
@@ -256,9 +259,9 @@ describe('запуск Codex без запросов одобрения', () => 
 // и к запуску прилипал второй `resume <id>`. Codex падал сразу после старта.
 test('перезапуск не дублирует resume, если перед ним есть флаги', () => {
   const saved = ['codex', '--ask-for-approval', 'never', '--sandbox', 'danger-full-access', 'resume', '01a0-old']
-  expect(buildCodexLaunch(saved, 'resume', '01a0-new'))
+  expect(buildCodexLaunch(saved, 'resume', '01a0-new').join(' '))
     .toBe('codex --ask-for-approval never --sandbox danger-full-access resume 01a0-new')
-  expect(buildCodexLaunch(saved, 'new')).toBe('codex --ask-for-approval never --sandbox danger-full-access')
+  expect(buildCodexLaunch(saved, 'new').join(' ')).toBe('codex --ask-for-approval never --sandbox danger-full-access')
 })
 
 test('streaming draft reads only agent_message snapshots, never commentary or tools', () => {

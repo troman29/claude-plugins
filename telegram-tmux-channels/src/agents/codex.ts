@@ -2,7 +2,6 @@ import { closeSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, st
 import { homedir } from 'os'
 import { dirname, join } from 'path'
 import type { AgentAdapter, AgentStatusPanel, LaunchMode, RecentAgentSession } from './types'
-import { shellQuote } from '../tmux-ops'
 import { isCodexArgv } from '../proc'
 import { STATE_DIR } from '../paths'
 import { telegramOrigin } from '../session-topics'
@@ -60,11 +59,11 @@ export function buildCodexLaunch(
   saved: string[] | undefined,
   mode: LaunchMode,
   sessionId?: string,
-): string {
+): string[] {
   const base = withDefaults(stripLifecycle(saved?.length ? saved : ['codex']))
-  if (mode === 'new') return shellQuote(base)
+  if (mode === 'new') return base
   const command = mode === 'fork' ? 'fork' : 'resume'
-  return shellQuote([...base, command, ...(sessionId ? [sessionId] : ['--last'])])
+  return [...base, command, ...(sessionId ? [sessionId] : ['--last'])]
 }
 
 function stringsFromContent(content: unknown, field: 'input_text' | 'output_text'): string[] {
@@ -474,5 +473,5 @@ export const codexAdapter: AgentAdapter = {
   canOpenStatusPanel: codexCanOpenStatusPanel,
   parseStatusPanel: parseCodexStatusPanel,
   cachedStatusLines: () => [],
-  launchEnvPrefix: keys => `TELEGRAM_BINDING_KEYS=${JSON.stringify(keys.join(','))}`,
+  launchEnv: keys => ({ TELEGRAM_BINDING_KEYS: keys.join(',') }),
 }

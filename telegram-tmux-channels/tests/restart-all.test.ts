@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { selectRestartTargets, summarizeRestarts } from '../src/restart-all'
 
-const live = (pane: string, key?: string) => ({ pane, pid: 100, cmdline: ['claude'], ...(key ? { bindingKeys: [key] } : {}) })
+const live = (pane: string, key?: string) => ({ pane, pid: 100, ...(key ? { bindingKeys: [key] } : {}) })
 
 describe('/restart_all: выбор целей', () => {
   const bound = new Set(['a', 'b', 'c'])

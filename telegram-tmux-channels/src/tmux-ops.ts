@@ -160,15 +160,9 @@ export function shellQuote(args: string[]): string {
     .join(' ')
 }
 
-const CLAUDE_ENV_PATH = '$HOME/.claude/claude.env'
 const EXTENDED_CONTEXT_ALIASES = new Set(['opus', 'sonnet', 'fable'])
 const EXTENDED_CONTEXT_MODEL_PATTERN = /^claude-(?:opus|sonnet|fable)(?:-|$)/i
 const EXTENDED_CONTEXT_SUFFIX = '[1m]'
-
-function withClaudeEnvironment(command: string): string {
-  const script = `if [ -r "${CLAUDE_ENV_PATH}" ]; then . "${CLAUDE_ENV_PATH}" || exit $?; fi; exec ${command}`
-  return shellQuote(['sh', '-c', script])
-}
 
 function supportsExtendedContext(model: string): boolean {
   const normalized = model.toLowerCase()
@@ -204,37 +198,6 @@ export function normalizeClaudeExtendedContextModel(argv: string[]): string[] {
     normalized.push(arg)
   }
   return normalized
-}
-
-// Bare --resume is an interactive picker with no one to click it on relaunch →
-// convert it to --continue; --resume <id> is deterministic and kept as-is.
-export function relaunchCommand(cmdline: string[]): string {
-  const args: string[] = []
-  let resumable = false
-  for (let i = 0; i < cmdline.length; i++) {
-    const a = cmdline[i]!
-    if (a === '--resume') {
-      if (i + 1 < cmdline.length && !cmdline[i + 1]!.startsWith('-')) {
-        args.push(a, cmdline[++i]!)
-        resumable = true
-      }
-      continue
-    }
-    if (a.startsWith('--resume=')) {
-      args.push(a)
-      resumable = true
-      continue
-    }
-    if (a === '--continue') {
-      resumable = true
-    }
-    args.push(a)
-  }
-  const out = ensureChannelFlags(normalizeClaudeExtendedContextModel(args))
-  if (!resumable) {
-    out.push('--continue')
-  }
-  return withClaudeEnvironment(shellQuote(out))
 }
 
 // `claude -p '<prompt>'` / `--print` is a one-shot headless run: it answers once and exits. Such a
@@ -276,108 +239,8 @@ export const DEFAULT_CLAUDE_ARGV = (
   .split(/\s+/)
   .filter(Boolean)
 
-// Возобновление старой и крупной сессии (>70 мин, >100k токенов) открывает модальный вопрос
-// «resume from summary?». В хабе нажать на него в момент подъёма некому, а сообщение, которым
-// сессию как раз разбудили, съедается этим промптом — юзеру приходится писать его заново.
-// Гасим порогом по возрасту (эквивалент кнопки «Don't ask me again», но только для наших сессий).
-export const RESUME_PROMPT_OFF = 'CLAUDE_CODE_RESUME_THRESHOLD_MINUTES=999999999'
-
-// Сессия (или её же bash-команда с жирным выводом) может раздуться на гигабайты и утащить
-// в OOM весь хост — вместе с чужими сессиями. TELEGRAM_MEMORY_MAX="6G" запирает сессию с её
-// потомками в свой cgroup: упирается в потолок и умирает только виновник. Выключено по
-// умолчанию — systemd-run есть только под систему с systemd (на macOS его нет).
-//
-// TELEGRAM_MEMORY_SLICE кладёт scope'ы сессий в общий slice: одна cgroup отвечает, сколько
-// занимают ВСЕ сессии разом (потолок на каждую этого не говорит). Захочешь общий предел —
-// он задаётся на том же slice, но по умолчанию его нет: своп разрешён, и ядро справляется само.
-//
-// Своп сессиям НЕ запрещаем. `MemorySwapMax=0` выглядел защитой от трэшинга, а на деле делал
-// их память неизымаемой: ядро оставляло спящую сессию в RAM и выдавливало на диск hermes,
-// стенды и сам хаб (замер 2026-08-18: 8 ГБ свопа при живых сессиях в RAM).
-// Нет systemd-run — значит нет и systemd (macOS, контейнер): всё, что через него, отключается,
-// а не падает. Живая грабля: в docker-стенде `TELEGRAM_MEMORY_MAX` из env превращал КАЖДЫЙ запуск
-// агента в «Executable not found in $PATH: systemctl», и топик молча вис без сессии.
+// Нет systemd-run — значит нет и systemd (macOS, контейнер): tmux-сервер тогда стартует без своего scope.
 const SYSTEMD_RUN = Bun.which('systemd-run')
-const SYSTEMCTL = Bun.which('systemctl')
-
-/** `systemctl --user …`; без systemd молча ничего не делает и отдаёт пустой вывод. */
-async function systemctlUser(args: string[], capture = false): Promise<string> {
-  if (!SYSTEMCTL) {
-    return ''
-  }
-  const proc = Bun.spawn([SYSTEMCTL, '--user', ...args], { stdout: capture ? 'pipe' : 'ignore', stderr: 'ignore' })
-  const out = capture ? await new Response(proc.stdout).text() : ''
-  await proc.exited
-  return out
-}
-
-export const memoryCapPrefix = (unit?: string, systemdRun: string | null = SYSTEMD_RUN): string => {
-  const cap = process.env.TELEGRAM_MEMORY_MAX?.trim()
-  if (!cap || !systemdRun) {
-    return ''
-  }
-  const slice = process.env.TELEGRAM_MEMORY_SLICE?.trim()
-  const parts = [
-    'systemd-run', '--user', '--scope', '--quiet',
-    ...(unit ? [`--unit=${unit}`] : []),
-    ...(slice ? [`--slice=${slice}`] : []),
-    '-p', `MemoryMax=${cap}`,
-    // Убивает сессии не этот потолок, а systemd-oomd — по давлению свопа, задолго до него
-    // (25.08: три жертвы при пике 458 МБ против лимита в 6 ГБ). Ставим scope в конец очереди
-    // кандидатов: предохранитель на случай настоящего голода остаётся, но первым под нож
-    // идёт тот, кто память и съел, а не разговор, который в этот момент шёл.
-    '-p', 'ManagedOOMPreference=avoid',
-  ]
-  return `${shellQuote(parts)} `
-}
-
-// Имя scope'а — наша метка владения. Без него cgroup сессии не отличить от чужих transient-scope
-// (под ними ходят и ручные задачи хозяина машины), и подчистить брошенное можно только гадая.
-// С меткой уборка тривиальна и безопасна: `tgc-*` — наши, всё остальное не трогаем.
-export function scopeUnitName(key: string): string {
-  return `tgc-${key.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '')}.scope`
-}
-
-/** Свободное имя scope'а под этот биндинг: занятое — с суффиксом -2, -3, …
- *
- * Мёртвый scope имя НЕ освобождает: зомби-процесс в его cgroup держит unit загруженным, а
- * `stop` и `reset-failed` на такой husk не действуют (проверено на хосте 27.08). Занятое имя
- * валит `systemd-run --unit=…`, а с ним и подъём топика — 25.08 так намертво встал топик 8100.
- * Подняться под именем -2 лучше, чем не подняться: метка нужна уборщику, а не пользователю.
- */
-export async function freeScopeUnitName(
-  key: string,
-  opts: { limit?: number; isLoaded?: (unit: string) => Promise<boolean> } = {},
-): Promise<string> {
-  const base = scopeUnitName(key)
-  const isLoaded = opts.isLoaded ?? unitIsLoaded
-  const limit = opts.limit ?? 20
-  for (let n = 1; n <= limit; n++) {
-    const name = n === 1 ? base : base.replace(/\.scope$/, `-${n}.scope`)
-    if (!(await isLoaded(name))) {
-      return name
-    }
-  }
-  return base
-}
-
-async function unitIsLoaded(unit: string): Promise<boolean> {
-  if (!SYSTEMCTL) {
-    return false
-  }
-  return (await systemctlUser(['show', unit, '-p', 'LoadState', '--value'], true)).trim() === 'loaded'
-}
-
-/** Имена НАШИХ scope'ов, внутри которых уже нет живого агента (чистая функция). */
-export function deadScopes(scopes: { name: string; commands: string[] }[]): string[] {
-  return scopes
-    .filter(s => s.name.startsWith('tgc-') && !s.commands.some(cmd => isAgentCommand(cmd)))
-    .map(s => s.name)
-}
-
-function isAgentCommand(cmd: string): boolean {
-  return /(^|\/)(claude|codex)(\s|$)/.test(cmd)
-}
 
 const CHANNEL_FLAGS = new Set(['--channels', '--dangerously-load-development-channels'])
 
@@ -403,17 +266,17 @@ export function ensureChannelFlags(argv: string[]): string[] {
   return [...stripChannelFlags(argv), '--dangerously-load-development-channels', 'server:telegram']
 }
 
-export function buildLaunch(saved: string[] | undefined, mode: LaunchMode, sessionId?: string): string {
+export function buildLaunch(saved: string[] | undefined, mode: LaunchMode, sessionId?: string): string[] {
   const base = ensureChannelFlags(normalizeClaudeExtendedContextModel(stripResumeFlags(saved?.length ? saved : DEFAULT_CLAUDE_ARGV)))
   // fork = ветка: та же история до точки разветвления, но своя дальнейшая жизнь. --fork-session
   // без --resume бессмыслен, поэтому без id это обычный старт.
   if (mode === 'fork') {
-    return withClaudeEnvironment(shellQuote(sessionId ? [...base, '--resume', sessionId, '--fork-session'] : base))
+    return sessionId ? [...base, '--resume', sessionId, '--fork-session'] : base
   }
   if (mode !== 'resume') {
-    return withClaudeEnvironment(shellQuote(base))
+    return base
   }
-  return withClaudeEnvironment(shellQuote(sessionId ? [...base, '--resume', sessionId] : [...base, '--continue']))
+  return sessionId ? [...base, '--resume', sessionId] : [...base, '--continue']
 }
 
 export type LaunchMode = 'resume' | 'new' | 'fork'
@@ -608,13 +471,9 @@ export function leftTui(pane: string): boolean {
 
 // Агент вышел из TUI (баннер выхода или шелл в пейне), а процесс ещё дорабатывает — хуки конца сессии.
 // 15.09 такой выход шёл дольше 40 с, и выгрузка по простою записала провал при фактически
-// закрытой сессии. Сессия для человека уже закрыта; процесс дорабатывает сам, скоуп подберёт
-// scope-reaper. Ctrl-C в шелл не шлём.
-async function awaitTeardown(pid: number, scope: string | undefined, log: (s: string) => void): Promise<boolean> {
+// закрытой сессии. Сессия для человека уже закрыта; процесс дорабатывает сам. Ctrl-C в шелл не шлём.
+async function awaitTeardown(pid: number, log: (s: string) => void): Promise<boolean> {
   if (await exitsWithin(pid, TEARDOWN_WAIT_MS)) {
-    if (scope) {
-      await stopScope(scope, log)
-    }
     return true
   }
   log(`stop: agent left its TUI, teardown still running after ${TEARDOWN_WAIT_MS / 1000}s — leaving it to finish`)
@@ -645,68 +504,6 @@ export function alive(pid: number): boolean {
 // "Exit anyway?" confirm that appears when background shells are alive, wait
 // for the pid to die, escalate to Ctrl-C ×2. Measured: idle exit ~0.6s; busy
 // exit hangs forever on the confirm unless answered — hence the pane polling.
-async function stopScope(scope: string, log: (s: string) => void): Promise<void> {
-  log(`stop: гашу scope ${scope} — вместе со всем, что сессия оставила после себя`)
-  await systemctlUser(['stop', scope])
-  // Погашенного мало: упавший scope остаётся ЗАГРУЖЕННЫМ, и `systemd-run --unit=<то же имя>`
-  // отбивается «already loaded or has a fragment file» — то есть имя занято навсегда, а с ним
-  // и подъём этого топика. Освобождает имя только reset-failed. 25.08 так намертво встал
-  // топик 8100: запуск печатался снова и снова и падал на одной и той же строке.
-  await systemctlUser(['reset-failed', scope])
-}
-
-async function scopeCommands(unit: string): Promise<string[]> {
-  const path = (await systemctlUser(['show', unit, '-p', 'ControlGroup', '--value'], true)).trim()
-  if (!path) {
-    return []
-  }
-  const out: string[] = []
-  try {
-    const { readFileSync } = require('fs')
-    for (const pid of readFileSync(`/sys/fs/cgroup${path}/cgroup.procs`, 'utf8').split('\n')) {
-      if (!pid.trim()) {
-        continue
-      }
-      try {
-        out.push(readFileSync(`/proc/${pid.trim()}/cmdline`, 'utf8').replace(/\0/g, ' ').trim())
-      } catch {} // процесс успел уйти между чтениями — на решение это не влияет
-    }
-  } catch {} // cgroup исчез — считаем scope пустым, его и погасим
-  return out
-}
-
-/** Погасить НАШИ scope'ы, где агента уже нет: сессия умерла, а её браузер/сервер держит cgroup. */
-export async function reapDeadScopes(log: (s: string) => void): Promise<string[]> {
-  // Без --all: гасить нечего в scope'е, который уже inactive. Такой husk (зомби в cgroup) стопом
-  // не убирается, и с --all жнец докладывал об одном и том же каждые 5 минут до перезапуска хаба.
-  const names = (await systemctlUser(['list-units', '--plain', '--no-legend', '--state=active', 'tgc-*.scope'], true))
-    .split('\n').map(l => l.trim().split(/\s+/)[0]).filter(n => n?.endsWith('.scope')) as string[]
-  const scopes = await Promise.all(names.map(async name => ({ name, commands: await scopeCommands(name) })))
-  const dead = deadScopes(scopes)
-  for (const name of dead) {
-    log(`scope-reaper: ${name} — агента внутри нет, гашу вместе с остатками`)
-    await stopScope(name, log)
-  }
-  return dead
-}
-
-// Сессия живёт в своём transient-scope (см. memoryCapPrefix). У scope нет главного процесса:
-// он держится, пока внутри есть ХОТЬ КТО-ТО, — поэтому браузер или dev-сервер, поднятый агентом,
-// переживает саму сессию и держит её cgroup (замер 2026-08-18: 460 МБ chrome в scope, где агента
-// уже нет). PID 1 в родителях тут ни при чём: владение на Linux задаёт cgroup, а не родитель.
-export function transientScopeOf(cgroupText: string): string | undefined {
-  const scope = /\/(run-p\d+[^/\s]*\.scope)\s*$/m.exec(cgroupText.trim())?.[1]
-  return scope // только наши `systemd-run --scope`; session-*.scope Ромы трогать нельзя
-}
-
-function scopeOfPid(pid: number): string | undefined {
-  try {
-    return transientScopeOf(require('fs').readFileSync(`/proc/${pid}/cgroup`, 'utf8'))
-  } catch {
-    return undefined
-  }
-}
-
 /** `unattended` — остановку затеял сам хаб, человека у чата нет: на вопрос о фоновых задачах
  *  отвечаем сразу, без окна на кнопки. Пикер для такого пейна хаб в чат не выносит. */
 export async function stopSession(
@@ -716,16 +513,12 @@ export async function stopSession(
   opts: { unattended?: boolean } = {},
 ): Promise<boolean> {
   log(`stop: pane=${pane} pid=${pid}`)
-  const scope = scopeOfPid(pid) // читаем ДО убийства: у мёртвого pid cgroup уже не спросишь
   await sendKeys(pane, 'C-c')
   // Codex exits on Ctrl-C when it is idle — but not always within a fixed pause: on the stand it
   // took longer than 1.5 s, and `/exit` landed in bash. Wait for the process, and never type into
   // a pane whose foreground is already a shell: apart from a noisy error, that can race the next
   // launch in the same tmux pane.
   if (await exitsWithin(pid, CTRL_C_EXIT_MS)) {
-    if (scope) {
-      await stopScope(scope, log)
-    }
     return true
   }
   if (!SHELLS.has(await paneCurrentCommand(pane).catch(() => ''))) {
@@ -747,7 +540,7 @@ export async function stopSession(
     }
     const text = await capturePane(pane).catch(() => '')
     if (leftTui(text) || SHELLS.has(await paneCurrentCommand(pane).catch(() => ''))) {
-      return awaitTeardown(pid, scope, log)
+      return awaitTeardown(pid, log)
     }
     if (isFeedbackDraftPrompt(text)) {
       log('stop: unsent feedback draft on exit → Esc (discard)')
@@ -777,30 +570,6 @@ export async function stopSession(
     log(`stop: still alive after exit sequence, pane tail: ${tail}`)
     return false
   }
-  if (scope) {
-    await stopScope(scope, log)
-  }
   return true
 }
 
-export async function restartSession(
-  pane: string,
-  pid: number,
-  cmdline: string[],
-  bindingKeys: string[],
-  log: (s: string) => void,
-): Promise<void> {
-  await stopSession(pane, pid, log)
-  await sleep(3000)
-  // TELEGRAM_BINDING_KEYS is a per-command env prefix, not a shell export — the
-  // original launch's binding identity dies with the old process unless the relaunch
-  // command re-adds it. Without this, the new session's bindingKeys comes back empty:
-  // picker routing falls back to "first key bound to this dir" (wrong whenever another
-  // key shares the same directory) and the subagent/task/skill status hooks go silent
-  // entirely (subagent-hook.ts no-ops with no bindingKeys).
-  const envPrefix = bindingKeys.length ? `TELEGRAM_BINDING_KEYS=${shellQuote([bindingKeys.join(',')])} ` : ''
-  const cmd = `${RESUME_PROMPT_OFF} ` + envPrefix + memoryCapPrefix() + relaunchCommand(cmdline)
-  log(`restart: relaunch ${cmd}`)
-  await typeLine(pane, cmd)
-  // startup prompts are acked by the hub's screen loop (retries until the prompt is actually gone)
-}

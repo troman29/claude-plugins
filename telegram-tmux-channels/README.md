@@ -398,11 +398,9 @@ Environment, in `~/.claude/channels/telegram/.env`:
 | `TELEGRAM_ADMINS` | — | Admin user ids, comma-separated |
 | `TELEGRAM_LANG` | `en` | Initial UI language (`en`/`ru`); `/lang` overrides at runtime |
 | `TELEGRAM_PROJECTS_DIR` | `$HOME/projects` | Where `/bind <name>` looks |
-| `TELEGRAM_LAUNCH_CMD` | `claude --permission-mode bypassPermissions` | Claude launch command; хаб читает `~/.claude/claude.env` перед start/restart и нормализует сохранённые Opus/Sonnet/Fable aliases в `[1m]`; Codex defaults to `codex` and learns its live argv |
+| `TELEGRAM_LAUNCH_CMD` | `claude --permission-mode bypassPermissions` | Claude launch command until the binding learns its live argv; stale Opus/Sonnet/Fable aliases get `[1m]`. Codex defaults to `codex` and learns its live argv the same way |
 | `TELEGRAM_CODEX_APPROVALS` | off | `1` keeps Codex sandboxed and asks for approvals in the topic instead of running with full access |
 | `TELEGRAM_IDLE_UNLOAD_MINUTES` | `0` | Idle minutes before a session is stopped; `0` disables |
-| `TELEGRAM_MEMORY_MAX` | — | Per-session memory cap (e.g. `12G`) via `systemd-run --scope`, so a runaway session dies alone instead of OOM-ing the host. It caps the session AND everything it starts: a child wrapped in its own `systemd-run --scope -p MemoryMax=…` still counts here, and the parent kills first. Linux/systemd only |
-| `TELEGRAM_MEMORY_SLICE` | — | systemd slice for those scopes (`tgc-agents`), so one cgroup accounts for every session at once — and can carry a shared `MemoryHigh=` if you ever need one |
 | `TELEGRAM_CONTEXT_WARN_PCT` | `80` | Warn under a reply once the context window is this full; `0` disables |
 | `TELEGRAM_HUB_AUTOSPAWN` | `1` | `0` if you run the hub as a service instead |
 | `TELEGRAM_SCREEN_POLL_MS` | `300` | Pane detector interval (100–5000 ms); typing itself remains throttled |
@@ -433,7 +431,20 @@ Two processes and a Unix socket:
 - **Stub** (`src/stub.ts`) — a tiny MCP server inside each Claude or Codex session. Tells the hub where
   the session lives (folder, tmux pane, pid) and relays `reply` / `react` / `edit_message`.
 
-Two details worth knowing, because they explain most of the behaviour:
+Sessions start through **`tgc-run`** (`bin/tgc-run`), so a pane shows one short line instead of the
+whole command:
+
+```sh
+tgc-run -1001234567890/447 resume 0b6e1c2a-5f3d-4c8e-9a71-2d4f6e8b0c13
+```
+
+It takes binding key(s), `new|resume|fork` and an optional conversation id; the folder, the learned
+argv and the environment (`TELEGRAM_BINDING_KEYS`, Claude's resume thresholds) come from
+`bindings.json`. For Claude it also sources `~/.claude/claude.env` when readable. It ends in `exec`, so
+the pane's foreground process is the agent itself. The hub links it into `~/.local/bin` on start,
+which has to be on the pane shell's `PATH`.
+
+Details worth knowing, because they explain most of the behaviour:
 
 - **The picker bridge is a screen scraper.** The hub reads each tmux pane on a timer; when it
   recognizes a TUI prompt, it posts buttons, and a tap is replayed as real keystrokes. There's

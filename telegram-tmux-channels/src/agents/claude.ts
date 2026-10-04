@@ -1,3 +1,5 @@
+import { homedir } from 'os'
+import { join } from 'path'
 import type { AgentAdapter } from './types'
 import { isClaudeArgv } from '../proc'
 import {
@@ -55,9 +57,13 @@ export const claudeAdapter: AgentAdapter = {
     const limits = readLimits(dir, nowMs)
     return limits ? formatLimits(limits, nowMs) : []
   },
-  // Возобновляя из чата, сессию поднимают целиком и осознанно — предложение «взять саммари
-  // вместо истории» тут только блокирует подъём диалогом, отвечать на который некому.
-  // Порог по токенам и есть тот вентиль, что показывает этот диалог (CLI, ≥100k по умолчанию).
-  launchEnvPrefix: keys =>
-    `CLAUDE_CODE_RESUME_TOKEN_THRESHOLD=999999999 TELEGRAM_BINDING_KEYS=${JSON.stringify(keys.join(','))}`,
+  // Возобновляя из чата, сессию поднимают целиком и осознанно — диалог «взять саммари вместо
+  // истории?» тут только блокирует подъём, отвечать на него некому. Его открывают два порога
+  // CLI — по токенам (≥100k) и по возрасту (>70 мин); гасим оба, только для наших сессий.
+  launchEnv: keys => ({
+    CLAUDE_CODE_RESUME_TOKEN_THRESHOLD: '999999999',
+    CLAUDE_CODE_RESUME_THRESHOLD_MINUTES: '999999999',
+    TELEGRAM_BINDING_KEYS: keys.join(','),
+  }),
+  envFile: join(homedir(), '.claude', 'claude.env'),
 }
