@@ -221,7 +221,9 @@ export async function discoverGlobalSkills(): Promise<{ skills: Skill[]; failed:
 // Pure — tested in core.test.ts.
 /** Настоящее имя скилла по имени из Telegram (`/add_model` → `add-model`); незнакомое — undefined. */
 export function findSkill(name: string, globalMap: Map<string, string>, projectSkills: Skill[]): string | undefined {
-  return globalMap.get(name) ?? projectSkills.find(s => mangleCmd(s.name) === name)?.name
+  // Набранное руками приходит с дефисами (`/apply-in-parts`) — сравниваем тоже в манглинге.
+  const cmd = mangleCmd(name)
+  return globalMap.get(cmd) ?? projectSkills.find(skill => mangleCmd(skill.name) === cmd)?.name
 }
 
 // Встроенные команды самих CLI: скиллами они не значатся, но набирать их надо как команду.

@@ -314,6 +314,13 @@ describe('tmux-ops', () => {
     expect(findSkill('unknown_thing', global, [] as never[])).toBeUndefined()
   })
 
+  test('findSkill: имя с дефисами, набранное руками, тоже находит скилл', () => {
+    const global = new Map([['deep_research', 'deep-research']])
+    const project = [{ name: 'apply-in-parts' }] as never[]
+    expect(findSkill('apply-in-parts', global, project)).toBe('apply-in-parts')
+    expect(findSkill('deep-research', global, project)).toBe('deep-research')
+  })
+
   test('isSlashCommand: незнакомое слово с текстом дальше — это фраза, а не команда', () => {
     // 15.09: «/to-spec можно вычистить, а…» набралось командой и повисло в поле ввода
     expect(isSlashCommand({ agent: 'claude', name: 'to-spec', known: false, hasArgs: true })).toBe(false)
