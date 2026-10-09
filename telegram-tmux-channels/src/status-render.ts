@@ -96,6 +96,12 @@ export const carryLiveWork = (s: StatusState): StatusState => ({
   agents: new Map([...s.agents].filter(([, agent]) => !agent.done)),
 })
 
+// Что остаётся в старом пузыре, когда живые агенты переехали в новый: без них он не дублирует новый.
+export const withoutLiveWork = (s: StatusState): StatusState => ({
+  ...s,
+  agents: new Map([...s.agents].filter(([, agent]) => agent.done)),
+})
+
 const MAX_LINES = 25
 const cap = (lines: string[]): string[] =>
   lines.length > MAX_LINES ? [...lines.slice(0, MAX_LINES), `… +${lines.length - MAX_LINES}`] : lines

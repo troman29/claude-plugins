@@ -3,6 +3,7 @@ export type EditableSeed = { msgId: number; turnEnded?: boolean }
 export type EditableTransport = {
   send: (key: string, text: string) => Promise<number | undefined>
   edit: (key: string, msgId: number, text: string) => Promise<void>
+  remove: (key: string, msgId: number) => Promise<void>
 }
 
 /** Send once, then edit in place; recovered message ids make that contract survive restarts. */
@@ -43,6 +44,20 @@ export class EditablePost {
     if (existing === undefined || existing === -1) return
     await this.transport.edit(key, existing, render())
     this.persist(key, existing, this.turnEnded.get(key) ?? false)
+  }
+
+  /** Оставить в старом посте только `text` перед `update(fresh)`; undefined — удалить пост.
+   *  Id поста берётся синхронно: вызывай до `update`, который его забудет. */
+  async retire(key: string, text: string | undefined): Promise<void> {
+    const existing = this.msg.get(key)
+    if (existing === undefined || existing === -1) {
+      return
+    }
+    if (text === undefined) {
+      await this.transport.remove(key, existing)
+    } else {
+      await this.transport.edit(key, existing, text)
+    }
   }
 
   async update(key: string, fresh: boolean, render: () => string): Promise<void> {

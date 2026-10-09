@@ -32,7 +32,7 @@ import {
   capturePane, capturePaneAnsi, type OpsCommand,
 } from './tmux-ops'
 import { ansiToImage } from './ansi-image'
-import { carryLiveWork, deserializeStatus, emptyStatus, hasLiveWork, renderBg, renderStatus, serializeStatus, settleAgents, statusIsEmpty, syncBg, type BgTask, type StatusState } from './status-render'
+import { carryLiveWork, withoutLiveWork, deserializeStatus, emptyStatus, hasLiveWork, renderBg, renderStatus, serializeStatus, settleAgents, statusIsEmpty, syncBg, type BgTask, type StatusState } from './status-render'
 import { discoverGlobalSkills, discoverProjectSkills, findSkill, isSlashCommand, mangleCmd, skillInvocation, tgDescription, type Skill } from './skills'
 import { agentPidsInDir, cmdlineOf } from './proc'
 import { bySendTime, clampLines, clampTail, rmQuiet } from './util'
@@ -1283,6 +1283,9 @@ const editableTransport = {
     const target = keyToTarget(key)
     await bot.api.editMessageText(target.chat_id, msgId, text, { parse_mode: 'HTML' }).catch(() => {})
   },
+  async remove(key: string, msgId: number): Promise<void> {
+    await bot.api.deleteMessage(keyToTarget(key).chat_id, msgId).catch(() => {})
+  },
 }
 // ONE bubble for everything a turn spawns — agents, tasks, todos, skills, background shells.
 // Four separate posts meant a busy turn sent four notifications; now the first event sends and
@@ -1318,6 +1321,10 @@ function beginStatusBatch(key: string): { state: StatusState; fresh: boolean } {
   if (prev && !statusPost.sinceTurnEnd(key)) {
     return { state: prev, fresh: false }
   }
+  if (prev && hasLiveWork(prev)) {
+    const leftover = withoutLiveWork(prev)
+    void statusPost.retire(key, statusIsEmpty(leftover) ? undefined : renderStatus(leftover))
+  }
   const state = prev ? carryLiveWork(prev) : emptyStatus()
   statusState.set(key, state)
   return { state, fresh: true } // first-ever event: nothing to reset, update() sends anyway
@@ -1347,6 +1354,17 @@ async function settleFinishedAgents(key: string, live: string[] | undefined): Pr
 // PreToolUse(Agent) fires before SubagentStart and carries the human description;
 // SubagentStart itself only has agent_id/agent_type — correlate the two via promptId.
 const pendingDescriptions = new Map<string, string>()
+// SendMessage продолжает агента без описания, а прошлый пузырь с его именем к этому времени уже закрыт.
+const agentNames = new Map<string, string>()
+const AGENT_NAMES_MAX = 500
+
+function rememberAgentName(agentId: string, name: string): void {
+  agentNames.delete(agentId)
+  agentNames.set(agentId, name)
+  if (agentNames.size > AGENT_NAMES_MAX) {
+    agentNames.delete(agentNames.keys().next().value!)
+  }
+}
 
 // ── reply-fallback safety net ───────────────────────────────────────────────
 // A Telegram-triggered turn that ends without the agent calling ANY egress tool
@@ -1961,8 +1979,10 @@ async function handleSubagentEvent(msg: Extract<StubToHub, { op: 'subagent' }>):
       continue
     }
     const { state, fresh } = beginStatusBatch(key)
-    state.agents.set(msg.agentId, { name: description ?? msg.agentType, done: false })
-    log(`subagent: start key=${key} agentId=${msg.agentId} type=${msg.agentType} fresh=${fresh} name="${description ?? msg.agentType}"`)
+    const name = description ?? agentNames.get(msg.agentId) ?? msg.agentType
+    rememberAgentName(msg.agentId, name)
+    state.agents.set(msg.agentId, { name, done: false })
+    log(`subagent: start key=${key} agentId=${msg.agentId} type=${msg.agentType} fresh=${fresh} name="${name}"`)
     // live thunk (not a snapshot): the post-send re-render inside update() must see state that
     // racing events mutated during the await.
     await pushStatus(key, state, fresh)

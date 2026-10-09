@@ -10,6 +10,7 @@ describe('EditablePost restart contract', () => {
       {
         send: async (_key, text) => { sent.push(text); return 99 },
         edit: async (key, id, text) => { edited.push([key, id, text]) },
+        remove: async () => {},
       },
     )
     await post.update('topic', false, () => '4/4 complete')
@@ -22,7 +23,7 @@ describe('EditablePost restart contract', () => {
     let dropped = 0
     const post = new EditablePost(
       [['topic', { msgId: 42, turnEnded: true }]], (...args) => persisted.push(args), () => { dropped++ },
-      { send: async () => 99, edit: async () => {} },
+      { send: async () => 99, edit: async () => {}, remove: async () => {} },
     )
     await post.update('topic', true, () => 'new turn')
     expect(dropped).toBe(1)
@@ -35,12 +36,30 @@ describe('EditablePost restart contract', () => {
     const edited: number[] = []
     const post = new EditablePost(
       [['topic', { msgId: 42, turnEnded: true }]], () => {}, () => {},
-      { send: async () => 99, edit: async (_key, id) => { edited.push(id) } },
+      { send: async () => 99, edit: async (_key, id) => { edited.push(id) }, remove: async () => {} },
     )
     await post.refresh('topic', () => 'agent done')
     expect(edited).toEqual([42])
     expect(post.sinceTurnEnd('topic')).toBe(true)
     await post.refresh('other', () => 'nothing sent yet')
     expect(edited).toEqual([42])
+  })
+
+  // Живые агенты переезжают в новый пузырь; старый, оставшись с ними, висел бы дублем с вечными 🟡.
+  test('retire правит или удаляет старый пост до того, как update(fresh) откроет новый', async () => {
+    const calls: string[] = []
+    const post = new EditablePost(
+      [['a', { msgId: 42, turnEnded: true }], ['b', { msgId: 43, turnEnded: true }]], () => {}, () => {},
+      {
+        send: async () => 99,
+        edit: async (_key, id, text) => { calls.push(`edit ${id} ${text}`) },
+        remove: async (_key, id) => { calls.push(`remove ${id}`) },
+      },
+    )
+    await post.retire('a', '✅ готов')
+    await post.retire('b', undefined)
+    await post.update('b', true, () => '🟡 фоновый')
+    await post.retire('none', undefined)
+    expect(calls).toEqual(['edit 42 ✅ готов', 'remove 43'])
   })
 })

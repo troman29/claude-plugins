@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { carryLiveWork, deserializeStatus, emptyStatus, hasLiveWork, renderBg, renderStatus, serializeStatus, settleAgents, statusIsEmpty, syncBg, type BgTask } from '../src/status-render'
+import { carryLiveWork, withoutLiveWork, deserializeStatus, emptyStatus, hasLiveWork, renderBg, renderStatus, serializeStatus, settleAgents, statusIsEmpty, syncBg, type BgTask } from '../src/status-render'
 
 describe('status-render', () => {
   test('status state survives JSON serialization without losing Map identity', () => {
@@ -98,5 +98,8 @@ describe('status-render', () => {
     expect([...next.agents.keys()]).toEqual(['bg'])
     expect(next.tasks.size).toBe(0)
     expect(next.agents.get('bg')).toBe(s.agents.get('bg'))
+    const leftover = withoutLiveWork(s)
+    expect([...leftover.agents.keys()]).toEqual(['old'])
+    expect(leftover.tasks.size).toBe(1)
   })
 })
