@@ -523,11 +523,11 @@ async function doReply(conn: Socket<undefined>, params: Record<string, unknown>)
   }
 
   // Decided once for the whole reply, so a table doesn't land in a different message shape than
-  // the sentence introducing it. Captions are capped at 1024 whatever the method, so a reply
-  // carrying files stays on the plain path.
-  const rich = !parseMode && !files.length && richSupported && (params.format === 'rich' || needsRich(text))
+  // the sentence introducing it. A caption is plain HTML and flattens a table, so rich text goes
+  // as its own message and the files follow it uncaptioned.
+  const rich = !parseMode && richSupported && (params.format === 'rich' || needsRich(text))
   const chunks = chunk(text, rich ? MAX_RICH_LIMIT : MAX_CHUNK_LIMIT, 'length')
-  const plan = planAttachments(files, chunks)
+  const plan = { ...planAttachments(files, chunks), ...(rich ? { caption: false } : {}) }
   // thread on EVERY send — otherwise chunks/files without reply_to land in General
   const threadOpt = inTopic(target.thread_id)
   const sentIds: number[] = []
