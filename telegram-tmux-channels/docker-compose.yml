@@ -26,7 +26,8 @@ services:
       - ..:/home/user/claude-plugins
     tty: true
     stdin_open: true
-    restart: unless-stopped
+    # Харнесс поднимают на время прогона, а не держат с хостом: образ 2,35 ГБ.
+    restart: "no"
 
 volumes:
   claude-home:
