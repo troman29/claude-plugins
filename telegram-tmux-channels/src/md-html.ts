@@ -40,6 +40,9 @@ const RICH_ONLY: RegExp[] = [
   /^\s{0,3}!\[[^\]\n]*\]\(https?:\/\//m, // media block
 ]
 
+// A non-blank line without a pipe, then a table header row and its separator.
+const TABLE_AFTER_TEXT = /^([^\n|]*\S[^\n|]*\n)([^\n]*\|[^\n]*\n[ \t]*(?=[^\n]*\|)(?=[^\n]*-)[|\-: \t]+$)/gm
+
 /** Would this text lose something if sent as plain Telegram HTML instead of a rich message? */
 export const needsRich = (src: string): boolean => {
   const { text } = stashCode(src) // a table drawn inside a code fence is just code
@@ -54,6 +57,8 @@ export const needsRich = (src: string): boolean => {
  *    with no error, so there is nothing for a fallback to catch;
  *  - "#5" becomes a level-1 heading, though GFM needs a space after the hashes.
  * Escaping is enough for both: `&lt;` renders as a literal `<`, and `\#` as a literal `#`.
+ * A table glued to the line above it is flattened into that paragraph — GFM lets a table
+ * interrupt a paragraph, Telegram does not — so it gets the blank line it needs.
  * Code spans and fences are left alone — Telegram already keeps those verbatim.
  */
 export function escapeForRich(src: string): string {
@@ -64,6 +69,7 @@ export function escapeForRich(src: string): string {
       return tag && RICH_TAGS.has(tag[1].toLowerCase()) ? m : '&lt;'
     })
     .replace(/^(\s*)(#{1,6})(?=[^\s#])/gm, '$1\\$2')
+    .replace(TABLE_AFTER_TEXT, '$1\n$2')
   return restore(escaped)
 }
 

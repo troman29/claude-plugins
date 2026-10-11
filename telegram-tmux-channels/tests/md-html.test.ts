@@ -65,4 +65,14 @@ describe('escapeForRich', () => {
     expect(escapeForRich('# Настоящий заголовок')).toBe('# Настоящий заголовок')
     expect(escapeForRich('  ## Отступ ок')).toBe('  ## Отступ ок')
   })
+
+  test('a table glued to the line above gets a blank line, or Telegram flattens it', () => {
+    expect(escapeForRich('**Итог**\n| a | b |\n|---|---|\n| 1 | 2 |')).toBe(
+      '**Итог**\n\n| a | b |\n|---|---|\n| 1 | 2 |',
+    )
+    expect(escapeForRich('текст\n\n| a | b |\n|:--|--:|\n| 1 | 2 |')).toBe(
+      'текст\n\n| a | b |\n|:--|--:|\n| 1 | 2 |',
+    )
+    expect(escapeForRich('```\nтекст\n| a | b |\n|---|---|\n```')).toBe('```\nтекст\n| a | b |\n|---|---|\n```')
+  })
 })
