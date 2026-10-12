@@ -208,6 +208,7 @@ Send <code>/tui</code> to see its terminal, or <code>/restart</code>.`,
 
   // ── pin / unpin ──
   pinned: (idleOffNote: string) => `📌 <b>Pinned</b> — this session won't idle-unload.${idleOffNote}`,
+  alreadyPinned: '📌 <b>Already pinned</b> — this session won\'t idle-unload.',
   pinnedIdleOffNote: '\n<i>(auto-unload is off right now — TELEGRAM_IDLE_UNLOAD_MINUTES=0)</i>',
   unpinned: (whenNote: string) => `📌 <b>Unpinned</b> — the session idle-unloads again${whenNote}.`,
   unpinnedInNote: (min: number) => ` (in ${min} min)`,

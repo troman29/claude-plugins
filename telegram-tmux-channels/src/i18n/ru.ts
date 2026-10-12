@@ -199,6 +199,7 @@ export const ru: Strings = {
 
   // ── pin / unpin ──
   pinned: idleOffNote => `📌 <b>Закреплено</b> — эта сессия не выгружается по простою.${idleOffNote}`,
+  alreadyPinned: '📌 <b>Уже закреплено</b> — эта сессия не выгружается по простою.',
   pinnedIdleOffNote: '\n<i>(авто-выгрузка сейчас выключена — TELEGRAM_IDLE_UNLOAD_MINUTES=0)</i>',
   unpinned: whenNote => `📌 <b>Откреплено</b> — сессия снова выгружается по простою${whenNote}.`,
   unpinnedInNote: min => ` (через ${min} мин)`,

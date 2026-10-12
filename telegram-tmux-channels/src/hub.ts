@@ -2944,6 +2944,23 @@ async function waitForNewBinding(
 const STUB_RECONNECT_MS = 15_000
 
 /** Подключения биндинга; если их нет, а агент в пейне жив — ждёт переподключения стаба. */
+// Закреплённая сессия обязана быть на ногах: /pin спящей без подъёма выглядит как «не сработало».
+async function wakePinned(key: string, binding: BindingEntry): Promise<void> {
+  const wasIdle = idleUnloaded.has(key) // до markActivity: она его сбрасывает
+  markActivity([key]) // clear the "expired" timer so it doesn't unload right after /unpin→/pin
+  if ((await liveOrReconnecting(key, binding)).length > 0) {
+    return
+  }
+  log(`pin: ${key} — сессия спит, поднимаю`)
+  const { chat_id, thread_id } = keyToTarget(key)
+  const say = (html: string) =>
+    void bot.api.sendMessage(chat_id, html, { ...inTopic(thread_id), parse_mode: 'HTML' }).catch(() => {})
+  say(t().raisingSession)
+  const waking = wasIdle ? runStandCommand(binding.dir, 'wake').catch(() => undefined) : undefined
+  await spawnSession(key, binding, binding.sessionId ? 'resume' : 'new', { say, quiet: true })
+  await waking
+}
+
 async function liveOrReconnecting(key: string, binding: BindingEntry): Promise<Socket<undefined>[]> {
   const live = connsForBinding(key, binding.dir)
   if (live.length > 0 || !(await agentRunsInPane(key, binding))) {
@@ -4793,20 +4810,19 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
       void say(L.noBinding)
       return
     }
+    const wasPinned = !!reg[key].pinned
     reg[key].pinned = cmd === 'pin'
     if (!reg[key].pinned) {
       delete reg[key].pinned
     }
     saveBindings(reg)
-    if (cmd === 'pin') {
-      markActivity([key]) // clear the "expired" timer so it doesn't unload right after /unpin→/pin
-    }
     const on = IDLE_UNLOAD_MS > 0
-    void say(
-      cmd === 'pin'
-        ? L.pinned(on ? '' : L.pinnedIdleOffNote)
-        : L.unpinned(on ? L.unpinnedInNote(Math.round(IDLE_UNLOAD_MS / 60_000)) : L.unpinnedWhenOnNote),
-    )
+    if (cmd === 'unpin') {
+      void say(L.unpinned(on ? L.unpinnedInNote(Math.round(IDLE_UNLOAD_MS / 60_000)) : L.unpinnedWhenOnNote))
+      return
+    }
+    void say(wasPinned ? L.alreadyPinned : L.pinned(on ? '' : L.pinnedIdleOffNote))
+    await wakePinned(key, binding)
     return
   }
 
