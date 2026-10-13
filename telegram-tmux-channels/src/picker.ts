@@ -47,10 +47,17 @@ export function isStartupTrustPrompt(picker: Picker): boolean {
 // picker: it ends with "Press enter to continue", not an Esc footer. Keep its signature narrow
 // so arbitrary text asking a yes/no question can never be acknowledged automatically.
 export function isCodexStartupTrustScreen(text: string): boolean {
-  return /do you trust the contents of this directory\?/i.test(text)
+  const legacy = /do you trust the contents of this directory\?/i.test(text)
     && /^[›>]\s*1\.\s+Yes, continue\s*$/mi.test(text)
     && /^\s*2\.\s+No, quit\s*$/mi.test(text)
     && /press enter to continue/i.test(text)
+  // Codex 0.162 переименовал экран в «Folder access» и сменил пункты.
+  const folderAccess = /^\s*Folder access\s*$/m.test(text)
+    && /trust this folder\?/i.test(text)
+    && /^[›>]\s*1\.\s+Trust and continue\s*$/m.test(text)
+    && /^\s*2\.\s+Back to Agent Command Center\s*$/m.test(text)
+    && /enter continue · esc back/.test(text)
+  return legacy || folderAccess
 }
 
 // Второй стартовый гейт Codex: доверие ХУКАМ. Появляется каждый раз, когда набор хуков сменил

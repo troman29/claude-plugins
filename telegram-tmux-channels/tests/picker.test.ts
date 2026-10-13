@@ -86,6 +86,12 @@ describe('parsePicker', () => {
     expect(isCodexStartupTrustScreen(trust)).toBe(true)
     expect(isCodexStartupTrustScreen(approval)).toBe(false)
   })
+  test('Codex 0.162 «Folder access» trust screen is recognised too', () => {
+    const trust = `  Folder access\n\n  /home/user/projects/agentek-kb\n\n  Trust this folder? Codex can read, edit, and run files here, subject to your permission settings.\n\n› 1. Trust and continue\n  2. Back to Agent Command Center\n\n  enter continue · esc back`
+    const question = `  Trust this folder?\n\n› 1. Trust and continue\n  2. No\n\n  enter continue · esc back`
+    expect(isCodexStartupTrustScreen(trust)).toBe(true)
+    expect(isCodexStartupTrustScreen(question)).toBe(false)
+  })
   test('Codex 0.147 /model picker: go-back footer and descriptions', () => {
     const pane = `  Select Model and Effort\n  Access legacy models through config.toml\n\n› 1. gpt-5.6-sol (current)  Latest frontier model.\n  2. gpt-5.6-terra          Balanced model.\n  3. gpt-5.6-luna           Fast model.\n\n  Press enter to confirm or esc to go back`
     expect(parsePicker(pane)).toMatchObject({
