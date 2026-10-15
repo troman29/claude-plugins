@@ -78,4 +78,13 @@ describe('cross-agent hook normalization', () => {
     expect(msg).toMatchObject({ action: 'turnend', agents: ['a1'], bg: [{ command: 'sleep 9' }] })
     expect(normalizeHookMessage('turnend', { session_id: 's1' }, keys)).not.toHaveProperty('agents')
   })
+  test('обрыв хода ошибкой API несёт баннер, а без него — код с деталями', () => {
+    expect(normalizeHookMessage('turnfail', {
+      session_id: 's1', error: 'server_error', last_assistant_message: 'API Error: 503 No available accounts',
+    }, keys)).toEqual({
+      op: 'subagent', action: 'turnfail', bindingKeys: keys, error: 'API Error: 503 No available accounts', sessionId: 's1',
+    })
+    expect(normalizeHookMessage('turnfail', { error: 'rate_limit', error_details: 'retry after 30s' }, keys))
+      .toMatchObject({ error: 'rate_limit: retry after 30s' })
+  })
 })

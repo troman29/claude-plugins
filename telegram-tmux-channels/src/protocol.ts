@@ -36,6 +36,8 @@ export type StubToHub =
   // dropped from it, so "listed before, absent now" is the only completion signal there is.
   // `agents` — id фоновых субагентов, ещё живых на конце хода; нет поля — агент их не сообщает (Codex).
   | { op: 'subagent'; action: 'turnend'; bindingKeys: string[]; sessionId?: string; bg?: { command: string; description?: string }[]; agents?: string[]; crons?: SessionCron[] }
+  // StopFailure — ход оборвала ошибка API: Stop при этом не приходит. `error` — текст для топика.
+  | { op: 'subagent'; action: 'turnfail'; bindingKeys: string[]; sessionId?: string; error: string }
   // TaskCreate/TaskUpdate (the todo-list tool) — unlike subagents, id/subject/status come
   // straight off one event each, no promptId correlation needed
   | { op: 'task'; action: 'create'; bindingKeys: string[]; sessionId?: string; taskId: string; subject: string }

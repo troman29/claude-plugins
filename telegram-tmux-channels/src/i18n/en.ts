@@ -41,6 +41,9 @@ export const en = {
   sessionDied:
     '💀 <b>Session dropped unexpectedly</b> (process/tmux vanished without <code>/restart</code>). ' +
     'Send anything — it revives automatically, or use <code>/resume</code>.',
+  sessionDiedOom:
+    '💀 <b>Session killed for lack of memory</b> (systemd-oomd took down its tmux scope, background agents included). ' +
+    'Send anything — it revives automatically, or use <code>/resume</code>.',
   truncatedNote: '…(reply truncated)',
   autoForwardLabel: '↩️ *auto-forward*', // markdown: the label rides through the same renderer as the body
   raisingSession: '▶️ <b>Bringing the session up…</b>',

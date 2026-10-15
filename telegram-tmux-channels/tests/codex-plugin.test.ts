@@ -28,5 +28,6 @@ describe('Codex plugin package', () => {
     expect(hooks).toContain('"matcher": "^(Agent|Task|spawn_agent)$"')
     expect(hooks).toContain('"PreCompact"')
     expect(hooks).toContain('compaction-start')
+    expect(hooks).toContain('"StopFailure"')
   })
 })

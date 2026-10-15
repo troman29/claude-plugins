@@ -42,6 +42,9 @@ export const ru: Strings = {
   sessionDied:
     '💀 <b>Сессия оборвалась неожиданно</b> (процесс/tmux пропал без <code>/restart</code>). ' +
     'Напиши что-нибудь — переподнимется автоматически, или используй <code>/resume</code>.',
+  sessionDiedOom:
+    '💀 <b>Сессию убили из-за нехватки памяти</b> (systemd-oomd снёс её tmux-scope вместе с фоновыми агентами). ' +
+    'Напиши что-нибудь — переподнимется автоматически, или используй <code>/resume</code>.',
   truncatedNote: '…(ответ обрезан)',
   autoForwardLabel: '↩️ *авто-досыл*',
   raisingSession: '▶️ <b>Поднимаю сессию…</b>',

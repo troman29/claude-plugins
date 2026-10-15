@@ -2,7 +2,7 @@ import { closeSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, st
 import { homedir } from 'os'
 import { dirname, join } from 'path'
 import type { AgentAdapter, AgentStatusPanel, LaunchMode, RecentAgentSession } from './types'
-import { isCodexArgv } from '../proc'
+import { isCodexArgv, isCodexHeadlessArgv } from '../proc'
 import { STATE_DIR } from '../paths'
 import { telegramOrigin } from '../session-topics'
 import { REPLY_HINT } from '../inbound-envelope'
@@ -10,12 +10,7 @@ import { REPLY_HINT } from '../inbound-envelope'
 type RolloutMeta = { id: string; cwd: string }
 type Rollout = RolloutMeta & { path: string; mtime: number; firstUser: string }
 
-export { isCodexArgv }
-
-export function isCodexHeadlessArgv(argv: string[]): boolean {
-  const i = argv.findIndex(a => isCodexArgv([a]))
-  return i >= 0 && argv.slice(i + 1).some(a => a === 'exec' || a === 'review')
-}
+export { isCodexArgv, isCodexHeadlessArgv }
 
 // Из сохранённого argv убираем прошлую подкоманду жизненного цикла вместе с её id: она относится
 // к ТОМУ запуску, а новый режим добавит свою. Ищем её по всему хвосту, а не на позиции 1: перед

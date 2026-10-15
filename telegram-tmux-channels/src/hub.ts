@@ -34,7 +34,7 @@ import {
 import { ansiToImage } from './ansi-image'
 import { carryLiveWork, withoutLiveWork, deserializeStatus, emptyStatus, hasLiveWork, renderBg, renderStatus, serializeStatus, settleAgents, statusIsEmpty, syncBg, type BgTask, type StatusState } from './status-render'
 import { discoverGlobalSkills, discoverProjectSkills, findSkill, isSlashCommand, mangleCmd, skillInvocation, tgDescription, type Skill } from './skills'
-import { agentPidsInDir, cmdlineOf } from './proc'
+import { agentPidsInDir, cmdlineOf, killedByOomd, systemdUnitOf } from './proc'
 import { bySendTime, clampLines, clampTail, rmQuiet } from './util'
 import { parsePicker, CHAT_ABOUT_INDEX, checkedIndexes, pickerCursorIndex, textBeforePicker, fnv1a, hasPickerFooter, isStartupTrustPrompt, trustOptionIndex, isCodexStartupTrustScreen, isCodexHooksTrustScreen, isCodexOwnToolApproval, type Picker } from './picker'
 import { buildKeyboard, confirmAfterDigit, downsToChatAbout, parseCallback } from './picker-drive'
@@ -731,6 +731,19 @@ function assertSendable(f: string): void {
   }
 }
 
+// binding key → systemd unit сессии: после смерти процесса cgroup уже не прочесть
+const sessionUnits = new Map<string, string>()
+
+function rememberSessionUnit(session: SessionInfo): void {
+  const unit = session.pid ? systemdUnitOf(session.pid) : undefined
+  if (!unit) {
+    return
+  }
+  for (const key of session.bindingKeys ?? []) {
+    sessionUnits.set(key, unit)
+  }
+}
+
 // binding keys mid intentional teardown (e.g. /restart) — suppress the crash notice for these
 const expectedDisconnect = new Set<string>()
 const DEATH_GRACE_MS = 5000
@@ -751,14 +764,17 @@ async function notifyUnexpectedDeath(s: SessionInfo): Promise<void> {
   if (!binding || connsForBinding(key, binding.dir).length > 0) {
     return
   }
+  const unit = sessionUnits.get(key)
+  const oom = !!unit && killedByOomd(unit)
   const target = keyToTarget(key)
   await bot.api
     .sendMessage(
       target.chat_id,
-      t().sessionDied,
+      oom ? t().sessionDiedOom : t().sessionDied,
       { ...inTopic(target.thread_id), parse_mode: 'HTML' },
     )
-    .catch(() => {})
+    .then(() => log(`death notice: ${key}${oom ? ` — oom-kill of ${unit}` : ''}`))
+    .catch(e => log(`death notice failed: ${key} ${e}`))
 }
 
 function listenForStubs(): void {
@@ -1943,6 +1959,17 @@ async function handleSubagentEvent(msg: Extract<StubToHub, { op: 'subagent' }>):
     }
     return
   }
+  if (msg.action === 'turnfail') {
+    log(`subagent: turnfail keys=${msg.bindingKeys.join(',')} "${msg.error.slice(0, 120)}"`)
+    for (const key of msg.bindingKeys) {
+      statusPost.endTurn(key)
+      disarmPending(key) // иначе fallback позже перешлёт тот же баннер ошибки как «ответ»
+      fallbackGate.endTurn(key)
+      await notifyTurnFailure(key, msg.error)
+      flushQueuedInLane(key)
+    }
+    return
+  }
   // workflow agents carry no name in the hook (only "workflow-subagent") — their status comes
   // from the pane-scraped workflow line (handleWorkflow) with the real name, so skip them here
   // to avoid a duplicate generic "🤖 Agents" message.
@@ -2150,6 +2177,32 @@ function forgetError(pane: string): void {
   stateRepo.delError(pane)
 }
 
+// Об одном обрыве хода говорят два источника: хук StopFailure и баннер в пейне. В топик — один раз.
+const FAILURE_NOTICE_DEDUP_MS = 60_000
+const lastFailureNotice = new Map<string, number>() // binding key → когда сообщили об ошибке
+
+function failureNoticedRecently(keys: string[]): boolean {
+  return keys.some(key => Date.now() - (lastFailureNotice.get(key) ?? 0) < FAILURE_NOTICE_DEDUP_MS)
+}
+
+function authHintFor(err: string): string {
+  return /login|api key|oauth|credit balance/i.test(err) ? t().authHint : ''
+}
+
+async function notifyTurnFailure(key: string, err: string): Promise<void> {
+  if (failureNoticedRecently([key])) {
+    return
+  }
+  lastFailureNotice.set(key, Date.now())
+  const target = keyToTarget(key)
+  await bot.api
+    .sendMessage(target.chat_id, t().sessionError(escHtml(err), authHintFor(err)), {
+      ...inTopic(target.thread_id),
+      parse_mode: 'HTML',
+    })
+    .catch(e => log(`turnfail-notify failed: key=${key} ${e}`))
+}
+
 async function handleErrors(pane: string, session: SessionInfo, text: string): Promise<void> {
   const adapter = adapterForSession(session)
   const err = adapter.parseError(text)
@@ -2177,16 +2230,17 @@ async function handleErrors(pane: string, session: SessionInfo, text: string): P
   }
   rememberError(pane, err)
   const target = pickerChatFor(session)
-  if (!target) {
+  const keys = session.bindingKeys ?? []
+  if (!target || failureNoticedRecently(keys)) {
     return
+  }
+  for (const key of keys) {
+    lastFailureNotice.set(key, Date.now())
   }
   // Auth can't be fixed from chat (OAuth is interactive) — we say what to do on the host,
   // otherwise the topic just stays silent on every message: the turn dies before reply is called.
-  const authHint = /login|api key|oauth|credit balance/i.test(err)
-    ? t().authHint
-    : ''
   await bot.api
-    .sendMessage(target.chatId, t().sessionError(escHtml(err), authHint), {
+    .sendMessage(target.chatId, t().sessionError(escHtml(err), authHintFor(err)), {
       ...inTopic(target.threadId),
       parse_mode: 'HTML',
     })
@@ -2795,6 +2849,7 @@ async function handleStubMessage(sock: Socket<undefined>, msg: StubToHub): Promi
       if (binding) resumeLaunchCapture(key, binding)
     }
     router.subscribe(sock, session)
+    rememberSessionUnit(session)
     markActivity(session.bindingKeys) // fresh session = active now; starts the idle clock
     persistFlag(session.bindingKeys ?? [], 'unloaded', false)
     persistFlag(session.bindingKeys ?? [], 'closed', false)

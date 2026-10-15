@@ -2,7 +2,7 @@ import type { StubToHub } from './protocol'
 import { parseSessionCrons } from './session-crons'
 
 export type HookMode =
-  | 'describe' | 'start' | 'stop' | 'turnend'
+  | 'describe' | 'start' | 'stop' | 'turnend' | 'turnfail'
   | 'task-create' | 'task-update' | 'skill' | 'todo' | 'bg'
   | 'codex-plan' | 'codex-skill' | 'compaction-start' | 'compaction-done'
 
@@ -30,6 +30,8 @@ export function normalizeHookMessage(
     // Id фоновой задачи субагента в Claude Code — это его agent_id из SubagentStart.
     const agents = tasks?.filter(t => t.type === 'subagent').map(t => String(t.id ?? '')).filter(Boolean)
     msg = { op: 'subagent', action: 'turnend', bindingKeys, bg, ...(agents ? { agents } : {}), crons: parseSessionCrons(data.session_crons) }
+  } else if (mode === 'turnfail') {
+    msg = { op: 'subagent', action: 'turnfail', bindingKeys, error: turnFailureText(data) }
   } else if (mode === 'compaction-start' || mode === 'compaction-done') {
     const trigger = data.trigger === 'manual' || data.trigger === 'auto' ? data.trigger : undefined
     msg = { op: 'compaction', phase: mode === 'compaction-start' ? 'start' : 'done', bindingKeys, ...(trigger ? { trigger } : {}) }
@@ -92,4 +94,15 @@ export function normalizeHookMessage(
 
   const sessionId = String(data.session_id ?? '')
   return msg && sessionId && 'bindingKeys' in msg ? { ...msg, sessionId } : msg
+}
+
+// Баннер Claude Code («API Error: 503 …») понятнее голого кода ошибки — берём его, когда он есть.
+function turnFailureText(data: Record<string, unknown>): string {
+  const banner = String(data.last_assistant_message ?? '').trim()
+  if (banner) {
+    return banner
+  }
+  const details = String(data.error_details ?? '').trim()
+  const error = String(data.error ?? 'unknown')
+  return details ? `${error}: ${details}` : error
 }

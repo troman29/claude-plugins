@@ -49,6 +49,26 @@ export function cwdOf(pid: number): string | undefined {
   }
 }
 
+/** systemd unit (scope/service), в cgroup которого живёт процесс; только Linux. */
+export function systemdUnitOf(pid: number): string | undefined {
+  if (!isLinux) {
+    return undefined
+  }
+  try {
+    const path = readFileSync(`/proc/${pid}/cgroup`, 'utf8').trim().split(':').pop() ?? ''
+    return path.split('/').reverse().find(part => /\.(scope|service)$/.test(part))
+  } catch {
+    return undefined
+  }
+}
+
+/** Убил ли systemd-oomd процессы этого unit'а за последние минуты — по журналу: упавший
+ *  transient-scope systemd убирает сразу, и его Result к моменту проверки уже не прочесть. */
+export function killedByOomd(unit: string): boolean {
+  const out = Bun.spawnSync(['journalctl', '--user', '-u', unit, '--since', '-5min', '-q', '-o', 'cat', '-g', 'systemd-oomd killed'])
+  return out.stdout.toString().trim() !== ''
+}
+
 /** Read one inherited environment value. Codex sanitises MCP subprocess environments, so its
  * session stub falls back to the interactive Codex parent's environment. */
 export function envOf(pid: number, key: string): string | undefined {
@@ -131,6 +151,11 @@ const CODEX_BIN_RE = /(?:^|[\\/])codex(?:\.exe)?$/
 
 export function isCodexArgv(argv: string[]): boolean {
   return argv.some(a => a === 'codex' || CODEX_BIN_RE.test(a))
+}
+
+export function isCodexHeadlessArgv(argv: string[]): boolean {
+  const i = argv.findIndex(a => isCodexArgv([a]))
+  return i >= 0 && argv.slice(i + 1).some(a => a === 'exec' || a === 'review')
 }
 
 /** Walk from an MCP child to either supported interactive agent process. */

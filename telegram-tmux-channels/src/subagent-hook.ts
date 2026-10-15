@@ -4,20 +4,30 @@
 import { SOCK_PATH } from './paths'
 import { encode } from './protocol'
 import { normalizeHookMessage, type HookMode } from './hook-normalize'
-import { envOf, findAgentAncestor } from './proc'
+import { envOf, findAgentAncestor, isCodexHeadlessArgv } from './proc'
+import { isHeadlessArgv } from './tmux-ops'
 
 const mode = process.argv[2] as HookMode | undefined
 const VALID_MODES = new Set<HookMode>([
-  'describe', 'start', 'stop', 'turnend', 'task-create', 'task-update',
+  'describe', 'start', 'stop', 'turnend', 'turnfail', 'task-create', 'task-update',
   'skill', 'todo', 'bg', 'codex-plan', 'codex-skill', 'compaction-start', 'compaction-done',
 ])
 
 function inheritedBindingKeys(): string[] {
+  const agent = findAgentAncestor(process.pid)
+  // `codex exec` или `claude -p`, запущенный из Bash сессии, наследует её ключи — но это чужой
+  // разговор: его sessionId переписывал биндинг, и подъём после падения резюмил бы не то.
+  if (agent && isHeadlessRun(agent)) {
+    return []
+  }
   // Codex sanitises command-hook children exactly as it sanitises MCP children.  The durable
   // interactive parent retains the launch binding, so recover it there (Claude keeps passing it).
-  const agent = findAgentAncestor(process.pid)
   return (process.env.TELEGRAM_BINDING_KEYS ?? (agent ? envOf(agent.pid, 'TELEGRAM_BINDING_KEYS') : '') ?? '')
     .split(',').map(s => s.trim()).filter(Boolean)
+}
+
+function isHeadlessRun(agent: NonNullable<ReturnType<typeof findAgentAncestor>>): boolean {
+  return agent.agent === 'claude' ? isHeadlessArgv(agent.cmdline) : isCodexHeadlessArgv(agent.cmdline)
 }
 
 async function main(): Promise<void> {
