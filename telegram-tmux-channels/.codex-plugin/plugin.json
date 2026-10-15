@@ -1,6 +1,6 @@
 {
   "name": "telegram-tmux-channels",
-  "version": "2.16.8+codex.20261015145449",
+  "version": "2.16.9+codex.20261015235014",
   "description": "Telegram tmux bridge for Claude Code and Codex sessions.",
   "author": {
     "name": "Windbit"

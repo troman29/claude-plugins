@@ -2858,6 +2858,12 @@ async function handleStubMessage(sock: Socket<undefined>, msg: StubToHub): Promi
     // Сессия дошла — снять сторожа и отдать всё, что придержали, пока она поднималась.
     for (const key of session.bindingKeys ?? []) {
       clearBringUp(key)
+      // Вопрос о режиме, заданный топику с уже поднятой сессией, держал бы очередь вечно:
+      // ответ на него больше ничего не решает.
+      if (pendingModeChoice.has(key)) {
+        log(`subscribe: ${key} — сессия поднята, снимаю незакрытый вопрос о режиме`)
+        disarmMode(key)
+      }
       flushQueuedInLane(key)
     }
     return
@@ -5760,8 +5766,12 @@ bot.on('message:forum_topic_created', async ctx => {
     log(`topic created: ${key} «${topicName}» — в exclude группы, режим не спрашиваю`)
     return
   }
-  // Топик мог создать сам хаб уже с папкой (/fork) — спрашивать нечего. Гонки нет: /fork
-  // пишет binding без единого await после createForumTopic, апдейт обрабатывается позже.
+  // Топики создаёт сам бот только в /fork, и тот привязывает их сам. Проверять по биндингу мало:
+  // апдейт о создании успевает раньше, чем /fork его запишет, и вопрос о режиме запирал входящие.
+  if (ctx.message.from?.id === ctx.me.id) {
+    log(`topic created: ${key} «${topicName}» — создан ботом (/fork), режим не спрашиваю`)
+    return
+  }
   if (loadBindings()[key]) {
     log(`topic created: ${key} «${topicName}» — уже привязан, режим не спрашиваю`)
     return
