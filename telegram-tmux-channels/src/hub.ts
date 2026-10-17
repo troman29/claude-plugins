@@ -1086,7 +1086,7 @@ async function relaunchForHeldMessages(key: string, binding: BindingEntry, targe
   const { chat_id, thread_id } = keyToTarget(key)
   const say = (html: string) =>
     void bot.api.sendMessage(chat_id, html, { ...inTopic(thread_id), parse_mode: 'HTML' }).catch(() => {})
-  await spawnSession(key, binding, binding.sessionId ? 'resume' : 'new', { say, quiet: true })
+  await spawnSession(key, binding, relaunchMode(binding), { say, quiet: true })
 }
 
 function pickerTitleHtml(ap: ActivePicker): string {
@@ -3018,7 +3018,7 @@ async function wakePinned(key: string, binding: BindingEntry): Promise<void> {
     void bot.api.sendMessage(chat_id, html, { ...inTopic(thread_id), parse_mode: 'HTML' }).catch(() => {})
   say(t().raisingSession)
   const waking = wasIdle ? runStandCommand(binding.dir, 'wake').catch(() => undefined) : undefined
-  await spawnSession(key, binding, binding.sessionId ? 'resume' : 'new', { say, quiet: true })
+  await spawnSession(key, binding, relaunchMode(binding), { say, quiet: true })
   await waking
 }
 
@@ -3532,7 +3532,7 @@ async function reviveBoundSessions(): Promise<void> {
             log(`boot-revive notify failed: ${key} ${err}`)
           }
         })
-    await spawnSession(key, binding, binding.sessionId ? 'resume' : 'new', { say })
+    await spawnSession(key, binding, relaunchMode(binding), { say })
     await new Promise(r => setTimeout(r, 3000))
   }
 }
@@ -4307,7 +4307,7 @@ async function handleInbound(inbound: Inbound): Promise<void> {
     // Стенд будим ПАРАЛЛЕЛЬНО подъёму агента: и то и другое занимает секунды, а последовательно
     // это сложение задержек на каждом первом сообщении после простоя.
     const waking = wasIdle ? runStandCommand(binding.dir, 'wake').catch(() => undefined) : undefined
-    await spawnSession(key, binding, binding.sessionId ? 'resume' : 'new', { say, quiet: wasIdle })
+    await spawnSession(key, binding, relaunchMode(binding), { say, quiet: wasIdle })
     if (waking) {
       const woken = await waking
       if (woken) {
@@ -4732,6 +4732,12 @@ async function deleteTopicFlow(
   void bot.api.sendMessage(chatId, `${spent}${note}\n${delNote}`, { parse_mode: 'HTML' }).catch(() => {})
 }
 
+/** Голый resume без id — это `--continue`: в топике без разговора CLI отвечает «No conversation
+ *  found» и выходит, а в общей папке подхватил бы разговор соседнего топика. */
+function relaunchMode(binding: BindingEntry): 'resume' | 'new' {
+  return binding.sessionId ? 'resume' : 'new'
+}
+
 /**
  * Перезапуск живой сессии биндинга: возвращается, когда подключился стаб новой сессии или вышел
  * срок. Пока он идёт, входящие биндинга придерживаются в очереди лейна и уходят после.
@@ -4748,7 +4754,7 @@ async function restartLiveSession(key: string, binding: BindingEntry, s: Restart
       throw new Error('process did not stop')
     }
     await new Promise(r => setTimeout(r, RELAUNCH_PAUSE_MS))
-    await typeLine(s.pane, launchLine({ keys, mode: 'resume', ...(binding.sessionId ? { sessionId: binding.sessionId } : {}) }))
+    await typeLine(s.pane, launchLine({ keys, mode: relaunchMode(binding), ...(binding.sessionId ? { sessionId: binding.sessionId } : {}) }))
     const conns = await waitForNewBinding(key, oldConns, RESTART_WAIT_MS)
     return conns.length ? { kind: 'ready' } : { kind: 'not-ready' }
   } catch (error) {
@@ -5479,7 +5485,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
       }
       void say(L.revivingForCommand(cmd))
       const revivedAt = Date.now()
-      await spawnSession(key, binding, binding.sessionId ? 'resume' : 'new', { say: html => void say(html), quiet: true })
+      await spawnSession(key, binding, relaunchMode(binding), { say: html => void say(html), quiet: true })
       live = await waitForBinding(key, REVIVE_WAIT_MS)
       const seconds = Math.round((Date.now() - revivedAt) / 1000)
       if (cmd === 'restart') {
