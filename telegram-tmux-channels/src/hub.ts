@@ -888,15 +888,39 @@ function isAutoAckPrompt(picker: Picker): boolean {
 // pane then sits on the prompt forever, session dead to the chat. The poll loop sees every pane
 // every tick, so ack here too: whenever a startup prompt shows up, regardless of how it got there
 // (spawn, /restart, revive, a hand-typed launch). Re-ack after a cooldown in case Enter didn't land.
-const autoAcked = new Map<string, { hash: string; at: number }>() // pane -> last ack
+const autoAcked = new Map<string, { hash: string; at: number; attempts: number; gaveUp?: true }>() // pane -> last ack
 const AUTO_ACK_RETRY_MS = 8000
+// Экран, который не уходит после нескольких нажатий, нажатием не лечится (Codex, не сумевший
+// записать доверие хукам, держит его вечно); дальше экран показывает в чат сторож подъёма.
+const MAX_AUTO_ACK_ATTEMPTS = 3
+
+/** Можно ли сейчас ответить на экран: не чаще раза в AUTO_ACK_RETRY_MS и не больше
+ *  MAX_AUTO_ACK_ATTEMPTS раз на один и тот же экран. */
+function claimAutoAck(identity: string, hash: string): boolean {
+  const prev = autoAcked.get(identity)
+  const now = Date.now()
+  if (prev?.hash !== hash) {
+    autoAcked.set(identity, { hash, at: now, attempts: 1 })
+    return true
+  }
+  if (now - prev.at < AUTO_ACK_RETRY_MS) {
+    return false
+  }
+  if (prev.attempts >= MAX_AUTO_ACK_ATTEMPTS) {
+    if (!prev.gaveUp) {
+      prev.gaveUp = true
+      log(`auto-ack gave up on ${identity}: the screen stayed after ${prev.attempts} attempts`)
+    }
+    return false
+  }
+  autoAcked.set(identity, { hash, at: now, attempts: prev.attempts + 1 })
+  return true
+}
 
 async function ackStartupPrompt(pane: string, picker: Picker, identity = pane): Promise<void> {
-  const prev = autoAcked.get(identity)
-  if (prev && prev.hash === picker.hash && Date.now() - prev.at < AUTO_ACK_RETRY_MS) {
+  if (!claimAutoAck(identity, picker.hash)) {
     return
   }
-  autoAcked.set(identity, { hash: picker.hash, at: Date.now() })
   // Голый Enter жмёт то, на чём стоит курсор. В безномерном гейте Claude Code курсор стоит на
   // «No, exit» — такой «ack» закрыл бы запуск вместо подтверждения. Встаём на нужный пункт.
   const trust = trustOptionIndex(picker)
@@ -910,11 +934,9 @@ async function ackStartupPrompt(pane: string, picker: Picker, identity = pane): 
 
 async function ackCodexOwnToolApproval(pane: string, text: string): Promise<void> {
   const hash = fnv1a(text)
-  const prev = autoAcked.get(pane)
-  if (prev && prev.hash === hash && Date.now() - prev.at < AUTO_ACK_RETRY_MS) {
+  if (!claimAutoAck(pane, hash)) {
     return
   }
-  autoAcked.set(pane, { hash, at: Date.now() })
   log(`tool approval auto-acked on ${pane}: own telegram MCP tool`)
   await sendKeys(pane, '3').catch(() => {}) // Always allow — больше в этой сессии не спросит
   await sendKeys(pane, 'Enter').catch(() => {})
@@ -922,11 +944,9 @@ async function ackCodexOwnToolApproval(pane: string, text: string): Promise<void
 
 async function ackCodexHooksTrustScreen(pane: string, text: string): Promise<void> {
   const hash = fnv1a(text)
-  const prev = autoAcked.get(pane)
-  if (prev && prev.hash === hash && Date.now() - prev.at < AUTO_ACK_RETRY_MS) {
+  if (!claimAutoAck(pane, hash)) {
     return
   }
-  autoAcked.set(pane, { hash, at: Date.now() })
   log(`startup prompt auto-acked on ${pane}: Codex hooks trust`)
   // Именно «2», а не Enter: курсор стоит на «Review hooks», и Enter уводит в разбор.
   await sendKeys(pane, '2').catch(() => {})
@@ -935,11 +955,9 @@ async function ackCodexHooksTrustScreen(pane: string, text: string): Promise<voi
 
 async function ackCodexStartupTrustScreen(pane: string, text: string): Promise<void> {
   const hash = fnv1a(text)
-  const prev = autoAcked.get(pane)
-  if (prev && prev.hash === hash && Date.now() - prev.at < AUTO_ACK_RETRY_MS) {
+  if (!claimAutoAck(pane, hash)) {
     return
   }
-  autoAcked.set(pane, { hash, at: Date.now() })
   log(`startup prompt auto-acked on ${pane}: Codex directory trust`)
   await sendKeys(pane, 'Enter').catch(() => {})
 }
