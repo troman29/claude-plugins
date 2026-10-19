@@ -211,6 +211,10 @@ describe('экран доверия хукам Codex', () => {
     expect(isCodexHooksTrustScreen(screen)).toBe(true)
   })
 
+  test('узнаём экран Codex 0.163 с новым подвалом', () => {
+    expect(isCodexHooksTrustScreen(screen.replace('Press enter to confirm or esc to go back', 'enter confirm · esc skip'))).toBe(true)
+  })
+
   test('экран доверия КАТАЛОГУ — не он (там свой обработчик и голый Enter)', () => {
     const dir = [
       '  Do you trust the contents of this directory?',

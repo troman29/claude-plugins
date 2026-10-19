@@ -69,7 +69,8 @@ export function isCodexStartupTrustScreen(text: string): boolean {
 export function isCodexHooksTrustScreen(text: string): boolean {
   return /hooks?\s+(need|needs)\s+review/i.test(text)
     && /^\s*[›>]?\s*2\.\s+Trust all and continue\s*$/mi.test(text)
-    && /press enter to confirm/i.test(text)
+    // 0.163 сменил подвал с «Press enter to confirm» на «enter confirm · esc skip»
+    && /\benter (to )?confirm\b/i.test(text)
 }
 
 // Codex спрашивает разрешение на КАЖДЫЙ вызов MCP-тула отдельно (это не тот гейт, что
