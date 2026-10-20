@@ -2365,12 +2365,19 @@ async function handleBgEvent(msg: Extract<StubToHub, { op: 'bg' }>): Promise<voi
 // PreCompact и на компакцию СУБАГЕНТА, с payload родительской сессии (без agent_id), — отличить
 // её от своей можно лишь по бару в пейне, поэтому у Claude пост ведёт только скрейп.
 async function handleCompactionEvent(msg: Extract<StubToHub, { op: 'compaction' }>): Promise<void> {
+  const reg = loadBindings()
   for (const key of msg.bindingKeys.filter(k => !adapterForKey(k).capabilities.compactionProgressInPane)) {
+    // Субагенты Codex — отдельные разговоры с тем же ключом биндинга: их сжатия не про топик.
+    const own = reg[key]?.sessionId
+    if (own && msg.sessionId && msg.sessionId !== own) {
+      log(`compaction: ${key} — чужой разговор ${msg.sessionId}, в чат не пишу`)
+      continue
+    }
     if (msg.phase !== 'start') {
       await compactions.finished(key)
       continue
     }
-    const bindingDir = loadBindings()[key]?.dir
+    const bindingDir = reg[key]?.dir
     if (!bindingDir) {
       continue
     }
