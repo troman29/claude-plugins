@@ -88,7 +88,7 @@ describe('Codex CLI adapter', () => {
   // Запуск всегда несёт `--ask-for-approval never` и полный доступ: за терминалом никого нет,
   // а первым же вопросом на одобрение становится наш собственный `reply` (см. describe ниже).
   test('builds deterministic new, resume and fork launches', () => {
-    const A = '--ask-for-approval never --sandbox danger-full-access'
+    const A = '--ask-for-approval never --sandbox danger-full-access --no-daemon'
     expect(buildCodexLaunch(['codex', '--no-alt-screen'], 'new').join(' ')).toBe(`codex ${A} --no-alt-screen`)
     expect(buildCodexLaunch(['codex', '--no-alt-screen'], 'resume', 'abc').join(' ')).toBe(`codex ${A} --no-alt-screen resume abc`)
     expect(buildCodexLaunch(['codex'], 'resume').join(' ')).toBe(`codex ${A} resume --last`)
@@ -227,12 +227,12 @@ describe('чему верить от живой сессии (mayLearn)', () => 
 describe('запуск Codex без запросов одобрения', () => {
   test('флаг добавляется к обычному старту', () => {
     expect(buildCodexLaunch(undefined, 'new').join(' '))
-      .toBe('codex --ask-for-approval never --sandbox danger-full-access')
+      .toBe('codex --ask-for-approval never --sandbox danger-full-access --no-daemon')
   })
 
   test('и к resume, перед подкомандой', () => {
     expect(buildCodexLaunch(['codex'], 'resume', 'abc').join(' '))
-      .toBe('codex --ask-for-approval never --sandbox danger-full-access resume abc')
+      .toBe('codex --ask-for-approval never --sandbox danger-full-access --no-daemon resume abc')
   })
 
   // Проверено на живой модалке Codex 0.147: она парсится пикер-мостом как обычный вопрос,
@@ -240,17 +240,22 @@ describe('запуск Codex без запросов одобрения', () => 
   test('с TELEGRAM_CODEX_APPROVALS спрашиваем в чате и оставляем песочницу', () => {
     process.env.TELEGRAM_CODEX_APPROVALS = '1'
     try {
-      expect(buildCodexLaunch(undefined, 'new').join(' ')).toBe('codex --ask-for-approval on-request')
+      expect(buildCodexLaunch(undefined, 'new').join(' ')).toBe('codex --ask-for-approval on-request --no-daemon')
     } finally {
       delete process.env.TELEGRAM_CODEX_APPROVALS
     }
   })
 
+  test('выученный argv с --no-daemon не получает его второй раз', () => {
+    expect(buildCodexLaunch(['codex', '--no-daemon'], 'new').join(' '))
+      .toBe('codex --ask-for-approval never --sandbox danger-full-access --no-daemon')
+  })
+
   test('чужой выбор не перетираем', () => {
     expect(buildCodexLaunch(['codex', '--ask-for-approval', 'on-request'], 'new').join(' '))
-      .toBe('codex --sandbox danger-full-access --ask-for-approval on-request')
+      .toBe('codex --sandbox danger-full-access --no-daemon --ask-for-approval on-request')
     expect(buildCodexLaunch(['codex', '-s', 'read-only'], 'new').join(' '))
-      .toBe('codex --ask-for-approval never -s read-only')
+      .toBe('codex --ask-for-approval never --no-daemon -s read-only')
   })
 })
 
@@ -260,8 +265,8 @@ describe('запуск Codex без запросов одобрения', () => 
 test('перезапуск не дублирует resume, если перед ним есть флаги', () => {
   const saved = ['codex', '--ask-for-approval', 'never', '--sandbox', 'danger-full-access', 'resume', '01a0-old']
   expect(buildCodexLaunch(saved, 'resume', '01a0-new').join(' '))
-    .toBe('codex --ask-for-approval never --sandbox danger-full-access resume 01a0-new')
-  expect(buildCodexLaunch(saved, 'new').join(' ')).toBe('codex --ask-for-approval never --sandbox danger-full-access')
+    .toBe('codex --no-daemon --ask-for-approval never --sandbox danger-full-access resume 01a0-new')
+  expect(buildCodexLaunch(saved, 'new').join(' ')).toBe('codex --no-daemon --ask-for-approval never --sandbox danger-full-access')
 })
 
 test('streaming draft reads only agent_message snapshots, never commentary or tools', () => {

@@ -1781,7 +1781,7 @@ function liveSkillMenu(token: string): { key: string; dir: string; names: string
   return undefined
 }
 
-// One-column skill buttons + a ◀ page/pages ▶ nav row (only when >1 page).
+// One-column skill buttons + a ◀ page/pages ▶ nav row (only when >1 page) + Close.
 function skillMenuKeyboard(token: string, names: string[], page: number): InlineKeyboard {
   const pages = Math.max(1, Math.ceil(names.length / SKILL_PAGE))
   const p = Math.min(Math.max(0, page), pages - 1)
@@ -1798,7 +1798,7 @@ function skillMenuKeyboard(token: string, names: string[], page: number): Inline
       kb.text('▶', `skpg:${token}:${p + 1}`)
     }
   }
-  return kb
+  return kb.row().text(t().btnClose, `skclose:${token}`)
 }
 
 // Type an agent-native skill invocation into every live pane, ack, and arm reply fallback.
@@ -5975,6 +5975,20 @@ bot.on('callback_query:data', async ctx => {
     log(`tui: ${view.bindingKey} key=${key}`)
     await ctx.answerCallbackQuery({ text: tuiKeyLabel(key) }).catch(() => {})
     setTimeout(() => void refreshLiveScreen(token!), TUI_REFRESH_AFTER_KEY_MS)
+    return
+  }
+  // skclose:<token> — убрать меню /skills. Сообщение удаляем по координатам из апдейта:
+  // после рестарта хаба токена может не быть, а кнопка у пользователя осталась.
+  const skc = /^skclose:(\d+)$/.exec(ctx.callbackQuery.data)
+  if (skc) {
+    skillMenus.delete(skc[1]!)
+    interactions.delete('skill-menu', skc[1]!)
+    const chatId = ctx.callbackQuery.message?.chat.id
+    const msgId = ctx.callbackQuery.message?.message_id
+    if (chatId != null && msgId != null) {
+      await bot.api.deleteMessage(chatId, msgId).catch(() => {})
+    }
+    await ctx.answerCallbackQuery({ text: t().toastClosed }).catch(() => {})
     return
   }
   // skpg:<token>:<page> — flip the /skills menu to another page (edit keyboard in place).

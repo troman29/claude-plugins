@@ -40,12 +40,16 @@ const SANDBOX_FLAGS = ['--sandbox', '-s', '--dangerously-bypass-approvals-and-sa
 // Тогда и песочница остаётся дефолтной: без неё спрашивать не о чем. Плата — round-trip в чат
 // на каждую команду вне рабочего каталога, поэтому по умолчанию выключено.
 const APPROVALS_IN_CHAT = ['--ask-for-approval', 'on-request']
+// С 0.163 сессия по умолчанию подключается к общему фоновому app-server, и MCP-стаб запускает
+// он, а не сессия: стаб не видит ни пейна, ни ключей биндинга и к топику не привязывается.
+const NO_DAEMON = '--no-daemon'
 
 function withDefaults(base: string[]): string[] {
   const inChat = process.env.TELEGRAM_CODEX_APPROVALS === '1'
   const flags = [
     ...(base.includes('--ask-for-approval') ? [] : inChat ? APPROVALS_IN_CHAT : NO_APPROVALS),
     ...(inChat || base.some(a => SANDBOX_FLAGS.includes(a)) ? [] : FULL_ACCESS),
+    ...(base.includes(NO_DAEMON) ? [] : [NO_DAEMON]),
   ]
   return flags.length ? [base[0]!, ...flags, ...base.slice(1)] : base
 }
