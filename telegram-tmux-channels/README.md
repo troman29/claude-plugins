@@ -92,9 +92,24 @@ That's a platform rule, not ours. The hub starts itself on the first session; no
 
 Now in Telegram: create a topic, send `/bind myproject`, and talk to it.
 
+### Multiplexer
+
+All agents live in one multiplexer session, one window per binding, named after it.
+
+- **tmux** (default): session `agents`. See everything with `tmux attach -t agents` and switch windows as
+  usual. Windows keep a fixed 200×100 size (`window-size manual`): attaching from a small terminal crops
+  your view instead of narrowing every agent, whose prompts the hub parses. A session from the
+  one-session-per-binding layout moves into `agents` as a window the first time the hub touches it; the
+  agent inside keeps running.
+- **herdr** (`TELEGRAM_MUX=herdr`): one [herdr](https://herdr.dev) session (`agents`), one workspace per
+  binding, so herdr's sidebar shows each agent as working, blocked or done. Attach with
+  `herdr session attach agents`. Without a client herdr panes are 120×40; set `headless_cols = 200` and
+  `headless_rows = 100` under `[server]` in `~/.config/herdr/config.toml`. herdr restores workspaces when its
+  server restarts, and the hub reuses them by name.
+
 ### Codex setup
 
-Codex uses the same hub, MCP tools, hooks, tmux sessions and state. Installing the Codex plugin
+Codex uses the same hub, MCP tools, hooks, multiplexer and state. Installing the Codex plugin
 registers its bundled Telegram MCP server automatically. For a standalone checkout without a
 plugin installation, register the stub once using its absolute path:
 
@@ -172,7 +187,7 @@ Sent in a bound topic or DM. These are handled by the bot and never reach the ag
 | Command | What it does |
 |---|---|
 | `/bind [claude\|codex] <folder>` | Bind this topic to a folder and agent (Claude by default) |
-| `/unbind` | Unbind and kill the tmux session it created |
+| `/unbind` | Unbind and close the window it created |
 | `/allow <id…>` | Let another Telegram user into this binding |
 | `/delete` | Unbind, tear down the worktree, and delete the topic itself — one move |
 | `/pin` · `/unpin` | Protect this session from idle-unload, or release it |
@@ -404,6 +419,8 @@ Environment, in `~/.claude/channels/telegram/.env`:
 | `TELEGRAM_CONTEXT_WARN_PCT` | `80` | Warn under a reply once the context window is this full; `0` disables |
 | `TELEGRAM_HUB_AUTOSPAWN` | `1` | `0` if you run the hub as a service instead |
 | `TELEGRAM_SCREEN_POLL_MS` | `300` | Pane detector interval (100–5000 ms); typing itself remains throttled |
+| `TELEGRAM_MUX` | `tmux` | Multiplexer for the agents: `tmux` or `herdr` (see Multiplexer below) |
+| `TELEGRAM_HERDR_SESSION` | `agents` | herdr session that holds the agents' workspaces |
 | `TELEGRAM_DEBUG_LOG` | `0` | `1` records all hub traffic to `screenlog.jsonl` (off by default — the plugin logs nobody's messages) |
 | `OPENAI_API_KEY` | — | Enables voice; without it voice is silently off |
 | `STT_OPENAI_MODEL` | `gpt-4o-transcribe` | Transcription model |
@@ -450,7 +467,7 @@ Details worth knowing, because they explain most of the behaviour:
   recognizes a TUI prompt, it posts buttons, and a tap is replayed as real keystrokes. There's
   no API for those prompts — this is a diff of the terminal.
 - **A session that is still starting is scraped too.** Its stub isn't connected yet, so the hub
-  scans the tmux session by name instead of by pane: trust prompts are answered for you, anything
+  scans the binding's window by name instead of by pane: trust prompts are answered for you, anything
   else (an old conversation asking whether to resume in full) goes to the chat as buttons. Without
   that, a modal nobody can see blocks the launch and the stub never comes up.
 - **One topic at a time, topics in parallel.** Updates run in per-topic lanes: a slow command

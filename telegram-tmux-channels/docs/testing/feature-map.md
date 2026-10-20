@@ -23,6 +23,7 @@
 | 16 | `pane-detectors` | детект компакции/воркфлоу/ошибок в `pollScreens` | `handleCompaction`/`handleWorkflow`/`handleErrors` | 🟡 (PD1 компакция прогресс→готово ✅ e2e, PD5 один пост на два источника ✅ e2e, PD4 анти-ложняк ✅ юнит; PD2 ошибки / PD3 workflow — e2e ⬜, парсеры юнитами ✅) |
 | 17 | `debug-log` | `screenlog.jsonl` — таймлайн, кольцо 1000, финальный текст | `logDebugEvent` | 🟡 (DL1 типы ✅, DL2 финальный payload ✅ — решил баг в voice, DL3 кольцо 1618→1000 ✅; DL4 off-by-default / DL5 несериализуемый — ⬜) |
 | 18 | `lifecycle-matrix` | сквозной жизненный цикл: матрица (биндинг × tmux × режим × папка × источник) и переходы `/bind` `/unbind` `/delete` `/resume` `/new` `/restart` `/stop`, удаление топика, ребут; + UX-разбор текстов | `spawnSession`, `teardownBinding`, `onTopicGone`, `reviveBoundSessions`, `handleOps`, `forkRiskPids` | 🟡 (LM7/LM49/LM51 ✅ Docker+MTProto; 4 P0 и остальные строки матрицы ещё требуют прогона) |
+| 19 | `mux` | интерфейс мультиплексора: tmux — окна сессии `agents` (перенос старых сессий, фиксированный размер), herdr — workspace на биндинг (восстановление после рестарта сервера) | `src/mux/`, обёртки в `tmux-ops.ts`, `prestartTarget` | 🟢 (MX1–MX4, MX6–MX8, MX10, MX12 ✅ Docker+MTProto на обоих бэкендах; MX5 пикер и MX9 рестарт хаба посреди хода — косвенно) |
 
 Порядок прохода — по приоритету/свежести (сначала то, что недавно трогали и где уже были баги:
 `live-views`, `restart-persistence`, `skills`, `picker-bridge`).

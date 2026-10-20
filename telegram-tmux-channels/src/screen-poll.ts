@@ -8,13 +8,6 @@ export function uniqueByPane<T extends { pane: string }>(rows: T[]): T[] {
   return rows.filter(row => !seen.has(row.pane) && !!seen.add(row.pane))
 }
 
-/** Ключ живого пейна tmux (`%12`). Предстартовый пикер висит на цели сессии (`=имя:`), и
- *  почистить его «раз пейна нет в снимке» нельзя: снимок его не содержит никогда, а снос
- *  каждый тик означал бы пересылку кнопок в чат по три раза в секунду. */
-export function isLivePaneKey(key: string): boolean {
-  return key.startsWith('%')
-}
-
 /** Придержанное сообщение пора выбросить? `date` — время самого сообщения (секунды Telegram).
  *  Даты нет — НЕ протухшее: «не знаю когда» не повод выбросить молча. */
 export function isHeldTooLong(date: number | undefined, now: number, maxMs: number): boolean {

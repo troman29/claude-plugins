@@ -64,7 +64,8 @@ import { CompactionPosts } from './compaction'
 import { ProgressPost } from './progress-post'
 import { AnswerStream } from './answer-stream'
 import { literalSendText } from './literal-send'
-import { isHeldTooLong, isLivePaneKey, screenPollMs, uniqueByPane } from './screen-poll'
+import { isHeldTooLong, screenPollMs, uniqueByPane } from './screen-poll'
+import { mux } from './mux'
 import { cronHold, type SessionCron } from './session-crons'
 import { startupAckKey } from './startup-ack'
 import { WORKFLOW_SUBAGENT } from './hook-normalize'
@@ -1565,7 +1566,7 @@ if (recoveredPickers.size > 0) {
 /** Цель tmux для сессии, у которой ещё нет стаба: пейн назвать некому, адресуем всю сессию.
  *  Один вид ключа на всех — скан, чистилку и проверку «чей это пейн» нельзя разъехать. */
 function prestartTarget(tmuxName: string): string {
-  return `=${tmuxName}:`
+  return mux().prestartTarget(tmuxName)
 }
 
 function paneBelongsToKey(pane: string, key: string): boolean {
@@ -2506,14 +2507,14 @@ async function pollScreens(): Promise<void> {
   // без правки сообщения кнопки в чате остаются живыми на вид, а тап по ним отвечает «пикер
   // закрыт». Ровно так 22.08 повис confirm выхода — его в терминале дожал сам stopSession.
   for (const pane of [...activePickers.keys()]) {
-    if (isLivePaneKey(pane) && !seen.has(pane)) {
+    if (mux().isPaneId(pane) && !seen.has(pane)) {
       closeAbandonedPicker(pane)
     }
   }
   for (const pane of [...lastPaneText.keys()]) if (!seen.has(pane)) lastPaneText.delete(pane)
   // Binding-scoped startup acknowledgements bridge the pre-stub tmux target and post-stub pane.
   // Keep them through that transition; only ephemeral pane-scoped fallbacks follow `seen`.
-  for (const pane of [...autoAcked.keys()]) if (isLivePaneKey(pane) && !seen.has(pane)) autoAcked.delete(pane)
+  for (const pane of [...autoAcked.keys()]) if (mux().isPaneId(pane) && !seen.has(pane)) autoAcked.delete(pane)
   void ackStartupPromptsOnBoundPanes() // panes with no stub yet (stuck on a startup prompt)
   // Пейны с ошибками НЕ чистим по «не видели в этом тике»: на старте хаба стабы ещё не
   // подключились, и такая чистка стирала как раз то, ради чего запись и переживает рестарт.
@@ -3061,7 +3062,7 @@ async function agentRunsInPane(key: string, binding: BindingEntry): Promise<bool
   if (!(await hasTmuxSession(name).catch(() => false))) {
     return false
   }
-  return adapterForBinding(binding).isPaneCommand(await paneCurrentCommand(`=${name}:`).catch(() => ''))
+  return adapterForBinding(binding).isPaneCommand(await paneCurrentCommand(prestartTarget(name)).catch(() => ''))
 }
 
 async function waitForBinding(key: string, timeoutMs: number): Promise<Socket<undefined>[]> {
@@ -3451,7 +3452,7 @@ async function spawnSession(
   try {
     const created = await ensureTmuxSession(name, binding.dir)
     if (!created) {
-      const command = await paneCurrentCommand(`=${name}:`).catch(() => '')
+      const command = await paneCurrentCommand(prestartTarget(name)).catch(() => '')
       if (adapter.isPaneCommand(command)) {
         log(`spawn refused: ${key} has an unconnected ${adapter.kind} in ${name}`)
         say(t().tmuxForeignAgent(escHtml(command || adapter.displayName)))
@@ -3463,7 +3464,7 @@ async function spawnSession(
       say(t().conversationGone)
     }
     chatter(t().sessionFolder(codePath(binding.dir)))
-    await typeLine(`=${name}:`, launchLine({ keys: [key], mode: launchMode, ...(resumeId ? { sessionId: resumeId } : {}) }))
+    await typeLine(prestartTarget(name), launchLine({ keys: [key], mode: launchMode, ...(resumeId ? { sessionId: resumeId } : {}) }))
     launchIssued = true
     armBringUp(key) // с этой секунды подъём под сторожем — снимет его handshake стаба
     // A broken launch must not wedge future retries forever. Successful launches
@@ -4508,7 +4509,7 @@ async function inboundPane(key: string, dir: string, adapter: AgentAdapter): Pro
   }
   const binding = loadBindings()[key]
   return binding && await hasTmuxSession(sessionName(key, binding)).catch(() => false)
-    ? `=${sessionName(key, binding)}:`
+    ? prestartTarget(sessionName(key, binding))
     : undefined
 }
 

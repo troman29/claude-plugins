@@ -16,6 +16,7 @@ import { SOCK_PATH, STATE_DIR } from './paths'
 import { encode, makeLineDecoder, type StubToHub, type HubToStub, type RpcMethod, type SessionInfo } from './protocol'
 import { findAgentAncestor, cwdOf, envOf } from './proc'
 import { shouldAutospawnHub } from './hub-autospawn'
+import { paneFromAnyEnv } from './mux'
 
 const log = (s: string) => process.stderr.write(`telegram stub: ${s}\n`)
 
@@ -60,7 +61,7 @@ const session: SessionInfo = (() => {
   // Claude forwards both values to its channel process. Codex 0.147 starts MCP children
   // with a sanitised environment, but keeps them on the interactive parent; recover there.
   const inherited = (key: string) => process.env[key] ?? (agent ? envOf(agent.pid, key) : undefined)
-  const pane = inherited('TMUX_PANE')
+  const pane = paneFromAnyEnv(inherited)
   const cwd = (agent ? cwdOf(agent.pid) : undefined) ?? process.cwd()
   const bindingKeys = inherited('TELEGRAM_BINDING_KEYS')?.split(',').map(s => s.trim()).filter(Boolean)
   return {

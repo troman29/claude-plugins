@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { isHeldTooLong, isLivePaneKey, screenPollMs, uniqueByPane } from '../src/screen-poll'
+import { isHeldTooLong, screenPollMs, uniqueByPane } from '../src/screen-poll'
 
 describe('fast screen polling', () => {
   test('defaults to 300ms (5x faster than the legacy 1500ms)', () => {
@@ -18,12 +18,6 @@ describe('fast screen polling', () => {
   })
 })
 
-describe('чистилка тика', () => {
-  test('владеет только живыми пейнами, предстартовую цель сессии не трогает', () => {
-    expect(isLivePaneKey('%12')).toBe(true)
-    expect(isLivePaneKey('=homelab---100-42:')).toBe(false)
-  })
-})
 
 describe('срок жизни придержанного сообщения', () => {
   const HOURS_6 = 6 * 60 * 60_000

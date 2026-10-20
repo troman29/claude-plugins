@@ -34,6 +34,9 @@ ENV PATH=/home/user/.bun/bin:/home/user/.local/bin:$PATH
 # bun (runs the hub) + Claude Code (native installer, same as the host)
 RUN curl -fsSL https://bun.sh/install | bash
 RUN curl -fsSL https://claude.ai/install.sh | bash
+# herdr — второй бэкенд мультиплексора (TELEGRAM_MUX=herdr). В /usr/local/bin: домашний каталог
+# в контейнере перекрыт томом, и всё, что установщик кладёт в ~/.local/bin, оттуда не видно.
+RUN curl -fsSL https://herdr.dev/install.sh | sh && sudo mv /home/user/.local/bin/herdr /usr/local/bin/herdr
 
 # The hub code is bind-mounted at run time (so host edits are testable live) — see
 # docker-compose.yml. Auth + per-session state live in the persistent home volume.

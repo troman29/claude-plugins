@@ -1,5 +1,6 @@
 // tmux ops: commands from Telegram → keystrokes into the session's pane. The hub
 // lives outside claude, so /restart runs inline (graceful /exit → wait → relaunch).
+import { mux } from './mux'
 
 export type OpsCommand =
   | 'compact' | 'clear' | 'esc' | 'enter' | 'restart' | 'restart_all' | 'resume' | 'new' | 'fork' | 'status' | 'doctor'
@@ -239,9 +240,6 @@ export const DEFAULT_CLAUDE_ARGV = (
   .split(/\s+/)
   .filter(Boolean)
 
-// Нет systemd-run — значит нет и systemd (macOS, контейнер): tmux-сервер тогда стартует без своего scope.
-const SYSTEMD_RUN = Bun.which('systemd-run')
-
 const CHANNEL_FLAGS = new Set(['--channels', '--dangerously-load-development-channels'])
 
 export function stripChannelFlags(argv: string[]): string[] {
@@ -283,24 +281,13 @@ export type LaunchMode = 'resume' | 'new' | 'fork'
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
-async function tmux(...args: string[]): Promise<void> {
-  const proc = Bun.spawn(['tmux', ...args], { stdout: 'ignore', stderr: 'pipe' })
-  if ((await proc.exited) !== 0) {
-    throw new Error(`tmux ${args.join(' ')} failed: ${await new Response(proc.stderr).text()}`)
-  }
-}
-
 export async function sendKeys(pane: string, ...keys: string[]): Promise<void> {
-  await tmux('send-keys', '-t', pane, ...keys)
+  await mux().sendKeys(pane, ...keys)
 }
 
 /** The foreground command is a safety signal, not a process inventory. */
 export async function paneCurrentCommand(pane: string): Promise<string> {
-  const proc = Bun.spawn(['tmux', 'display-message', '-p', '-t', pane, '#{pane_current_command}'], {
-    stdout: 'pipe', stderr: 'ignore',
-  })
-  await proc.exited
-  return (await new Response(proc.stdout).text()).trim()
+  return mux().currentCommand(pane)
 }
 
 const TYPE_ENTER_GAP_MS = 500
@@ -336,7 +323,7 @@ export async function typeLine(pane: string, text: string): Promise<void> {
   // Claude Code's TUI can eat a rapid-fire Enter as a newline instead of submit
   // (ccgram learned this) — let the text settle before Enter.
   await sleep(TYPE_ENTER_GAP_MS)
-  await tmux('send-keys', '-t', pane, 'Enter')
+  await sendKeys(pane, 'Enter')
 }
 
 /** Type into an already focused inline field without submitting it. */
@@ -344,7 +331,7 @@ export async function typeText(pane: string, text: string): Promise<void> {
   // tmux limits command size in bytes. Unicode-aware chunks stay below 4 KB
   // even for emoji, without splitting surrogate pairs or dropping newlines.
   for (const chunk of text.match(/[\s\S]{1,1000}/gu) ?? []) {
-    await tmux('send-keys', '-t', pane, '-l', '--', chunk)
+    await mux().typeLiteral(pane, chunk)
   }
 }
 
@@ -357,9 +344,9 @@ export async function typeText(pane: string, text: string): Promise<void> {
 export async function typeSlashCommand(pane: string, text: string): Promise<void> {
   await typeText(pane, text)
   await sleep(TYPE_ENTER_GAP_MS)
-  await tmux('send-keys', '-t', pane, 'Escape') // dismiss the "/" autocomplete popup, keep the text
+  await sendKeys(pane, 'Escape') // dismiss the "/" autocomplete popup, keep the text
   await sleep(150)
-  await tmux('send-keys', '-t', pane, 'Enter')
+  await sendKeys(pane, 'Enter')
 }
 
 // A picker's numbered options are footer'd "Enter to select · ↑/↓ to navigate" — the
@@ -373,71 +360,39 @@ export async function selectOption(pane: string, index: number): Promise<void> {
   await sendKeys(pane, 'Enter')
 }
 
+// Окно биндинга в мультиплексоре хоста (src/mux): имена прежние — их зовёт весь хаб.
 export async function hasTmuxSession(name: string): Promise<boolean> {
-  const proc = Bun.spawn(['tmux', 'has-session', '-t', `=${name}`], {
-    stdout: 'ignore',
-    stderr: 'ignore',
-  })
-  return (await proc.exited) === 0
+  return mux().has(name)
 }
 
-// idempotent — used after a worktree delete so a leftover session (bare shell or a
+// idempotent — used after a worktree delete so a leftover window (bare shell or a
 // still-running claude) doesn't linger with its cwd pointed at a now-deleted directory
 export async function killTmuxSession(name: string): Promise<void> {
-  await tmux('kill-session', '-t', `=${name}`).catch(() => {})
+  await mux().kill(name)
 }
+
+// Сессии мультиплексора tmux не допускал двух с одним именем — дубль отбивал сам `new-session`.
+// Окна и workspace такого замка не дают: два одновременных подъёма одного биндинга (ревайв и
+// входящее) создавали бы два окна-тёзки. Замок по имени держит один `ensure` на окно.
+const ensuring = new Map<string, Promise<boolean>>()
 
 export async function ensureTmuxSession(name: string, dir: string): Promise<boolean> {
-  if (await hasTmuxSession(name)) {
+  const running = ensuring.get(name)
+  if (running) {
+    await running
     return false
   }
-  await spawnDetachedTmuxServer(name, dir)
-  await sleep(700) // let the shell come up before send-keys
-  return true
+  const attempt = mux().ensure(name, dir).finally(() => ensuring.delete(name))
+  ensuring.set(name, attempt)
+  return attempt
 }
 
-// detached tmux defaults to 80×24 — TUI pickers (e.g. /resume) get squeezed onto 1 line;
-// set a sane size; on attach the client's size takes over anyway
-const DETACHED_SIZE = ['-x', '200', '-y', '100']
-
-// A first `tmux new-session` for a brand-new server is a direct child of this process — left
-// alone it inherits OUR systemd cgroup, so a hub restart/crash (KillMode=control-group, the
-// default) takes down the tmux server and every session/pane hanging off it, hub-unrelated work
-// included. systemd-run --scope gives the server its own cgroup, independent of ours. Without it
-// (e.g. macOS) — plain spawn; launchd doesn't cgroup-kill children this way, so the risk this
-// guards against doesn't apply there.
-async function spawnDetachedTmuxServer(name: string, dir: string): Promise<void> {
-  if (!SYSTEMD_RUN) {
-    await tmux('new-session', '-d', ...DETACHED_SIZE, '-s', name, '-c', dir)
-    return
-  }
-  const unit = `tmux-server-${name.replace(/[^\w.-]/g, '-')}`
-  const proc = Bun.spawn(
-    [SYSTEMD_RUN, '--user', '--scope', '--collect', `--unit=${unit}`, '--', 'tmux', 'new-session', '-d', ...DETACHED_SIZE, '-s', name, '-c', dir],
-    { stdout: 'ignore', stderr: 'pipe' },
-  )
-  if ((await proc.exited) !== 0) {
-    throw new Error(`tmux new-session (detached) failed: ${await new Response(proc.stderr).text()}`)
-  }
-}
-
-// like capturePane, but with ANSI codes (-e) — raw material for the /screen PNG render
 export async function capturePaneAnsi(pane: string): Promise<string> {
-  const proc = Bun.spawn(['tmux', 'capture-pane', '-e', '-p', '-t', pane], {
-    stdout: 'pipe',
-    stderr: 'ignore',
-  })
-  await proc.exited
-  return await new Response(proc.stdout).text()
+  return mux().capture(pane, { ansi: true })
 }
 
 export async function capturePane(pane: string): Promise<string> {
-  const proc = Bun.spawn(['tmux', 'capture-pane', '-p', '-t', pane], {
-    stdout: 'pipe',
-    stderr: 'ignore',
-  })
-  await proc.exited
-  return await new Response(proc.stdout).text()
+  return mux().capture(pane)
 }
 
 // A line that carries no reading value on its own: blank, or made only of box-drawing / rule
