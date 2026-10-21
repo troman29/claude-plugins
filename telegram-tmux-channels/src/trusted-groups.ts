@@ -72,6 +72,9 @@ export function loadTrustedGroups(): Record<string, TrustedGroupConfig> {
   return out
 }
 
+// У сообщений General нет message_thread_id, а сам топик в Telegram — номер 1: по нему его и исключают.
+export const GENERAL_TOPIC_ID = 1
+
 export function isExcludedTopic(cfg: TrustedGroupConfig, topicId: number, topicName: string): boolean {
   if (cfg.exclude?.topicIds?.includes(topicId)) {
     return true

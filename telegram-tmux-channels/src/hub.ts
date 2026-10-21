@@ -39,7 +39,7 @@ import { bySendTime, clampLines, clampTail, rmQuiet } from './util'
 import { parsePicker, CHAT_ABOUT_INDEX, checkedIndexes, pickerCursorIndex, textBeforePicker, fnv1a, hasPickerFooter, isStartupTrustPrompt, trustOptionIndex, isCodexStartupTrustScreen, isCodexHooksTrustScreen, isCodexOwnToolApproval, type Picker } from './picker'
 import { buildKeyboard, confirmAfterDigit, downsToChatAbout, parseCallback } from './picker-drive'
 import {
-  loadTrustedGroups, isExcludedTopic, slugFromTopicName, modeLabel,
+  loadTrustedGroups, isExcludedTopic, slugFromTopicName, modeLabel, GENERAL_TOPIC_ID,
   type TrustedGroupConfig, type TrustedGroupMode,
 } from './trusted-groups'
 import { modeButtons } from './mode-picker'
@@ -4293,6 +4293,12 @@ async function handleInbound(inbound: Inbound): Promise<void> {
         await handleLateTopic(key, chat_id, threadId, trustedCfg, `topic-${threadId}`, say)
         return
       }
+    }
+    // General доверенной группы, исключённый в её конфиге, — болталка: кнопки «привязать» там лишние.
+    const groupCfg = threadId == null ? loadTrustedGroups()[chat_id] : undefined
+    if (groupCfg && isExcludedTopic(groupCfg, GENERAL_TOPIC_ID, '')) {
+      log(`drop (General excluded): key=${key} from=${senderId}`)
+      return
     }
     if (isAdmin(senderId) && bindOffersWelcome(chat_id)) {
       log(`unbound: offering folders key=${key} from=${senderId}`)

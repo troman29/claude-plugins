@@ -271,6 +271,14 @@ only to narrow that down:
 [ ✏️ Own folder ]
 ```
 
+Topics the group keeps for people go in `exclude`: no session, no mode question. General is topic
+`1` — listing it keeps a group's chatter out of the bot's way, so General messages get no folder
+buttons either:
+
+```jsonc
+"exclude": { "topicIds": [1, 47], "nameContains": ["🔒"] }   // per group in trusted-groups.json
+```
+
 Tapping the harness rewrites that one button; tapping a mode then starts the session with
 whatever harness is showing. Only one harness installed (or pinned) — no extra row. A group
 `cmdline` is carried into the binding only when it belongs to the chosen harness, so a Codex
