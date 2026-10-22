@@ -27,6 +27,8 @@ MCP_NAME = 'telegram-mcp'
 SERVICE = ('⏳', '🪟', '🆕', '🚀', '💀', '📁', '▶️', '🗜', '🤖', '📋', '📝', '⚙️', '🔀', '🧩', '⚠️', '✅')
 ANSWER = 'пинг'
 PROMPT = f'ответь ровно одним словом: {ANSWER}'
+NEW_SESSION = '🆕'
+SESSION_CHOICE_WAIT_S = 20
 
 
 def mcp_config(path=os.path.expanduser('~/.claude.json')):
@@ -99,6 +101,12 @@ def messages(mcp, chat, limit=20):
     return raw.get('results', []) if isinstance(raw, dict) else []
 
 
+def from_bot(message):
+    # По username, а не по имени отправителя: имя бота меняют («Clod Tmux Lab 🧪»), а
+    # username бота Telegram обязывает кончаться на «bot».
+    return message.get('username', '').lower().endswith('bot')
+
+
 def wait_for(fn, timeout, step=3, what='условия'):
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -137,13 +145,13 @@ def exchange(mcp, chat, tid, agent, reply_timeout, prompt=PROMPT):
     start = time.time()
     prompt_id = wait_for(
         lambda: next((m['id'] for m in messages(mcp, chat, 15)
-                      if m.get('text') == prompt and 'bot' not in m.get('sender', '').lower()), None),
+                      if m.get('text') == prompt and not from_bot(m)), None),
         30, step=2, what='своего промпта в ленте')
 
     def answers():
         out = []
         for m in messages(mcp, chat, 25):
-            if 'bot' not in m.get('sender', '').lower():
+            if not from_bot(m):
                 continue
             if m.get('id', 0) <= prompt_id:
                 continue
@@ -164,6 +172,24 @@ def exchange(mcp, chat, tid, agent, reply_timeout, prompt=PROMPT):
         if m['text'].startswith('❓'):
             problems.append(f'вместо ответа вопрос-пикер (id {m["id"]})')
     return int(time.time() - start), problems
+
+
+def start_new_if_asked(mcp, chat, after_id):
+    """В папке стенда живут прошлые разговоры, и хаб спрашивает, какой поднять. Смоук
+    проверяет подъём с нуля — жмём «новая сессия»."""
+    def choice():
+        kb = buttons(mcp, chat)
+        if kb.get('message_id', 0) <= after_id:
+            return None
+        texts = [b['text'] for b in kb.get('results', [])]
+        return (kb['message_id'], texts) if any(t.startswith(NEW_SESSION) for t in texts) else None
+    try:
+        msg_id, texts = wait_for(choice, SESSION_CHOICE_WAIT_S, step=2, what='вопроса о сессии')
+    except AssertionError:
+        return
+    idx = next(i for i, t in enumerate(texts) if t.startswith(NEW_SESSION))
+    mcp.call('press_inline_button', chat_id=chat, message_id=msg_id, button_index=idx)
+    print('  хаб спросил, какую сессию поднять: выбрана новая')
 
 
 def run(mcp, chat, agent, reply_timeout, case='folder'):
@@ -197,6 +223,7 @@ def run(mcp, chat, agent, reply_timeout, case='folder'):
     mode_idx = pick_mode(opts, case)
     mcp.call('press_inline_button', chat_id=chat, message_id=pick_id, button_index=mode_idx)
     print(f'  выбран {want} + {opts[mode_idx]}')
+    start_new_if_asked(mcp, chat, pick_id)
 
     took, problems = exchange(mcp, chat, tid, agent, reply_timeout)
 

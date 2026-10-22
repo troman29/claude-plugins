@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'fs'
 import { join } from 'path'
-import { parsePicker, trustOptionIndex, textBeforePicker, checkedIndexes, pickerCursorIndex, paneReady, isStartupTrustPrompt, isCodexStartupTrustScreen, isCodexHooksTrustScreen, isCodexOwnToolApproval } from '../src/picker'
+import { parsePicker, trustOptionIndex, textBeforePicker, checkedIndexes, pickerCursorIndex, paneReady, isStartupTrustPrompt, isCodexStartupTrustScreen, isCodexHooksTrustScreen, isCodexOwnToolApproval, hasPickerFooter } from '../src/picker'
 
 const fx = (name: string) => readFileSync(join(import.meta.dir, 'fixtures', name), 'utf8')
 
@@ -95,6 +95,21 @@ describe('parsePicker', () => {
   test('Codex --no-daemon «Folder access» in a worktree: Quit instead of Agent Command Center', () => {
     const trust = `  Folder access\n\n  /home/user/projects/agentek-console/.claude/worktrees/dostupnost\n\n  Note: You’re in a subdirectory of a Git project. Trusting will apply to the repository root:\n  /home/user/projects/agentek-console\n\n  Trust this folder? Codex can read, edit, and run files here, subject to your permission settings.\n\n› 1. Trust and continue\n  2. Quit\n\n  enter continue · esc quit`
     expect(isCodexStartupTrustScreen(trust)).toBe(true)
+  })
+  test('Codex 0.163 /model menu with the compact «enter select · esc back» footer', () => {
+    const pane = `  Select Model and Effort\n  1. GPT-6.1-Sol            Latest workhorse model.\n› 2. GPT-6-Sol (current)    Previous generation workhorse model.\n  3. GPT-6-Luna             Fast and affordable model.\n  enter select · esc back`
+    expect(hasPickerFooter(pane)).toBe(true)
+    expect(parsePicker(pane)?.options.map(o => o.label)).toEqual(['GPT-6.1-Sol', 'GPT-6-Sol (current)', 'GPT-6-Luna'])
+  })
+  test('Codex 0.163 effort stage: a middle hint in the compact footer', () => {
+    const pane = `  Select Reasoning Level for GPT-5.6 Luna\n  1. Low               Fast responses\n› 2. Medium (default)  Balanced reasoning\n  3. High              Greater depth\n  enter default · s session · esc back`
+    expect(parsePicker(pane)?.options).toHaveLength(3)
+  })
+  test('scrolled Codex list: ↑/↓ markers are neither options nor title', () => {
+    const pane = fx('codex-0163-model-scrolled.txt')
+    const picker = parsePicker(pane)!
+    expect(picker.options.map(o => o.index)).toEqual([8, 9, 10, 11, 12, 13, 14, 15])
+    expect(picker.title).toEndWith('Select Model and Effort')
   })
   test('Codex 0.147 /model picker: go-back footer and descriptions', () => {
     const pane = `  Select Model and Effort\n  Access legacy models through config.toml\n\n› 1. gpt-5.6-sol (current)  Latest frontier model.\n  2. gpt-5.6-terra          Balanced model.\n  3. gpt-5.6-luna           Fast model.\n\n  Press enter to confirm or esc to go back`

@@ -82,6 +82,37 @@ if command -v codex >/dev/null 2>&1; then
   fi
 fi
 
+# Модели стенд берёт через Sub2API, как машины команды: свои ключи стенда приходят из docker.env.
+# Claude читает endpoint и ключ из ~/.claude/claude.env, который tgc-run подгружает перед запуском.
+if [ -n "${SUB2API_CLAUDE_KEY:-}" ]; then
+  umask 077
+  printf 'export ANTHROPIC_BASE_URL="%s"\nexport ANTHROPIC_AUTH_TOKEN="%s"\nexport DISABLE_AUTOUPDATER="1"\n' \
+    "$SUB2API_URL" "$SUB2API_CLAUDE_KEY" > ~/.claude/claude.env
+  umask 022
+fi
+# Codex: провайдер sub2api в config.toml — свой блок, как у роли dev-host.
+if [ -n "${SUB2API_CODEX_KEY:-}" ]; then
+  python3 - "$SUB2API_URL" <<'PY'
+import os, re, sys
+url = sys.argv[1]
+path = os.path.expanduser("~/.codex/config.toml")
+cfg = open(path).read() if os.path.exists(path) else ""
+cfg = re.sub(r'^model_provider = .*\n', '', cfg, flags=re.M)
+cfg = re.sub(r'# BEGIN STAND: sub2api provider\n.*?# END STAND: sub2api provider\n', '', cfg, flags=re.S)
+block = (
+    '# BEGIN STAND: sub2api provider\n'
+    '[model_providers.sub2api]\n'
+    'name = "Sub2API"\n'
+    f'base_url = "{url}/v1"\n'
+    'wire_api = "responses"\n'
+    f'model_catalog_url = "{url}/v1/models"\n'
+    'env_key = "SUB2API_CODEX_KEY"\n'
+    '# END STAND: sub2api provider\n'
+)
+open(path, "w").write('model_provider = "sub2api"\n' + cfg.rstrip('\n') + '\n\n' + block)
+PY
+fi
+
 # Note: `--permission-mode bypassPermissions` still shows a one-time "accept" prompt per
 # session that has no config toggle; the hub's ackStartupPrompts only presses Enter (which
 # would pick "No"). Until that's handled hub-side, accept it once via the pane if a spawned

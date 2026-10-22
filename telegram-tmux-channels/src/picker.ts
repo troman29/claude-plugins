@@ -4,6 +4,8 @@
 const OPTION_RE = /^\s*[❯›]?\s*(\d+)\.\s+(.*)$/
 /** Пункт без номера («Chat about this» в раскладке с превью): жмётся стрелками, не цифрой. */
 export const CHAT_ABOUT_INDEX = 0
+// Длинный список Codex прокручивается и метит скрытое строками «↑»/«↓»: это не пункт и не заголовок.
+const SCROLL_MARKER_RE = /^\s*[↑↓]\s*$/
 const CHECKBOX_RE = /^\[[ ✔xX]\]\s*/
 // Пункт «впиши свой ответ» — распознаём ЦЕЛИКОМ по подписи, а не по подстроке: прежнее
 // /type something|other|custom|own/ ловило «owner/admin», «another», «customer» и съедало
@@ -11,7 +13,9 @@ const CHECKBOX_RE = /^\[[ ✔xX]\]\s*/
 // рекомендованный пункт у живого вопроса.
 const CUSTOM_RE = /^(?:type something\b.*|other|custom(?: answer| option)?|(?:my )?own(?: answer)?)\.?$/i
 export const FOOTER = 'Esc to cancel' // общий признак «в пейне открыт модальный диалог»
-const FOOTER_RE = /esc to (?:cancel|go back)/i
+// Codex 0.163 сжал подвал меню до «enter select · esc back» (бывает и с пунктами посередине:
+// «enter default · s session · esc back»); ушёл экран — ушёл и подвал.
+const FOOTER_RE = /esc to (?:cancel|go back)|^\s*enter \w+(?: · \w+ \w+)* · esc \w+\s*$/im
 // Стартовые гейты Codex (доверие каталогу, доверие хукам, «вышло обновление») — та же
 // нумерованная модалка, но подвал у неё другой. Разбор принимает оба подвала: иначе такой
 // экран не превращается в кнопки и висит в пейне, пока кто-нибудь не сядет за терминал.
@@ -294,7 +298,7 @@ export function parsePicker(text: string): Picker | undefined {
 }
 
 function parseNumberedPicker(text: string): Picker | undefined {
-  const lines = text.split('\n')
+  const lines = text.split('\n').filter(line => !SCROLL_MARKER_RE.test(line))
   let lastIdx = lines.length - 1
   while (lastIdx >= 0 && !lines[lastIdx].trim()) {
     lastIdx--

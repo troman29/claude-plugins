@@ -2671,14 +2671,33 @@ const QUEUED_ACK_MS = 800
 // у Codex дорисовывается за ~300 мс.
 const DIGIT_SETTLE_MS = 500
 
+// Цифра выбирает пункт сразу: у «14» Codex берёт пункт 1, а «4» уходит в поле ввода сообщением.
+const MAX_DIGIT_OPTION = 9
+
 function chooseOption(pane: string, index: number, tappedHash: string): Promise<void> {
   return paneInput.run(pane, async () => {
+    if (index > MAX_DIGIT_OPTION) {
+      await moveCursorTo(pane, index)
+      await sendKeys(pane, 'Enter')
+      return
+    }
     await sendKeys(pane, String(index))
     await new Promise(resolve => setTimeout(resolve, DIGIT_SETTLE_MS))
     if (confirmAfterDigit(parsePicker(await capturePane(pane).catch(() => '')), tappedHash)) {
       await sendKeys(pane, 'Enter')
     }
   })
+}
+
+async function moveCursorTo(pane: string, index: number): Promise<void> {
+  const cursor = pickerCursorIndex(await capturePane(pane))
+  if (cursor == null) {
+    throw new Error(`picker on ${pane}: no cursor to walk from to option ${index}`)
+  }
+  const key = index > cursor ? 'Down' : 'Up'
+  for (let step = 0; step < Math.abs(index - cursor); step++) {
+    await sendKeys(pane, key)
+  }
 }
 
 /** Закрыть слежение за ОТВЕЧЕННЫМ пикером. Пока ответ печатался, на его месте мог открыться
@@ -3090,11 +3109,13 @@ function sessionName(key: string, binding: BindingEntry): string {
   return binding.tmux ?? tmuxSessionName(basename(binding.dir), key)
 }
 
-/** Свободное имя tmux: тёзка из другого топика не должен получить чужую сессию. */
+/** Свободное имя окна: тёзка из другого топика не должен получить чужое. Занятым считается и
+ *  имя биндинга без окна — топик, ждущий ответа «какую сессию поднять», окна ещё не имеет. */
 async function freeTmuxName(base: string): Promise<string> {
+  const reserved = new Set(Object.values(loadBindings()).map(binding => binding?.tmux))
   for (let n = 1; n < 20; n++) {
     const name = n === 1 ? base : `${base}-${n}`
-    if (!(await hasTmuxSession(name).catch(() => false))) {
+    if (!reserved.has(name) && !(await hasTmuxSession(name).catch(() => false))) {
       return name
     }
   }
