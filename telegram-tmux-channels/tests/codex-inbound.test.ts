@@ -37,6 +37,11 @@ describe('codexInboundState', () => {
     expect(codexInboundState(pane, 'delivery_id="d5"')).toBeUndefined()
   })
 
+  test('длинный ввод, свёрнутый в плашку вставки, — draft: метка спрятана под плашкой', () => {
+    const pane = '• Проверил production.\n› [Pasted Content 1344 chars] не означает новый OOM в 18:00.\n  закрой ему вкладки снова\n  GPT-6 Sol medium · ~/projects/x\n'
+    expect(codexInboundState(pane, 'delivery_id="d7"')).toBe('draft')
+  })
+
   test('чужая метка не засчитывается', () => {
     expect(codexInboundState(fx('codex-0154-pending-while-working.txt'), 'delivery_id="other"')).toBeUndefined()
   })

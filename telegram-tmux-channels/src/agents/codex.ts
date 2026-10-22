@@ -350,14 +350,17 @@ export function codexInboundReady(pane: string): boolean {
 /** Где в пейне впечатанное сообщение с меткой `needle`: `pending` — Codex принял его и держит
  *  до вызова тула (строка `↳`), `draft` — текст стоит в поле ввода неотправленным (Enter
  *  проглотила вставка). Иначе `undefined`. */
+const PASTED_RE = /\[Pasted Content \d+ chars\]/
+
 export function codexInboundState(pane: string, needle: string): 'pending' | 'draft' | undefined {
   const lines = pane.split('\n').map(s => s.trim())
   if (lines.some(line => line.startsWith('↳') && line.includes(needle))) {
     return 'pending'
   }
   // Отправленные реплики в истории тоже начинаются с `›`, поле ввода — самая нижняя из них.
-  const prompts = lines.filter(line => line.startsWith('›'))
-  return prompts[prompts.length - 1]?.includes(needle) ? 'draft' : undefined
+  const composer = lines.filter(line => line.startsWith('›')).at(-1)
+  // Длинный ввод Codex сворачивает в плашку вставки, и метка доставки прячется под ней.
+  return composer && (composer.includes(needle) || PASTED_RE.test(composer)) ? 'draft' : undefined
 }
 
 export function codexPaneIsWorking(pane: string): boolean {
