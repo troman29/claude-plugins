@@ -67,7 +67,7 @@ import { literalSendText } from './literal-send'
 import { isHeldTooLong, screenPollMs, uniqueByPane } from './screen-poll'
 import { mux } from './mux'
 import { cronHold, type SessionCron } from './session-crons'
-import { startupAckKey } from './startup-ack'
+import { startupAckKey, startupAckPrefix } from './startup-ack'
 import { WORKFLOW_SUBAGENT } from './hook-normalize'
 import { replyContext, type ReplyContext } from './reply-context'
 import { installLauncher, launchLine } from './launch'
@@ -976,8 +976,15 @@ async function ackCodexStartupTrustScreen(pane: string, text: string): Promise<v
 const BRING_UP_GRACE_MS = 60_000
 const pendingBringUp = new Map<string, { at: number; told: boolean }>()
 
+// Предел попыток авто-ack — на один подъём: у топика, который засыпает и просыпается, каждый
+// подъём показывает тот же экран, и общий счётчик кончился бы через пару пробуждений.
 function armBringUp(key: string): void {
   pendingBringUp.set(key, { at: Date.now(), told: false })
+  for (const identity of [...autoAcked.keys()]) {
+    if (identity.startsWith(startupAckPrefix(key))) {
+      autoAcked.delete(identity)
+    }
+  }
 }
 
 function clearBringUp(key: string): void {
@@ -5514,6 +5521,12 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
         void say(L.clearStartsFresh)
         await spawnSession(key, binding, 'new', { say: html => void say(html) })
         return
+      }
+      // Агент в пейне жив, но стаб не подключился — подъём встал на экране, который никто не
+      // отвечает. Рестарт и есть выход: снимаем окно, иначе spawn откажет «чужой агент в пейне».
+      if (cmd === 'restart' && (await agentRunsInPane(key, binding))) {
+        log(`restart: ${key} — агент в пейне без стаба, снимаю окно перед подъёмом`)
+        await killTmuxSession(sessionName(key, binding)).catch(e => log(`restart: kill failed for ${key}: ${e}`))
       }
       void say(L.revivingForCommand(cmd))
       const revivedAt = Date.now()

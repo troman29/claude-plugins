@@ -6,6 +6,10 @@ import type { SessionInfo } from './protocol'
 // shared by both phases.
 export function startupAckKey(session: Pick<SessionInfo, 'bindingKeys' | 'cwd'>, fallback: string): string {
   const key = session.bindingKeys?.[0]
-  return key && session.cwd ? `binding:${key}\0${session.cwd}` : fallback
+  return key && session.cwd ? `${startupAckPrefix(key)}${session.cwd}` : fallback
+}
+
+export function startupAckPrefix(bindingKey: string): string {
+  return `binding:${bindingKey}\0`
 }
 
