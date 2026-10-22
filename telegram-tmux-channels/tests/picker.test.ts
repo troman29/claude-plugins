@@ -92,6 +92,10 @@ describe('parsePicker', () => {
     expect(isCodexStartupTrustScreen(trust)).toBe(true)
     expect(isCodexStartupTrustScreen(question)).toBe(false)
   })
+  test('Codex --no-daemon «Folder access» in a worktree: Quit instead of Agent Command Center', () => {
+    const trust = `  Folder access\n\n  /home/user/projects/agentek-console/.claude/worktrees/dostupnost\n\n  Note: You’re in a subdirectory of a Git project. Trusting will apply to the repository root:\n  /home/user/projects/agentek-console\n\n  Trust this folder? Codex can read, edit, and run files here, subject to your permission settings.\n\n› 1. Trust and continue\n  2. Quit\n\n  enter continue · esc quit`
+    expect(isCodexStartupTrustScreen(trust)).toBe(true)
+  })
   test('Codex 0.147 /model picker: go-back footer and descriptions', () => {
     const pane = `  Select Model and Effort\n  Access legacy models through config.toml\n\n› 1. gpt-5.6-sol (current)  Latest frontier model.\n  2. gpt-5.6-terra          Balanced model.\n  3. gpt-5.6-luna           Fast model.\n\n  Press enter to confirm or esc to go back`
     expect(parsePicker(pane)).toMatchObject({

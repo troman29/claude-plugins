@@ -51,12 +51,13 @@ export function isCodexStartupTrustScreen(text: string): boolean {
     && /^[›>]\s*1\.\s+Yes, continue\s*$/mi.test(text)
     && /^\s*2\.\s+No, quit\s*$/mi.test(text)
     && /press enter to continue/i.test(text)
-  // Codex 0.162 переименовал экран в «Folder access» и сменил пункты.
+  // Codex 0.162 переименовал экран в «Folder access» и сменил пункты. Второй пункт зависит от
+  // режима: с демоном — возврат в Agent Command Center, под --no-daemon — выход.
   const folderAccess = /^\s*Folder access\s*$/m.test(text)
     && /trust this folder\?/i.test(text)
     && /^[›>]\s*1\.\s+Trust and continue\s*$/m.test(text)
-    && /^\s*2\.\s+Back to Agent Command Center\s*$/m.test(text)
-    && /enter continue · esc back/.test(text)
+    && /^\s*2\.\s+(Back to Agent Command Center|Quit)\s*$/m.test(text)
+    && /enter continue · esc (back|quit)/.test(text)
   return legacy || folderAccess
 }
 
