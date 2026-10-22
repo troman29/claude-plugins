@@ -239,11 +239,28 @@ def run(mcp, chat, agent, reply_timeout, case='folder'):
     return tid, took, problems
 
 
+def cell(mcp, args, agent, case):
+    """Одна клетка матрицы; True — чистый ответ."""
+    try:
+        tid, took, problems = run(mcp, args.chat, agent, args.timeout, case)
+    except Exception as e:  # noqa: BLE001 — смоук: любая осечка это провал прогона
+        print(f'  ПРОВАЛ: {e}')
+        return False
+    if problems:
+        print(f'  ПРОВАЛ (топик {tid}):')
+        for p in problems:
+            print(f'    — {p}')
+        return False
+    print(f'  ок: один чистый ответ за {took}с (топик {tid})')
+    return True
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--chat', required=True)
     ap.add_argument('--agent', action='append', choices=['claude', 'codex'], required=True)
     ap.add_argument('--timeout', type=int, default=180, help='сколько ждать ответа, с')
+    ap.add_argument('--retries', type=int, default=0, help='повторов на провалившуюся клетку')
     ap.add_argument('--case', action='append', choices=['folder', 'worktree', 'worktree-plain', 'revive'],
                     help='клетки матрицы; по умолчанию folder')
     args = ap.parse_args()
@@ -254,21 +271,12 @@ def main():
 
     failed = False
     for agent in args.agent:
-      for case in (args.case or ['folder']):
-        print(f'== {agent} / {case}')
-        try:
-            tid, took, problems = run(mcp, args.chat, agent, args.timeout, case)
-        except Exception as e:  # noqa: BLE001 — смоук: любая осечка это провал прогона
-            print(f'  ПРОВАЛ: {e}')
-            failed = True
-            continue
-        if problems:
-            failed = True
-            print(f'  ПРОВАЛ (топик {tid}):')
-            for p in problems:
-                print(f'    — {p}')
-        else:
-            print(f'  ок: один чистый ответ за {took}с (топик {tid})')
+        for case in (args.case or ['folder']):
+            print(f'== {agent} / {case}')
+            # Повтор — только от живой LLM: агент изредка отвечает в терминал, а не через reply.
+            # Каждая осечка всё равно печатается, чтобы повтор не прятал систематическую поломку.
+            if not any(cell(mcp, args, agent, case) for _ in range(args.retries + 1)):
+                failed = True
     return 1 if failed else 0
 
 

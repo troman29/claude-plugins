@@ -918,6 +918,12 @@ function claimAutoAck(identity: string, hash: string): boolean {
   return true
 }
 
+/** Экран не ушёл после всех нажатий: дальше его решает человек — кнопками в чате. */
+function autoAckGaveUp(identity: string, hash: string): boolean {
+  const prev = autoAcked.get(identity)
+  return prev?.hash === hash && prev.gaveUp === true
+}
+
 async function ackStartupPrompt(pane: string, picker: Picker, identity = pane): Promise<void> {
   if (!claimAutoAck(identity, picker.hash)) {
     return
@@ -1065,11 +1071,12 @@ async function scanPrestartPanes(): Promise<void> {
     }
     const target = prestartTarget(name)
     const text = await captureTimeout(target).catch(() => '')
-    if (text && isCodexStartupTrustScreen(text)) {
+    const gaveUp = text ? autoAckGaveUp(target, fnv1a(text)) : false
+    if (text && !gaveUp && isCodexStartupTrustScreen(text)) {
       await ackCodexStartupTrustScreen(target, text)
       continue
     }
-    if (text && isCodexHooksTrustScreen(text)) {
+    if (text && !gaveUp && isCodexHooksTrustScreen(text)) {
       await ackCodexHooksTrustScreen(target, text)
       continue
     }
@@ -1176,12 +1183,13 @@ async function detectPicker(pane: string, session: SessionInfo, text: string): P
   }
   const picker = parsePicker(text)
   const existing = activePickers.get(pane)
-  if (!picker || isAutoAckPrompt(picker)) {
+  const ackIdentity = startupAckKey(session, pane)
+  if (!picker || (isAutoAckPrompt(picker) && !autoAckGaveUp(ackIdentity, picker.hash))) {
     if (!picker) {
       void tellAboutUnparsedModal(pane, session, text)
     }
     if (picker) {
-      await ackStartupPrompt(pane, picker, startupAckKey(session, pane)) // never surfaced to chat — and never left hanging
+      await ackStartupPrompt(pane, picker, ackIdentity) // never surfaced to chat — and never left hanging
     }
     if (existing) {
       // closed without a TG tap (answered in the TUI) — the answer is unknown to us
