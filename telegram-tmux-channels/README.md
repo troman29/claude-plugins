@@ -223,6 +223,18 @@ Sent in a bound topic or DM. These are handled by the bot and never reach the ag
 Live views stop refreshing eventually — `/screen` after 3 minutes (each refresh re-uploads a photo),
 `/tui` after 30; the message and its buttons stay.
 
+### From the machine itself
+
+**`tgc-ctl` runs an ops command without Telegram**, through the hub's socket; the hub links it into
+`~/.local/bin` on start. It takes the same path as the chat command and posts the same progress
+message in the topic, then prints the outcome once the session is up:
+
+```sh
+tgc-ctl restart -1001234567890/447
+```
+
+Only `restart` exists so far. Access equals access to the machine: the socket belongs to its user.
+
 ## Who can use it
 
 - **Admins** (`TELEGRAM_ADMINS`) talk to every binding, get permission buttons, and are the

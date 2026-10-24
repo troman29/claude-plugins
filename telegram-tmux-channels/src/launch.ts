@@ -8,8 +8,7 @@ export type LaunchRequest = { keys: string[]; mode: LaunchMode; sessionId?: stri
 export type LaunchPlan = { dir: string; env: Record<string, string>; envFile?: string; argv: string[] }
 
 export const LAUNCHER = 'tgc-run'
-const LAUNCHER_SOURCE = join(import.meta.dir, '..', 'bin', LAUNCHER)
-const LAUNCHER_LINK = join(homedir(), '.local', 'bin', LAUNCHER)
+const TOOLS = [LAUNCHER, 'tgc-ctl']
 const MODES: readonly LaunchMode[] = ['new', 'resume', 'fork']
 
 /** Что хаб печатает в пейн. Папку, окружение и argv агента `tgc-run` достаёт из биндинга сам. */
@@ -36,16 +35,21 @@ export function launchScript(plan: LaunchPlan): string {
   return `${lines.join('\n')}\n`
 }
 
-/** Кладёт `tgc-run` в `~/.local/bin`: хаб печатает его голым именем, и шелл пейна ищет его в PATH. */
+/** Кладёт `tgc-run` и `tgc-ctl` в `~/.local/bin`: хаб печатает `tgc-run` голым именем, и шелл
+ *  пейна ищет его в PATH; `tgc-ctl` — управление хабом с этой машины. */
 export function installLauncher(log: (s: string) => void): void {
-  const current = lstatSync(LAUNCHER_LINK, { throwIfNoEntry: false })
-  if (current?.isSymbolicLink() && readlinkSync(LAUNCHER_LINK) === LAUNCHER_SOURCE) {
-    return
+  for (const tool of TOOLS) {
+    const source = join(import.meta.dir, '..', 'bin', tool)
+    const link = join(homedir(), '.local', 'bin', tool)
+    const current = lstatSync(link, { throwIfNoEntry: false })
+    if (current?.isSymbolicLink() && readlinkSync(link) === source) {
+      continue
+    }
+    if (current) {
+      rmSync(link)
+    }
+    mkdirSync(dirname(link), { recursive: true })
+    symlinkSync(source, link)
+    log(`launcher: ${link} → ${source}`)
   }
-  if (current) {
-    rmSync(LAUNCHER_LINK)
-  }
-  mkdirSync(dirname(LAUNCHER_LINK), { recursive: true })
-  symlinkSync(LAUNCHER_SOURCE, LAUNCHER_LINK)
-  log(`launcher: ${LAUNCHER_LINK} → ${LAUNCHER_SOURCE}`)
 }

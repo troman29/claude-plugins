@@ -18,6 +18,8 @@ export type RpcMethod =
   | 'download_attachment'
   | 'permission_request'
 
+export type ControlCommand = 'restart'
+
 export type StubToHub =
   | { op: 'subscribe'; session: SessionInfo }
   | { op: 'rpc'; id: number; method: RpcMethod; params: Record<string, unknown> }
@@ -61,6 +63,8 @@ export type StubToHub =
   // Необязательное: старые стабы в уже живых сессиях его не шлют, и хаб откатывается
   // на проверку по транскрипту.
   | { op: 'ack'; id: string; ok: boolean; error?: string }
+  // Управление хабом с той же машины (tgc-ctl): то же, что опс-команда из чата, без Telegram.
+  | { op: 'control'; id: number; command: ControlCommand; key: string }
 
 export type HubToStub =
   // id есть только у входящих, чью доставку сторожим; стаб отвечает на него 'ack'

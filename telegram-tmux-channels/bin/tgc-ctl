@@ -1,0 +1,5 @@
+#!/bin/sh
+# Управление хабом Telegram с этой машины: tgc-ctl restart <chat_id/thread_id>.
+set -e
+root=$(dirname "$(dirname "$(readlink -f "$0")")")
+exec bun "$root/src/ctl.ts" "$@"

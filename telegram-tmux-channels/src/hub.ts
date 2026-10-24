@@ -20,7 +20,7 @@ import { messageKey, keyToTarget, targetFor, type Target } from './bindings'
 import {
   loadBindings, saveBindings, keysForDir, sessionOwner, setSessionId, resolveProjectDir, parseBindSpec, type BindingEntry,
 } from './registry'
-import { encode, makeLineDecoder, type StubToHub, type HubToStub, type SessionInfo } from './protocol'
+import { encode, makeLineDecoder, type ControlCommand, type StubToHub, type HubToStub, type SessionInfo } from './protocol'
 import { Router } from './router'
 import { chunk, MAX_CHUNK_LIMIT, MAX_RICH_LIMIT, MAX_ATTACHMENT_BYTES, planAttachments } from './chunk'
 import { escapeForRich, mdToHtml, needsRich } from './md-html'
@@ -2928,6 +2928,14 @@ async function handleStubMessage(sock: Socket<undefined>, msg: StubToHub): Promi
     }
     return
   }
+  if (msg.op === 'control') {
+    try {
+      send(sock, { op: 'result', id: msg.id, ok: true, result: await handleControl(msg.command, msg.key) })
+    } catch (err) {
+      send(sock, { op: 'result', id: msg.id, ok: false, error: err instanceof Error ? err.message : String(err) })
+    }
+    return
+  }
   if (msg.op === 'rpc') {
     try {
       const result = await handleRpc(sock, msg.method, msg.params)
@@ -4832,6 +4840,48 @@ async function restartLiveSession(key: string, binding: BindingEntry, s: Restart
     spawningBindings.delete(key)
     setTimeout(() => expectedDisconnect.delete(key), 90_000)
     flushQueuedInLane(key) // всё, что придержали, пока сессия перезапускалась
+  }
+}
+
+/** Рестарт по tgc-ctl: тот же путь и тот же пост в топике, что у `/restart` из чата, но ответ
+ *  ждёт подъёма — вызывающему нужен итог, а не «команда принята». */
+async function handleControl(command: ControlCommand, key: string): Promise<string> {
+  const binding = loadBindings()[key]
+  if (!binding) {
+    throw new Error(`no binding ${key}`)
+  }
+  if (spawningBindings.has(key)) {
+    throw new Error(`${key} is already starting`)
+  }
+  const L = t()
+  const { chat_id, thread_id } = keyToTarget(key)
+  log(`control: ${command} ${key}`)
+  const live = connsForBinding(key, binding.dir).map(conn => router.get(conn)).find(s => s?.pane && s.pid)
+  const post = progressPost(chat_id, thread_id, [L.restarting])
+  const startedAt = Date.now()
+  post.running(seconds => L.restartWaiting(seconds))
+  const outcome: RestartOutcome = live
+    ? await restartLiveSession(key, binding, live as RestartableSession)
+    : await reviveForControl(key, binding)
+  const seconds = Math.round((Date.now() - startedAt) / 1000)
+  post.settle(
+    outcome.kind === 'ready' ? L.restartReady(seconds)
+      : outcome.kind === 'not-ready' ? L.restartNotReady(seconds)
+        : L.restartFail(escHtml(String(outcome.error))),
+  )
+  return outcome.kind === 'failed' ? `failed: ${String(outcome.error)}` : `${outcome.kind} in ${seconds}s`
+}
+
+/** Живой сессии нет (уснула, закрыта) — рестарт и есть подъём, как у `/restart` из чата. */
+async function reviveForControl(key: string, binding: BindingEntry): Promise<RestartOutcome> {
+  try {
+    const { chat_id, thread_id } = keyToTarget(key)
+    const say = (html: string) =>
+      void bot.api.sendMessage(chat_id, html, { ...inTopic(thread_id), parse_mode: 'HTML' }).catch(() => {})
+    await spawnSession(key, binding, relaunchMode(binding), { say, quiet: true })
+    return (await waitForBinding(key, REVIVE_WAIT_MS)).length ? { kind: 'ready' } : { kind: 'not-ready' }
+  } catch (error) {
+    return { kind: 'failed', error }
   }
 }
 
