@@ -29,6 +29,7 @@ ANSWER = 'пинг'
 PROMPT = f'ответь ровно одним словом: {ANSWER}'
 NEW_SESSION = '🆕'
 SESSION_CHOICE_WAIT_S = 20
+TOGGLE_WAIT_S = 10
 
 
 def mcp_config(path=os.path.expanduser('~/.claude.json')):
@@ -174,15 +175,35 @@ def exchange(mcp, chat, tid, agent, reply_timeout, prompt=PROMPT):
     return int(time.time() - start), problems
 
 
-def start_new_if_asked(mcp, chat, after_id):
+def topic_keyboard_id(mcp, chat, tid, after_id=0):
+    """Свежее сообщение бота в топике tid с кнопками: id или None."""
+    for m in messages(mcp, chat, 30):
+        if not from_bot(m) or m.get('id', 0) <= after_id or str(m.get('reply_to')) != str(tid):
+            continue
+        if buttons(mcp, chat, m['id']).get('results'):
+            return m['id']
+    return None
+
+
+def press_and_wait(mcp, chat, msg_id, index, before):
+    """Нажать переключатель и дождаться перерисовки: повторное нажатие до неё вернёт кнопку назад."""
+    mcp.call('press_inline_button', chat_id=chat, message_id=msg_id, button_index=index)
+
+    def redrawn():
+        now = [b['text'] for b in buttons(mcp, chat, msg_id)['results']]
+        return now if now != before else None
+    return wait_for(redrawn, TOGGLE_WAIT_S, step=1, what='перерисовки переключателя')
+
+
+def start_new_if_asked(mcp, chat, tid, after_id):
     """В папке стенда живут прошлые разговоры, и хаб спрашивает, какой поднять. Смоук
     проверяет подъём с нуля — жмём «новая сессия»."""
     def choice():
-        kb = buttons(mcp, chat)
-        if kb.get('message_id', 0) <= after_id:
+        msg_id = topic_keyboard_id(mcp, chat, tid, after_id)
+        if not msg_id:
             return None
-        texts = [b['text'] for b in kb.get('results', [])]
-        return (kb['message_id'], texts) if any(t.startswith(NEW_SESSION) for t in texts) else None
+        texts = [b['text'] for b in buttons(mcp, chat, msg_id).get('results', [])]
+        return (msg_id, texts) if any(t.startswith(NEW_SESSION) for t in texts) else None
     try:
         msg_id, texts = wait_for(choice, SESSION_CHOICE_WAIT_S, step=2, what='вопроса о сессии')
     except AssertionError:
@@ -199,8 +220,9 @@ def run(mcp, chat, agent, reply_timeout, case='folder'):
         tid = json.loads(topic['result'])['results'][0]['topic_id'] if isinstance(topic, dict) else None
     print(f'  топик {tid} создан')
 
-    kb = wait_for(lambda: buttons(mcp, chat) or None, 60, what='пикера режима')
-    pick_id, opts = kb['message_id'], [b['text'] for b in kb['results']]
+    # Пикер ищем в СВОЁМ топике: «последнее сообщение с кнопками в чате» бывает пикером соседнего.
+    pick_id = wait_for(lambda: topic_keyboard_id(mcp, chat, tid), 60, what='пикера режима')
+    opts = [b['text'] for b in buttons(mcp, chat, pick_id)['results']]
     print(f'  пикер: {opts}')
 
     # харнесс переключаем, пока в подписи не появится нужный агент (кнопка одна, меняется на месте)
@@ -209,21 +231,19 @@ def run(mcp, chat, agent, reply_timeout, case='folder'):
         cur = [t for t in opts if t.startswith('🔄')]
         if not cur or want.lower() in cur[0].lower():
             break
-        mcp.call('press_inline_button', chat_id=chat, message_id=pick_id, button_index=0)
-        opts = [b['text'] for b in buttons(mcp, chat, pick_id)['results']]
+        opts = press_and_wait(mcp, chat, pick_id, 0, opts)
     # стенд — тем же переключателем, что и харнесс: подпись показывает текущее положение
     for _ in range(3):
         cur = next((t for t in opts if t.startswith('🪝')), None)
         if not cur or hook_is_on(cur) == (case != 'worktree-plain'):
             break
-        mcp.call('press_inline_button', chat_id=chat, message_id=pick_id, button_index=opts.index(cur))
-        opts = [b['text'] for b in buttons(mcp, chat, pick_id)['results']]
+        opts = press_and_wait(mcp, chat, pick_id, opts.index(cur), opts)
     if case == 'worktree-plain' and not any(t.startswith('🪝') for t in opts):
         raise AssertionError(f'в пикере нет переключателя стенда: {opts}')
     mode_idx = pick_mode(opts, case)
     mcp.call('press_inline_button', chat_id=chat, message_id=pick_id, button_index=mode_idx)
     print(f'  выбран {want} + {opts[mode_idx]}')
-    start_new_if_asked(mcp, chat, pick_id)
+    start_new_if_asked(mcp, chat, tid, pick_id)
 
     took, problems = exchange(mcp, chat, tid, agent, reply_timeout)
 
