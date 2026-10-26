@@ -265,7 +265,7 @@ function markActivity(keys: string[] | undefined): void {
 // Спящее и закрытое состояние живёт в bindings.json: перезагрузка убивает tmux, и boot-revive
 // иначе поднял бы и выгруженные по простою сессии (всплеск памяти ради топиков, которые никто
 // не звал), и закрытые через /close (сессия «сама» оживала после перезагрузки).
-function persistFlag(keys: string[], flag: 'unloaded' | 'closed', on: boolean): void {
+function persistFlag(keys: string[], flag: 'unloaded' | 'closed' | 'standAsleep', on: boolean): void {
   const reg = loadBindings()
   let changed = false
   for (const k of keys) {
@@ -776,6 +776,7 @@ async function notifyUnexpectedDeath(s: SessionInfo): Promise<void> {
     )
     .then(() => log(`death notice: ${key}${oom ? ` — oom-kill of ${unit}` : ''}`))
     .catch(e => log(`death notice failed: ${key} ${e}`))
+  sleepStand([key], binding.dir, 'death')
 }
 
 function listenForStubs(): void {
@@ -2582,6 +2583,22 @@ function unloadHold(key: string, now = Date.now()): { why: 'pinned' } | { why: '
   return hold.held ? { why: 'cron', at: hold.at, cron: hold.cron } : undefined
 }
 
+// Стенд живёт, пока живёт сессия: без агента его backend/frontend только едят память. Усыпляем
+// при любом её завершении (простой, /close, смерть), будит следующий подъём — spawnSession.
+function sleepStand(keys: string[], dir: string, why: string): void {
+  void runStandCommand(dir, 'sleep')
+    .then(res => {
+      if (!res) {
+        return
+      }
+      log(`${why}: стенд усыплён (${dir}) ok=${res.ok}`)
+      if (res.ok) {
+        persistFlag(keys, 'standAsleep', true)
+      }
+    })
+    .catch(e => log(`${why}: стенд усыпить не вышло: ${e}`))
+}
+
 // Stop a quiet, unpinned, past-threshold session; the next inbound message revives it.
 async function maybeIdleUnload(s: SessionInfo & { pane: string }, working: boolean): Promise<void> {
   const keys = s.bindingKeys ?? []
@@ -2610,13 +2627,9 @@ async function maybeIdleUnload(s: SessionInfo & { pane: string }, working: boole
       idleUnloaded.add(k)
     }
     persistFlag(keys, 'unloaded', true)
-    // Стенд спит вместе с сессией: пока агент выгружен, его backend/frontend только едят
-    // память. Отдельного порога у сна НЕТ намеренно — момент один и тот же.
-    const standDir = s.cwd
-    if (standDir) {
-      void runStandCommand(standDir, 'sleep')
-        .then(res => res && log(`idle-unload: стенд усыплён (${standDir}) ok=${res.ok}`))
-        .catch(e => log(`idle-unload: стенд усыпить не вышло: ${e}`))
+    // Отдельного порога у сна стенда НЕТ намеренно — момент один и тот же.
+    if (s.cwd) {
+      sleepStand(keys, s.cwd, 'idle-unload')
     }
   } else {
     markActivity(keys) // stop failed (busy/picker open) → treat as active, retry after another idle window
@@ -2624,6 +2637,20 @@ async function maybeIdleUnload(s: SessionInfo & { pane: string }, working: boole
   log(`idle-unload: ${key} (${s.cwd}) stopped=${ok}`)
   setTimeout(() => expectedDisconnect.delete(key), 90_000)
   unloading.delete(key)
+}
+
+async function wakeStand(key: string, dir: string): Promise<void> {
+  const res = await runStandCommand(dir, 'wake').catch(e => {
+    log(`wake: стенд разбудить не вышло: ${e}`)
+    return undefined
+  })
+  if (!res) {
+    return
+  }
+  log(`wake: стенд поднят (${dir}) ok=${res.ok}`)
+  if (res.ok) {
+    persistFlag([key], 'standAsleep', false)
+  }
 }
 
 /** «Chat about this» выбирается стрелками: номера у него нет (см. CHAT_ABOUT_INDEX). */
@@ -3075,7 +3102,6 @@ const STUB_RECONNECT_MS = 15_000
 /** Подключения биндинга; если их нет, а агент в пейне жив — ждёт переподключения стаба. */
 // Закреплённая сессия обязана быть на ногах: /pin спящей без подъёма выглядит как «не сработало».
 async function wakePinned(key: string, binding: BindingEntry): Promise<void> {
-  const wasIdle = idleUnloaded.has(key) // до markActivity: она его сбрасывает
   markActivity([key]) // clear the "expired" timer so it doesn't unload right after /unpin→/pin
   if ((await liveOrReconnecting(key, binding)).length > 0) {
     return
@@ -3085,9 +3111,7 @@ async function wakePinned(key: string, binding: BindingEntry): Promise<void> {
   const say = (html: string) =>
     void bot.api.sendMessage(chat_id, html, { ...inTopic(thread_id), parse_mode: 'HTML' }).catch(() => {})
   say(t().raisingSession)
-  const waking = wasIdle ? runStandCommand(binding.dir, 'wake').catch(() => undefined) : undefined
   await spawnSession(key, binding, relaunchMode(binding), { say, quiet: true })
-  await waking
 }
 
 async function liveOrReconnecting(key: string, binding: BindingEntry): Promise<Socket<undefined>[]> {
@@ -3508,8 +3532,13 @@ async function spawnSession(
       say(t().conversationGone)
     }
     chatter(t().sessionFolder(codePath(binding.dir)))
+    // Стенд будим ПАРАЛЛЕЛЬНО подъёму агента: и то и другое занимает секунды, а последовательно
+    // это сложение задержек на каждом подъёме после сна.
+    // unloaded: выгрузка по простою усыпляет стенд всегда, флаг стенда ставит лишь удачный сон.
+    const waking = binding.standAsleep || binding.unloaded ? wakeStand(key, binding.dir) : undefined
     await typeLine(prestartTarget(name), launchLine({ keys: [key], mode: launchMode, ...(resumeId ? { sessionId: resumeId } : {}) }))
     launchIssued = true
+    await waking
     armBringUp(key) // с этой секунды подъём под сторожем — снимет его handshake стаба
     // A broken launch must not wedge future retries forever. Successful launches
     // clear this sooner, from the stub's subscribe handshake above.
@@ -4380,16 +4409,7 @@ async function handleInbound(inbound: Inbound): Promise<void> {
         })
         .catch(() => {})
     }
-    // Стенд будим ПАРАЛЛЕЛЬНО подъёму агента: и то и другое занимает секунды, а последовательно
-    // это сложение задержек на каждом первом сообщении после простоя.
-    const waking = wasIdle ? runStandCommand(binding.dir, 'wake').catch(() => undefined) : undefined
     await spawnSession(key, binding, relaunchMode(binding), { say, quiet: wasIdle })
-    if (waking) {
-      const woken = await waking
-      if (woken) {
-        log(`wake: стенд поднят (${binding.dir}) ok=${woken.ok}`)
-      }
-    }
     conns = await waitForBinding(key, 30_000)
     if (conns.length === 0) {
       // Подъём бывает и минутами (стартовая модалка, тяжёлый резюм). Сообщение не теряем:
@@ -5766,6 +5786,7 @@ async function closeSession(target: {
       return
     }
     persistFlag([key], 'closed', true)
+    sleepStand([key], binding.dir, 'close')
     await say(t().sessionClosed, { reply_markup: startChoiceKeyboard(key, binding) })
   } catch (e) {
     log(`close failed: ${key} ${e instanceof Error ? e.stack : e}`)

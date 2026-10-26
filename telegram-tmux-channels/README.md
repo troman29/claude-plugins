@@ -414,9 +414,10 @@ and when it fires next; the hold lifts on its own once the cron is deleted, has 
 last time, or the session has gone quiet for a day.
 
 **The stand sleeps with the session.** If the project declares `stand.sleep` / `stand.wake`
-in `.tmux-channels.json`, unloading an idle session also stops its stand, and the first message
-after the pause starts it back up — in parallel with the agent, so the two waits overlap. There is
-deliberately **no second threshold**: the stand sleeps exactly when the session does, so one knob
+in `.tmux-channels.json`, any end of the session stops its stand — idle unload, `/close`, or the
+agent dying — and the next bring-up of any kind (a message, `/restart`, `/resume`, `tgc-ctl`) starts
+it back up, in parallel with the agent, so the two waits overlap. There is deliberately **no second
+threshold**: the stand sleeps exactly when the session does, so one knob
 (`TELEGRAM_IDLE_UNLOAD_MINUTES`) governs both.
 
 Make those hooks `stop`/`start`, not `down`/`up`: stopping a container frees the same memory (it

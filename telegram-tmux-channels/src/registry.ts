@@ -34,6 +34,7 @@ export type BindingEntry = {
   pinned?: boolean // /pin — never idle-unload this binding (see TELEGRAM_IDLE_UNLOAD_MINUTES)
   unloaded?: boolean // suspended by idle-unload — survives a reboot so boot-revive leaves it asleep
   closed?: boolean // закрыта через /close — boot-revive её не поднимает
+  standAsleep?: boolean // стенд усыплён вместе с сессией — будит его следующий подъём сессии
 }
 
 /** Keep one hand-edited bad row from crashing every routing/revive call site. */
