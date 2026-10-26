@@ -98,6 +98,7 @@ url = sys.argv[1]
 path = os.path.expanduser("~/.codex/config.toml")
 cfg = open(path).read() if os.path.exists(path) else ""
 cfg = re.sub(r'^model_provider = .*\n', '', cfg, flags=re.M)
+cfg = re.sub(r'^check_for_update_on_startup = .*\n', '', cfg, flags=re.M)
 cfg = re.sub(r'# BEGIN STAND: sub2api provider\n.*?# END STAND: sub2api provider\n', '', cfg, flags=re.S)
 block = (
     '# BEGIN STAND: sub2api provider\n'
@@ -109,7 +110,8 @@ block = (
     'env_key = "SUB2API_CODEX_KEY"\n'
     '# END STAND: sub2api provider\n'
 )
-open(path, "w").write('model_provider = "sub2api"\n' + cfg.rstrip('\n') + '\n\n' + block)
+# Как на машинах (роль dev-host): экран «вышло обновление» вешал бы каждый подъём, версию держит закрепление.
+open(path, "w").write('model_provider = "sub2api"\ncheck_for_update_on_startup = false\n' + cfg.rstrip('\n') + '\n\n' + block)
 PY
 fi
 
