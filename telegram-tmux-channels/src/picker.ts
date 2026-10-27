@@ -4,6 +4,9 @@
 const OPTION_RE = /^\s*[❯›]?\s*(\d+)\.\s+(.*)$/
 /** Пункт без номера («Chat about this» в раскладке с превью): жмётся стрелками, не цифрой. */
 export const CHAT_ABOUT_INDEX = 0
+// Таймер в заголовке («…will automatically deny this request in 1:59») тикает каждую секунду: в
+// отпечатке он делал из одного запроса новый пикер на каждом тике, и кнопки сыпались в чат.
+const COUNTDOWN_RE = /\b\d{1,2}:\d{2}\b/g
 // Длинный список Codex прокручивается и метит скрытое строками «↑»/«↓»: это не пункт и не заголовок.
 const SCROLL_MARKER_RE = /^\s*[↑↓]\s*$/
 const CHECKBOX_RE = /^\[[ ✔xX]\]\s*/
@@ -386,7 +389,7 @@ function parseNumberedPicker(text: string): Picker | undefined {
     ...(customIndex != null ? { customIndex } : {}),
     // A typed custom value is state, not a new dialog. Keeping its slot stable
     // prevents a duplicate Telegram bubble after every character.
-    hash: fnv1a(title + '|' + options.map(o => `${o.index}:${o.index === customIndex ? '__custom__' : o.label}`).join('|')),
+    hash: fnv1a(title.replace(COUNTDOWN_RE, '') + '|' + options.map(o => `${o.index}:${o.index === customIndex ? '__custom__' : o.label}`).join('|')),
   }
 }
 

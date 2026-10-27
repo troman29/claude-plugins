@@ -96,6 +96,10 @@ describe('parsePicker', () => {
     const trust = `  Folder access\n\n  /home/user/projects/agentek-console/.claude/worktrees/dostupnost\n\n  Note: You’re in a subdirectory of a Git project. Trusting will apply to the repository root:\n  /home/user/projects/agentek-console\n\n  Trust this folder? Codex can read, edit, and run files here, subject to your permission settings.\n\n› 1. Trust and continue\n  2. Quit\n\n  enter continue · esc quit`
     expect(isCodexStartupTrustScreen(trust)).toBe(true)
   })
+  test('a ticking auto-deny countdown keeps the same picker hash', () => {
+    const at = (left: string) => `  Dangerous rm operation on statically-unresolvable target: /home/user/projects/x/*\n  ⚠ Claude Code will automatically deny this request in ${left}, to avoid blocking progress\n  Do you want to proceed?\n  ❯ 1. Yes\n    2. No\n\n  Esc to cancel`
+    expect(parsePicker(at('1:59'))?.hash).toBe(parsePicker(at('1:57'))?.hash)
+  })
   test('Codex 0.163 /model menu with the compact «enter select · esc back» footer', () => {
     const pane = `  Select Model and Effort\n  1. GPT-6.1-Sol            Latest workhorse model.\n› 2. GPT-6-Sol (current)    Previous generation workhorse model.\n  3. GPT-6-Luna             Fast and affordable model.\n  enter select · esc back`
     expect(hasPickerFooter(pane)).toBe(true)
