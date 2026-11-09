@@ -343,27 +343,33 @@ bot.api.config.use((prev, method, payload, signal) =>
   method === 'sendChatAction' ? prev(method, payload, signal) : throttler(prev, method, payload, signal),
 )
 const updateLanes = new Lanes()
-// Сторож поллинга. grammY глотает сетевые ошибки getUpdates и молча повторяет, а long-poll на
-// мёртвом TCP (роутер перезагрузился, отошёл кабель) может не вернуться вовсе — хаб жив, апдейты
-// копятся. Нет успешного getUpdates за POLL_STALL_MS → выходим, systemd/стаб поднимут хаб заново;
-// tmux-сессии рестарт хаба не трогает.
-const POLL_STALL_MS = 3 * 60_000
-let lastPollOk = Date.now()
+// Long-poll на мёртвом TCP (роутер перезагрузился, отошёл кабель) может не вернуться вовсе, а
+// сетевые ошибки getUpdates grammY глотает и молча повторяет — хаб жив, апдейты копятся. Свой
+// таймаут чуть длиннее long-poll обрывает такой запрос, и grammY переподключается новым.
+const POLL_GRACE_MS = 15_000
+let pollFailing = false
 bot.api.config.use(async (prev, method, payload, signal) => {
-  const res = await prev(method, payload, signal)
-  if (method === 'getUpdates' && res.ok) {
-    lastPollOk = Date.now()
+  if (method !== 'getUpdates') {
+    return prev(method, payload, signal)
   }
-  return res
-})
-function startPollWatchdog(): void {
-  setInterval(() => {
-    if (!shuttingDown && Date.now() - lastPollOk > POLL_STALL_MS) {
-      log(`polling stalled: no getUpdates for ${Math.round((Date.now() - lastPollOk) / 1000)}s — exiting for restart`)
-      process.exit(1)
+  const timeout = AbortSignal.timeout(((payload as { timeout?: number }).timeout ?? 30) * 1000 + POLL_GRACE_MS)
+  try {
+    // grammY типизирует signal своим урезанным AbortSignal — в рантайме это обычный
+    const combined = signal ? AbortSignal.any([signal as globalThis.AbortSignal, timeout]) : timeout
+    const res = await prev(method, payload, combined as typeof signal)
+    if (pollFailing) {
+      pollFailing = false
+      log('polling recovered')
     }
-  }, 30_000).unref()
-}
+    return res
+  } catch (err) {
+    if (!pollFailing && !signal?.aborted) {
+      pollFailing = true
+      log(`polling error: ${err} — reconnecting`)
+    }
+    throw err
+  }
+})
 // Ввод в один пейн — строго по очереди (см. update-lanes).
 const paneInput = new Lanes()
 bot.use((ctx, next) => {
@@ -6478,7 +6484,6 @@ async function pollForever(): Promise<void> {
   // 409 conflict hammers deleteMyCommands/setMyCommands and turns one poller
   // conflict into a long Telegram 429 cooldown.
   let commandsBootstrapped = false
-  startPollWatchdog()
   for (let attempt = 1; ; attempt++) {
     try {
       await bot.start({
