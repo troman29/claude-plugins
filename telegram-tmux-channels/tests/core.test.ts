@@ -358,6 +358,11 @@ describe('tmux-ops', () => {
     expect(isHeadlessArgv(['claude', '-p', 'Role 2 …', '--resume', 'abc'])).toBe(true)
     expect(isHeadlessArgv(['claude', '--print', 'do a thing'])).toBe(true)
     expect(isHeadlessArgv(['claude', '--print=x'])).toBe(true)
+    // `claude mcp list` starts every MCP server (our stub too) but is no session
+    for (const sub of ['mcp', 'doctor', 'update', 'plugin', 'config']) {
+      expect(isHeadlessArgv(['claude', sub, 'list'])).toBe(true)
+    }
+    expect(isHeadlessArgv(['claude', '--version'])).toBe(true)
     // real interactive launches must still be learned
     expect(isHeadlessArgv(['claude', '--permission-mode', 'bypassPermissions'])).toBe(false)
     expect(isHeadlessArgv(['claude', '--dangerously-load-development-channels', 'server:telegram'])).toBe(false)
