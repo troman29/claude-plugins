@@ -56,6 +56,15 @@ Unix-сокет `$TELEGRAM_STATE_DIR/shepherd.sock` (по умолчанию `~/
 
 Поля валидируются строго: неизвестный `kind`, лишние поля, строки длиннее лимита — `invalid`, такое событие в очередь не попадает.
 
+Детали контракта:
+
+- `deliveryId` — любая непустая строка до 100 символов. Событие `check_suite` с несколькими PR Cyrus шлёт отдельным запросом на каждый PR с `deliveryId` вида `<X-GitHub-Delivery>#<pr>`; для одного PR — просто `X-GitHub-Delivery`.
+- Необязательные поля (`mergedBy`, `line`) при отсутствии не передаются. `association` — всегда одно из значений GitHub; когда GitHub его не даёт, Cyrus шлёт `NONE`, и хаб такой комментарий отбрасывает.
+- `checks_completed` приходит при любом `conclusion`, в том числе `success`; решает хаб по `gh pr checks`.
+- Репозиторий, которого нет в `shepherd.json`, считается `off`: ответ `disabled`.
+- Дедуп по смыслу: `checks_completed` — по `repo#PR` и head sha (несколько suite на один sha — одна оценка); `review`, `review_comment`, `comment` — по `id`; `pr_closed` — по времени события.
+- Состояния события в `events.jsonl`: `received`, `routed` (открытые, переигрываются после рестарта) и конечные `delivered`, `shadowed`, `unowned`, `escalated`, `dead`, `logged` (только журнал: зелёный CI, approved, opened/synchronize), `dropped` (фильтр, смена владельца), `stale` (CI для уже не головного sha или закрытого PR).
+
 ## Сообщение агенту
 
 ```text
@@ -67,7 +76,9 @@ Unix-сокет `$TELEGRAM_STATE_DIR/shepherd.sock` (по умолчанию `~/
 
 ## Настройки
 
-- `$TELEGRAM_STATE_DIR/shepherd.json` — `{ "repos": { "owner/name": "on" | "shadow" | "off" }, "serviceChat": "<chat>/<thread>" }`, читается на лету.
+- `$TELEGRAM_STATE_DIR/shepherd.json` — `{ "repos": { "owner/name": "on" | "shadow" | "off" }, "serviceChat": "<chat>/<thread>" }`, читается на лету. Хаб поднимает шеперд, когда файл есть или задан `TELEGRAM_SHEPHERD=1`.
+- Команды топика (только админы): `/own <ссылка на PR>` и `/shepherd` (PR этого топика).
+- Доставка: событие идёт в очередь топика как `/queue` и считается доставленным, когда стаб подтвердил приём; при отказе повтор через 30 с, 2 мин, 10 мин, затем `dead` и строка в служебном топике. Очередь шеперда живёт только в памяти хаба: после рестарта событие возвращается из `inbox.jsonl`.
 - Cyrus: `SHEPHERD_ENABLED=1`, `SHEPHERD_SOCKET`, `SHEPHERD_AUTHORS=thomas5788,agentek-bot[bot]` в `~/.cyrus/.env`.
 
 ## Вне этой поставки

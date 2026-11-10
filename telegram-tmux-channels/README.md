@@ -442,6 +442,7 @@ Environment, in `~/.claude/channels/telegram/.env`:
 | `TELEGRAM_SCREEN_POLL_MS` | `300` | Pane detector interval (100–5000 ms); typing itself remains throttled |
 | `TELEGRAM_MUX` | `tmux` | Multiplexer for the agents: `tmux` or `herdr` (see Multiplexer below) |
 | `TELEGRAM_HERDR_SESSION` | `agents` | herdr session that holds the agents' workspaces |
+| `TELEGRAM_SHEPHERD` | off | `1` starts the PR shepherd even without `shepherd.json` (see below) |
 | `TELEGRAM_DEBUG_LOG` | `0` | `1` records all hub traffic to `screenlog.jsonl` (off by default — the plugin logs nobody's messages) |
 | `OPENAI_API_KEY` | — | Enables voice; without it voice is silently off |
 | `STT_OPENAI_MODEL` | `gpt-4o-transcribe` | Transcription model |
@@ -451,6 +452,16 @@ Environment, in `~/.claude/channels/telegram/.env`:
 
 State lives next to it: `bindings.json` (topic → folder, hot-reloaded) and `known-chats.json`
 (every chat and forum topic the bot has seen, so ids are one `cat` away).
+
+### PR shepherd
+
+The hub can wake the session that owns a pull request when its CI fails, a human reviews or comments, or the PR is merged or closed. It starts when `shepherd.json` exists next to `bindings.json` (or `TELEGRAM_SHEPHERD=1`), listens on `shepherd.sock` (0600, NDJSON, one op: `pr-event`) and keeps its durable state in `shepherd/` (`inbox.jsonl`, `events.jsonl`, `owners.json`). `shepherd.json` is hot-reloaded:
+
+```json
+{ "repos": { "owner/name": "on" }, "serviceChat": "-100123/1" }
+```
+
+A repo is `on`, `shadow` (route and log, never deliver) or `off`; a repo that is not listed is `off`. `serviceChat` (`<chat>/<thread>`) receives events that have no owner and shadow lines. In a topic, `/own <PR url>` makes that topic the owner of a PR and `/shepherd` lists the PRs it owns. Contract and design: `docs/shepherd/README.md`.
 
 ## Keeping the bot up without a session
 
