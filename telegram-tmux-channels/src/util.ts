@@ -1,9 +1,15 @@
-import { rmSync } from 'fs'
+import { renameSync, rmSync, writeFileSync } from 'fs'
 
 export function rmQuiet(path: string): void {
   try {
     rmSync(path, { force: true })
   } catch {} // best-effort cleanup
+}
+
+/** tmp → rename: падение посреди записи не оставляет полфайла. */
+export function writeFileAtomic(path: string, content: string, mode = 0o600): void {
+  writeFileSync(`${path}.tmp`, content, { mode })
+  renameSync(`${path}.tmp`, path)
 }
 
 export function safeJsonParse<T>(text: string): T | undefined {
