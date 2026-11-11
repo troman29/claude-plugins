@@ -2991,7 +2991,7 @@ async function handleStubMessage(sock: Socket<undefined>, msg: StubToHub): Promi
   }
   if (msg.op === 'control') {
     try {
-      send(sock, { op: 'result', id: msg.id, ok: true, result: await handleControl(msg.command, msg.key) })
+      send(sock, { op: 'result', id: msg.id, ok: true, result: await handleControl(msg.command, msg.key, msg.arg) })
     } catch (err) {
       send(sock, { op: 'result', id: msg.id, ok: false, error: err instanceof Error ? err.message : String(err) })
     }
@@ -4930,7 +4930,10 @@ async function restartLiveSession(key: string, binding: BindingEntry, s: Restart
 
 /** Рестарт по tgc-ctl: тот же путь и тот же пост в топике, что у `/restart` из чата, но ответ
  *  ждёт подъёма — вызывающему нужен итог, а не «команда принята». */
-async function handleControl(command: ControlCommand, key: string): Promise<string> {
+async function handleControl(command: ControlCommand, key: string, arg?: string): Promise<string> {
+  if (command === 'pr-own') {
+    return registerPrOwner(key, arg)
+  }
   const binding = loadBindings()[key]
   if (!binding) {
     throw new Error(`no binding ${key}`)
@@ -6507,6 +6510,23 @@ function startShepherd(): void {
   }
   shepherd = createShepherd({ stateDir: STATE_DIR, bindings: loadBindings, deliver: deliverToKey, post: postToTarget, log })
   shepherd.start()
+}
+
+/** `tgc-ctl pr-own` из обёртки gh: сессия `key` открыла PR `url`. */
+function registerPrOwner(key: string, url: string | undefined): string {
+  const pr = url ? parsePrUrl(url) : undefined
+  if (!shepherd) {
+    throw new Error('shepherd is off')
+  }
+  if (!pr) {
+    throw new Error('bad PR url')
+  }
+  if (!loadBindings()[key]) {
+    throw new Error(`no binding ${key}`)
+  }
+  const { owner, kept } = shepherd.router.registerFromGh(pr.repo, pr.pr, key)
+  log(`shepherd: pr-own ${pr.repo}#${pr.pr} → ${owner.key} (${owner.source}${kept ? ', kept' : ''})`)
+  return kept ? `kept ${owner.source} owner ${owner.key}` : `owner ${owner.key}`
 }
 
 function handleShepherdCommand(command: { cmd: 'own' | 'shepherd'; arg?: string }, key: string, admin: boolean): string {

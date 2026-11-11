@@ -1,22 +1,38 @@
 // tgc-ctl: управление хабом с той же машины через его сокет — то же, что опс-команда из чата.
 //   tgc-ctl restart <chat_id/thread_id>
+//   tgc-ctl pr-own <PR url> [--key <chat_id/thread_id>]   — владелец PR; ключ по умолчанию из TELEGRAM_BINDING_KEYS
 import { encode, makeLineDecoder, type ControlCommand, type HubToStub } from './protocol'
 import { SOCK_PATH } from './paths'
 
-const COMMANDS: ControlCommand[] = ['restart']
+const COMMANDS: ControlCommand[] = ['restart', 'pr-own']
 // Рестарт ждёт подъёма сессии; хабу на это нужно до пары минут.
 const REPLY_TIMEOUT_MS = 180_000
+// Регистрация владельца не должна подвешивать `gh pr create`.
+const PR_OWN_TIMEOUT_MS = 10_000
 
-const [command, key] = process.argv.slice(2)
-if (!COMMANDS.includes(command as ControlCommand) || !key) {
-  console.error(`usage: tgc-ctl ${COMMANDS.join('|')} <chat_id/thread_id>`)
+function parseArgs(args: string[]): { command: ControlCommand; key: string; arg?: string } | undefined {
+  const [command, first, ...rest] = args
+  if (command === 'restart' && first && rest.length === 0) {
+    return { command, key: first }
+  }
+  if (command === 'pr-own' && first) {
+    const flag = rest.indexOf('--key')
+    const key = flag >= 0 ? rest[flag + 1] : process.env.TELEGRAM_BINDING_KEYS?.split(',')[0]
+    return key ? { command, key, arg: first } : undefined
+  }
+  return undefined
+}
+
+const request = parseArgs(process.argv.slice(2))
+if (!request) {
+  console.error('usage: tgc-ctl restart <chat_id/thread_id> | tgc-ctl pr-own <PR url> [--key <chat_id/thread_id>]')
   process.exit(2)
 }
 
 const timer = setTimeout(() => {
   console.error('tgc-ctl: no answer from the hub')
   process.exit(1)
-}, REPLY_TIMEOUT_MS)
+}, request.command === 'pr-own' ? PR_OWN_TIMEOUT_MS : REPLY_TIMEOUT_MS)
 
 const feed = makeLineDecoder<HubToStub>(msg => {
   if (msg.op !== 'result') {
@@ -31,7 +47,7 @@ await Bun.connect<undefined>({
   unix: SOCK_PATH,
   socket: {
     open(sock) {
-      sock.write(encode({ op: 'control', id: 1, command: command as ControlCommand, key }))
+      sock.write(encode({ op: 'control', id: 1, ...request }))
     },
     data(_sock, data) {
       feed(data.toString())

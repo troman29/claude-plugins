@@ -378,3 +378,59 @@ describe('required notices', () => {
     expect(h.store.undelivered()).toHaveLength(1)
   })
 })
+
+describe('owner from the gh shim', () => {
+  test('gh registration owns a PR whose repo does not match the binding origin', async () => {
+    const h = harness()
+    h.state.git['/w/one']!.remote = 'git@github.com:windbit/agentek-console.git'
+    const deploy = { repo: 'windbit/agentek-deploy', pr: 77 }
+    h.state.config.repos[deploy.repo] = 'on'
+    const { owner } = h.router.registerFromGh(deploy.repo, deploy.pr, OWNER_KEY)
+    expect(owner).toMatchObject({ key: OWNER_KEY, source: 'gh', version: 1 })
+    await h.send('d1', event('comment', { repo: deploy.repo, pr: deploy.pr, prUrl: 'https://github.com/windbit/agentek-deploy/pull/77' }))
+    await h.clock.advance(MIN)
+    expect(h.delivered.map(entry => entry.key)).toEqual([OWNER_KEY])
+  })
+
+  test('gh overwrites a branch owner but never a manual one', () => {
+    const h = harness()
+    const repo = 'windbit/agentek-console'
+    h.store.setOwner(`${repo}#1`, { key: '-100/43', version: 1, source: 'branch', at: 'now' })
+    expect(h.router.registerFromGh(repo, 1, OWNER_KEY)).toMatchObject({ kept: false, owner: { key: OWNER_KEY, source: 'gh', version: 2 } })
+    h.router.setOwner(repo, 2, '-100/43')
+    expect(h.router.registerFromGh(repo, 2, OWNER_KEY)).toMatchObject({ kept: true, owner: { key: '-100/43', source: 'manual' } })
+    expect(h.store.getOwner(`${repo}#2`)!.key).toBe('-100/43')
+    expect(h.router.registerFromGh(repo, 1, OWNER_KEY).kept).toBe(false)
+    expect(h.store.getOwner(`${repo}#1`)!.version).toBe(2)
+  })
+
+  test('events of several PRs of one owner leave as one combined message with a link per PR', async () => {
+    const h = harness()
+    h.state.config.repos['windbit/agentek-deploy'] = 'on'
+    h.router.registerFromGh('windbit/agentek-deploy', 77, OWNER_KEY)
+    h.router.registerFromGh('windbit/agentek-console', 1687, OWNER_KEY)
+    await h.send('d1', event('comment', { id: 1 }))
+    await h.send('d2', event('review', { id: 2, repo: 'windbit/agentek-deploy', pr: 77, prUrl: 'https://github.com/windbit/agentek-deploy/pull/77' }))
+    await h.clock.advance(MIN)
+    expect(h.delivered).toHaveLength(1)
+    const text = h.delivered[0]!.text
+    expect(text).toContain('windbit/agentek-console#1687')
+    expect(text).toContain('windbit/agentek-deploy#77')
+    expect(text).toContain('https://github.com/windbit/agentek-console/pull/1687')
+    expect(text).toContain('https://github.com/windbit/agentek-deploy/pull/77')
+    expect(h.posts.at(-1)!.text).toContain('windbit/agentek-deploy#77')
+  })
+
+  test('changing the owner of one PR drops only that PR from a combined pack', async () => {
+    const h = harness()
+    h.state.config.repos['windbit/agentek-deploy'] = 'on'
+    h.router.registerFromGh('windbit/agentek-deploy', 77, OWNER_KEY)
+    h.router.registerFromGh('windbit/agentek-console', 1687, OWNER_KEY)
+    await h.send('d1', event('comment', { id: 1 }))
+    await h.send('d2', event('comment', { id: 2, repo: 'windbit/agentek-deploy', pr: 77, prUrl: 'https://github.com/windbit/agentek-deploy/pull/77' }))
+    h.router.setOwner('windbit/agentek-deploy', 77, '-100/43')
+    await h.clock.advance(MIN)
+    expect(h.delivered).toHaveLength(1)
+    expect(h.delivered[0]!.text).not.toContain('agentek-deploy')
+  })
+})

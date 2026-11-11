@@ -18,7 +18,7 @@ export type RpcMethod =
   | 'download_attachment'
   | 'permission_request'
 
-export type ControlCommand = 'restart'
+export type ControlCommand = 'restart' | 'pr-own'
 
 export type StubToHub =
   | { op: 'subscribe'; session: SessionInfo }
@@ -64,7 +64,8 @@ export type StubToHub =
   // на проверку по транскрипту.
   | { op: 'ack'; id: string; ok: boolean; error?: string }
   // Управление хабом с той же машины (tgc-ctl): то же, что опс-команда из чата, без Telegram.
-  | { op: 'control'; id: number; command: ControlCommand; key: string }
+  // key — ключ биндинга; arg — аргумент команды (для pr-own — ссылка на PR)
+  | { op: 'control'; id: number; command: ControlCommand; key: string; arg?: string }
 
 export type HubToStub =
   // id есть только у входящих, чью доставку сторожим; стаб отвечает на него 'ack'
