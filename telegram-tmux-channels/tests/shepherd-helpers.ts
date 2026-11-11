@@ -6,6 +6,7 @@ import type { ShepherdConfig } from '../src/shepherd/config'
 import type { Exec } from '../src/shepherd/owner'
 import type { ShepherdEvent } from '../src/shepherd/protocol'
 import { ShepherdRouter, type Clock, type DeliveryResult } from '../src/shepherd/router'
+import type { SpawnResult } from '../src/shepherd/spawn'
 import { ShepherdStore } from '../src/shepherd/store'
 
 export const START_MS = Date.parse('2026-11-11T00:00:00Z')
@@ -84,7 +85,14 @@ export function harness(options: { dir?: string; mode?: 'on' | 'shadow' | 'off';
   const clock = options.clock ?? new FakeClock()
   const store = new ShepherdStore(join(dir, 'shepherd'), () => clock.now())
   const state = {
-    config: { repos: { 'windbit/agentek-console': options.mode ?? 'on' }, serviceChat: SERVICE, trustedLogins: new Set<string>() } as ShepherdConfig,
+    config: {
+      repos: { 'windbit/agentek-console': options.mode ?? 'on' }, serviceChat: SERVICE, trustedLogins: new Set<string>(),
+      primary: true, fanout: false, spawn: {}, agentAuthors: new Set(['thomas5788']),
+    } as ShepherdConfig,
+    spawnResult: { kind: 'no-mapping' } as SpawnResult,
+    spawnCalls: [] as string[],
+    reopened: [] as string[],
+    reopenFails: false,
     bindings: { [OWNER_KEY]: { dir: '/w/one' } } as Record<string, BindingEntry>,
     git: { '/w/one': { branch: 'feat/x', remote: 'git@github.com:windbit/agentek-console.git' } } as Record<string, { branch: string; remote: string }>,
     head: { headRefOid: SHA, state: 'OPEN' },
@@ -118,6 +126,16 @@ export function harness(options: { dir?: string; mode?: 'on' | 'shadow' | 'off';
       return state.deliverResults.shift() ?? 'ok'
     },
     post: async (target, text, { silent }) => void posts.push({ target, text, silent }),
+    reopenTopic: async key => {
+      if (state.reopenFails) {
+        throw new Error('TOPIC_ID_INVALID')
+      }
+      state.reopened.push(key)
+    },
+    spawn: async ev => {
+      state.spawnCalls.push(`${ev.repo}#${ev.pr}`)
+      return state.spawnResult
+    },
     log: () => {},
   })
   const send = async (deliveryId: string, ev: ShepherdEvent) => {
@@ -125,5 +143,10 @@ export function harness(options: { dir?: string; mode?: 'on' | 'shadow' | 'off';
     await clock.settle()
     return reply
   }
-  return { dir, clock, store, state, router, delivered, posts, send }
+  const unowned = async (deliveryId: string) => {
+    const reply = await router.accept({ op: 'pr-unowned', v: 1, deliveryId })
+    await clock.settle()
+    return reply
+  }
+  return { dir, clock, store, state, router, delivered, posts, send, unowned }
 }

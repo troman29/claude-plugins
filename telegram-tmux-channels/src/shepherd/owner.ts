@@ -37,3 +37,19 @@ export async function findByBranch(
   )
   return matches.filter((key): key is string => key !== undefined)
 }
+
+/** Папка worktree (или основная), где ветка уже выбрана: второй `worktree add` на неё git не даст. */
+export async function findBranchHolder(exec: Exec, dir: string, headRef: string): Promise<string | undefined> {
+  const listed = await exec(['git', '-C', dir, 'worktree', 'list', '--porcelain'])
+  if (listed.code !== 0) {
+    throw new Error('git worktree list failed')
+  }
+  for (const block of listed.stdout.split('\n\n')) {
+    const lines = block.split('\n')
+    const path = lines.find(line => line.startsWith('worktree '))?.slice('worktree '.length)
+    if (path && lines.includes(`branch refs/heads/${headRef}`)) {
+      return path
+    }
+  }
+  return undefined
+}

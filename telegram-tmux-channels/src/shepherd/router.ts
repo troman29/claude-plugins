@@ -4,16 +4,21 @@
 import type { BindingEntry } from '../registry'
 import { modeOf, type ShepherdConfig } from './config'
 import { findByBranch, type Exec } from './owner'
-import { parseRequest, prKeyOf, type ShepherdEvent } from './protocol'
+import { parseRequest, parseUnowned, prKeyOf, type ShepherdEvent } from './protocol'
 import {
-  renderDead, renderEscalation, renderForAgent, renderQuietNotice, renderShadow, renderUnowned,
+  renderDead, renderEscalation, renderForAgent, renderQuietNotice, renderShadow, renderSpawnIntro, renderUnowned,
   type Entry, type FailedCheck,
 } from './render'
+import type { SpawnResult } from './spawn'
 import type { InboxItem, ItemState, OwnerRecord, ShepherdStore } from './store'
 
 export type Clock = { now(): number; after(ms: number, fn: () => void): () => void }
 export type DeliveryResult = 'ok' | 'failed'
-export type Reply = { ok: true; status: 'persisted' | 'duplicate' } | { ok: false; error: string }
+export type Ownership = 'mine' | 'none'
+export type Reply =
+  | { ok: true; status: 'persisted' | 'duplicate'; owner: Ownership }
+  | { ok: true; status: 'accepted' }
+  | { ok: false; error: string }
 
 export type RouterDeps = {
   store: ShepherdStore
@@ -24,12 +29,15 @@ export type RouterDeps = {
   /** Завершается, когда стаб подтвердил приём (или сообщение уже не вернуть). */
   deliver: (key: string, text: string) => Promise<DeliveryResult>
   post: (target: string, text: string, options: { silent: boolean }) => Promise<void>
+  /** Открыть форум-топик закрытого биндинга; брошенная ошибка — топика уже нет. */
+  reopenTopic: (key: string) => Promise<void>
+  spawn: (event: ShepherdEvent) => Promise<SpawnResult>
   log: (line: string) => void
 }
 
 type HumanEvent = Extract<ShepherdEvent, { kind: 'review' | 'review_comment' | 'comment' }>
 // Пачка на владельца: события нескольких PR одной сессии уходят одним сообщением.
-type Member = { prKey: string; version: number; id: string; entry: Entry }
+type Member = { prKey: string; version: number; id: string; entry: Entry; intro?: string }
 type Bucket = { key: string; members: Member[]; cancel: () => void }
 type Route = { item: InboxItem; entry: Entry; immediate?: boolean }
 type GhCheck = { name: string; state: string; link?: string; bucket: string }
@@ -42,6 +50,9 @@ const DELIVERY_RETRY_MS = [30_000, 120_000, 600_000]
 const DELIVERY_TIMEOUT_MS = 6.5 * 3600_000
 const ESCALATE_AFTER_FAILURES = 3
 const AUTO_MERGE_SETTLE_MS = 3 * 60_000
+const FANOUT_WAIT_MS = 2 * 60_000
+const SPAWN_QUEUE_RETRY_MS = 5 * 60_000
+const SIGNAL_TTL_MS = 3600_000
 
 const IGNORED_LOGINS: ReadonlySet<string> = new Set(['thomas5788', 'agentek-bot[bot]'])
 const TRUSTED_ASSOCIATIONS: ReadonlySet<string> = new Set(['OWNER', 'MEMBER', 'COLLABORATOR'])
@@ -66,17 +77,27 @@ export class ShepherdRouter {
   private watchers = new Map<string, { touchedAt: number }>()
   // Какие упавшие проверки sha уже ушли владельцу; живёт до рестарта (после него оценка повторится).
   private reported = new Map<string, Set<string>>()
+  // События без владельца на главном хабе ждут `pr-unowned` от Cyrus; сигнал мог прийти раньше события (CI ждёт минуты).
+  private awaiting = new Map<string, { cancel: () => void; run: () => void }>()
+  private unownedSignals = new Map<string, number>()
+  private spawnQueue: Route[] = []
+  private spawnRetryScheduled = false
+  private queuedNotified = new Set<string>()
 
   constructor(private readonly deps: RouterDeps) {}
 
-  /** Принять запрос из сокета: валидация, запись на диск, затем асинхронная обработка. */
+  /** Принять запрос из сокета или HTTP: валидация, запись на диск, ответ «мой/ничей», затем асинхронная обработка. */
   async accept(raw: unknown): Promise<Reply> {
+    if ((raw as { op?: unknown } | null)?.op === 'pr-unowned') {
+      return this.acceptUnowned(raw)
+    }
     const { store, log } = this.deps
     const parsed = parseRequest(raw)
     if (!parsed.ok) {
       return { ok: false, error: parsed.error }
     }
-    if (modeOf(this.deps.config(), parsed.event.repo) === 'off') {
+    const mode = modeOf(this.deps.config(), parsed.event.repo)
+    if (mode === 'off') {
       return { ok: false, error: 'disabled' }
     }
     let result
@@ -86,11 +107,43 @@ export class ShepherdRouter {
       log(`shepherd: persist failed: ${e instanceof Error ? e.stack : e}`)
       return { ok: false, error: 'io: persist failed' }
     }
+    const owner = await this.answerOwner(parsed.event, mode === 'on')
     if (result.status === 'duplicate') {
-      return { ok: true, status: 'duplicate' }
+      return { ok: true, status: 'duplicate', owner }
     }
     void this.ingest(result.item)
-    return { ok: true, status: 'persisted' }
+    return { ok: true, status: 'persisted', owner }
+  }
+
+  /** Cyrus: ни один хаб не взял событие. Сигнал, пришедший раньше события, ждёт его в памяти. */
+  private acceptUnowned(raw: unknown): Reply {
+    const parsed = parseUnowned(raw)
+    if (!parsed.ok) {
+      return { ok: false, error: parsed.error }
+    }
+    const waiting = this.awaiting.get(parsed.deliveryId)
+    if (waiting) {
+      waiting.cancel()
+      waiting.run()
+    } else if (this.deps.config().primary) {
+      const now = this.deps.clock.now()
+      for (const [id, at] of this.unownedSignals) {
+        if (now - at > SIGNAL_TTL_MS) {
+          this.unownedSignals.delete(id)
+        }
+      }
+      this.unownedSignals.set(parsed.deliveryId, now)
+    }
+    return { ok: true, status: 'accepted' }
+  }
+
+  private async answerOwner(event: ShepherdEvent, register: boolean): Promise<Ownership> {
+    try {
+      return (await this.resolveOwner(event, register)) ? 'mine' : 'none'
+    } catch (e) {
+      this.deps.log(`shepherd: owner lookup failed: ${e instanceof Error ? e.stack : e}`)
+      return 'none'
+    }
   }
 
   /** После рестарта: недоставленное из inbox.jsonl идёт по тому же пути, что и свежее. */
@@ -144,6 +197,7 @@ export class ShepherdRouter {
     this.cancels.forEach(cancel => cancel())
     this.cancels.clear()
     this.buckets.clear()
+    this.awaiting.clear()
   }
 
   private lane(prKey: string, work: () => Promise<void>): Promise<void> {
@@ -220,6 +274,11 @@ export class ShepherdRouter {
         this.done(item, 'logged')
         return
       case 'checks_completed':
+        // Чужой PR на второстепенном хабе: CI-наблюдение (gh-опрос до 40 минут) не нужно.
+        if (!this.deps.config().primary && (await this.answerOwner(event, mode === 'on')) === 'none') {
+          this.done(item, 'not-mine')
+          return
+        }
         this.startCiWatch(item)
         return
       case 'pr_closed':
@@ -249,7 +308,8 @@ export class ShepherdRouter {
   }
 
   /** Решить, кому идёт событие: shadow — только след, без владельца — служебный топик, иначе в пачку. */
-  private async route({ item, entry, immediate }: Route): Promise<void> {
+  private async route(route: Route): Promise<void> {
+    const { item } = route
     const { event } = item
     const config = this.deps.config()
     const mode = modeOf(config, event.repo)
@@ -260,16 +320,140 @@ export class ShepherdRouter {
       return
     }
     if (!owner) {
-      await this.postRequired(config.serviceChat, renderUnowned(event), false)
-      this.done(item, 'unowned')
+      await this.noOwner(route)
       return
     }
-    this.addToBucket(owner, { prKey: prKeyOf(event), version: owner.version, id: item.id, entry })
+    this.enqueue(owner, route)
+  }
+
+  private enqueue(owner: OwnerRecord, { item, entry, immediate }: Route, intro?: string): void {
+    this.addToBucket(owner, { prKey: prKeyOf(item.event), version: owner.version, id: item.id, entry, ...(intro ? { intro } : {}) })
     this.deps.store.setState(item.id, 'routed')
     if (immediate) {
       this.buckets.get(owner.key)?.cancel()
       void this.flush(owner.key)
     }
+  }
+
+  /** Владельца нет: второстепенный хаб молчит, главный ждёт `pr-unowned` (или срок) и ведёт политику. */
+  private async noOwner(route: Route): Promise<void> {
+    const { item } = route
+    if (!this.deps.config().primary) {
+      this.done(item, 'not-mine')
+      return
+    }
+    if (this.unownedSignals.delete(item.deliveryId)) {
+      await this.noOwnerPolicy(route)
+      return
+    }
+    this.deps.store.setState(item.id, 'awaiting-fanout')
+    const cancelWait = this.deps.clock.after(FANOUT_WAIT_MS, () => {
+      this.cancels.delete(cancelWait)
+      this.awaiting.delete(item.deliveryId)
+      if (this.deps.config().fanout) {
+        this.done(item, 'not-mine', 'no pr-unowned in time')
+        return
+      }
+      void this.lane(prKeyOf(item.event), () => this.noOwnerPolicy(route))
+    })
+    this.cancels.add(cancelWait)
+    this.awaiting.set(item.deliveryId, {
+      cancel: () => {
+        cancelWait()
+        this.cancels.delete(cancelWait)
+        this.awaiting.delete(item.deliveryId)
+      },
+      run: () => void this.lane(prKeyOf(item.event), () => this.noOwnerPolicy(route)),
+    })
+  }
+
+  /** Тот же топик и та же сессия, если запись владельца осталась; иначе новая сессия под PR. */
+  private async noOwnerPolicy(route: Route): Promise<void> {
+    const { item } = route
+    const { event } = item
+    const config = this.deps.config()
+    const prKey = prKeyOf(event)
+    const owner = await this.resolveOwner(event, true)
+    if (owner) {
+      this.enqueue(owner, route)
+      return
+    }
+    const record = this.deps.store.getOwner(prKey)
+    if (record && this.deps.bindings()[record.key]) {
+      await this.reopenAndEnqueue(record, route)
+      return
+    }
+    if (event.kind === 'pr_closed') {
+      this.done(item, 'logged', 'closed, no owner')
+      return
+    }
+    if (!config.agentAuthors.has(event.prAuthor.toLowerCase())) {
+      await this.unowned(route, 'Сессию сам не завожу: PR не от агента.')
+      return
+    }
+    const result = await this.deps.spawn(event)
+    switch (result.kind) {
+      case 'spawned':
+        this.enqueue(this.writeOwner(prKey, result.key, 'spawn'), { ...route, immediate: true }, renderSpawnIntro(event))
+        return
+      case 'busy': {
+        const holder = Object.entries(this.deps.bindings()).find(([, binding]) => binding.dir === result.dir)
+        if (!holder) {
+          await this.unowned(route, 'Ветка уже занята другой папкой без топика, сессию не завожу.')
+          return
+        }
+        await this.reopenAndEnqueue(this.writeOwner(prKey, holder[0], 'branch'), route)
+        return
+      }
+      case 'limit':
+        this.queueForSpawn(route)
+        return
+      case 'no-mapping':
+        await this.unowned(route, `Репозитория нет в shepherd.json (spawn): добавь "${event.repo}": { "chat": "…", "dir": "…" }.`)
+        return
+      case 'failed':
+        await this.unowned(route, `Не смог завести сессию: ${result.error}.`)
+    }
+  }
+
+  private async reopenAndEnqueue(owner: OwnerRecord, route: Route): Promise<void> {
+    if (this.deps.bindings()[owner.key]?.closed) {
+      try {
+        await this.deps.reopenTopic(owner.key)
+      } catch (e) {
+        this.deps.log(`shepherd: reopen ${owner.key} failed: ${e instanceof Error ? e.stack : e}`)
+        await this.unowned(route, 'Не смог открыть закрытый топик владельца.')
+        return
+      }
+    }
+    this.enqueue(owner, route)
+  }
+
+  private async unowned(route: Route, reason: string): Promise<void> {
+    await this.postRequired(this.deps.config().serviceChat, renderUnowned(route.item.event, reason), false)
+    this.done(route.item, 'unowned')
+  }
+
+  /** Лимит живых спавненных сессий: PR ждёт, служебная строка — одна на PR. */
+  private queueForSpawn(route: Route): void {
+    const { item } = route
+    const prKey = prKeyOf(item.event)
+    this.deps.store.setState(item.id, 'queued', 'spawn limit')
+    this.spawnQueue.push(route)
+    if (!this.queuedNotified.has(prKey)) {
+      this.queuedNotified.add(prKey)
+      void this.say(this.deps.config().serviceChat, renderUnowned(item.event, 'Живых спавненных сессий уже максимум, PR жду в очереди.'), false)
+    }
+    if (this.spawnRetryScheduled) {
+      return
+    }
+    this.spawnRetryScheduled = true
+    const cancel = this.deps.clock.after(SPAWN_QUEUE_RETRY_MS, () => {
+      this.cancels.delete(cancel)
+      this.spawnRetryScheduled = false
+      this.spawnQueue.splice(0).forEach(queued => void this.lane(prKeyOf(queued.item.event), () => this.noOwnerPolicy(queued)))
+    })
+    this.cancels.add(cancel)
   }
 
   private addToBucket(owner: OwnerRecord, member: Member): void {
@@ -321,7 +505,8 @@ export class ShepherdRouter {
         return
       }
       const entries = current.map(member => member.entry)
-      if (await this.tryDeliver(bucket.key, renderForAgent(entries)) === 'ok') {
+      const intros = [...new Set(current.flatMap(member => member.intro ?? []))]
+      if (await this.tryDeliver(bucket.key, [...intros, renderForAgent(entries)].join('\n\n')) === 'ok') {
         current.forEach(member => store.setState(member.id, 'delivered'))
         deps.log(`shepherd: delivered to ${bucket.key} (${current.length} event(s), ${new Set(current.map(member => member.prKey)).size} PR(s))`)
         await this.say(bucket.key, renderQuietNotice(entries, true), true)
@@ -495,6 +680,10 @@ export class ShepherdRouter {
       const failures = this.deps.store.recordCi(prKey, event.headSha, failed.length > 0)
       if (failed.length && failures >= ESCALATE_AFTER_FAILURES) {
         const owner = await this.resolveOwner(event, true)
+        if (!owner && !config.primary) {
+          this.done(item, 'not-mine')
+          return
+        }
         await this.postRequired(owner?.key ?? config.serviceChat, renderEscalation(event, failures), false)
         fresh.forEach(check => reported.add(check.name))
         this.reported.set(reportKey, reported)

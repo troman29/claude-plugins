@@ -22,14 +22,16 @@ describe('owner resolution', () => {
     expect(h.store.getOwner('windbit/agentek-console#1687')).toMatchObject({ key: OWNER_KEY, version: 1, source: 'branch' })
   })
 
-  test('no binding on the branch: unowned, service topic gets the /own hint', async () => {
+  test('no binding on the branch: unowned, service topic gets the config hint (no /own)', async () => {
     const h = harness()
     h.state.git['/w/one']!.branch = 'other'
     await h.send('d1', event('comment'))
+    await h.unowned('d1')
     expect(h.delivered).toEqual([])
     expect(h.posts).toHaveLength(1)
     expect(h.posts[0]).toMatchObject({ target: SERVICE, silent: false })
-    expect(h.posts[0]!.text).toContain('/own https://github.com/windbit/agentek-console/pull/1687')
+    expect(h.posts[0]!.text).toContain('shepherd.json')
+    expect(h.posts[0]!.text).not.toContain('/own')
   })
 
   test('several bindings on the branch, a foreign remote and a closed topic', async () => {
@@ -37,6 +39,7 @@ describe('owner resolution', () => {
     h.state.bindings['-100/43'] = { dir: '/w/two' }
     h.state.git['/w/two'] = { branch: 'feat/x', remote: 'https://github.com/windbit/agentek-console' }
     await h.send('d1', event('comment', { id: 1 }))
+    await h.unowned('d1')
     expect(h.posts.at(-1)!.text).toContain('владельца нет')
     h.state.bindings['-100/43']!.closed = true
     await h.send('d2', event('comment', { id: 2 }))
@@ -188,7 +191,7 @@ describe('CI', () => {
     h.state.checks = failing
     await h.send('d1', event('checks_completed', { suiteId: 1 }))
     await h.clock.advance(30_000)
-    expect(await h.send('d2', event('checks_completed', { suiteId: 2 }))).toEqual({ ok: true, status: 'persisted' })
+    expect(await h.send('d2', event('checks_completed', { suiteId: 2 }))).toEqual({ ok: true, status: 'persisted', owner: 'mine' })
     await h.clock.advance(40_000) // первый срез был бы здесь, но наблюдение продлено
     expect(h.state.ghCalls).toBe(0)
     await h.clock.advance(5 * MIN)
@@ -202,7 +205,7 @@ describe('CI', () => {
     await h.clock.advance(3 * MIN)
     expect(h.delivered).toEqual([])
     h.state.checks = [...h.state.checks, { name: 'E2E', state: 'FAILURE', bucket: 'fail' }]
-    expect(await h.send('d2', event('checks_completed', { suiteId: 2 }))).toEqual({ ok: true, status: 'persisted' })
+    expect(await h.send('d2', event('checks_completed', { suiteId: 2 }))).toEqual({ ok: true, status: 'persisted', owner: 'mine' })
     await h.clock.advance(3 * MIN)
     expect(h.delivered).toHaveLength(1)
     expect(h.delivered[0]!.text).toContain('E2E')
@@ -341,6 +344,7 @@ describe('required notices', () => {
       h.posts.push({ target, text, silent })
     }
     await h.send('d1', event('comment'))
+    await h.unowned('d1')
     expect(h.posts).toEqual([])
     expect(h.store.undelivered()).toHaveLength(1)
     await h.clock.advance(31_000)

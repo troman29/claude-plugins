@@ -56,6 +56,12 @@ const requestSchema = z.object({
   event: z.unknown(),
 }).strict()
 
+const unownedSchema = z.object({
+  op: z.literal('pr-unowned'),
+  v: z.literal(1),
+  deliveryId: z.string().min(1).max(100),
+}).strict()
+
 export type ShepherdEvent = z.infer<typeof eventSchema>
 export type EventKind = ShepherdEvent['kind']
 export type ParsedRequest = { ok: true; deliveryId: string; event: ShepherdEvent } | { ok: false; error: string }
@@ -77,6 +83,14 @@ export function parseRequest(raw: unknown): ParsedRequest {
     return { ok: false, error: describeIssue({ ...issue, path: ['event', ...issue.path] }) }
   }
   return { ok: true, deliveryId: request.data.deliveryId, event: event.data }
+}
+
+/** `pr-unowned`: ни один хаб не ответил `mine` на событие с этим deliveryId. */
+export function parseUnowned(raw: unknown): { ok: true; deliveryId: string } | { ok: false; error: string } {
+  const request = unownedSchema.safeParse(raw)
+  return request.success
+    ? { ok: true, deliveryId: request.data.deliveryId }
+    : { ok: false, error: describeIssue(request.error.issues[0]!) }
 }
 
 export function prKeyOf(event: { repo: string; pr: number }): string {

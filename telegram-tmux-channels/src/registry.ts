@@ -33,6 +33,7 @@ export type BindingEntry = {
   // биндинги поля не имеют и продолжают жить под прежним именем.
   pinned?: boolean // /pin — never idle-unload this binding (see TELEGRAM_IDLE_UNLOAD_MINUTES)
   unloaded?: boolean // suspended by idle-unload — survives a reboot so boot-revive leaves it asleep
+  spawned?: boolean // создана шепердом под PR без владельца — их число ограничено
   closed?: boolean // закрыта через /close — boot-revive её не поднимает
   standAsleep?: boolean // стенд усыплён вместе с сессией — будит его следующий подъём сессии
 }
