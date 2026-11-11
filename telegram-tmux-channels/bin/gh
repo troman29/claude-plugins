@@ -1,0 +1,53 @@
+#!/bin/sh
+# Обёртка над gh для сессий хаба: после успешного `gh pr create` сообщает хабу владельца PR
+# (`tgc-ctl pr-own`). Всё остальное и сам gh — прозрачно; сбой регистрации ничего не меняет
+# в выводе и коде возврата gh. Отладка: TGC_GH_SHIM_DEBUG=1 пишет причины в stderr.
+self=$0
+
+debug() {
+  if [ -n "${TGC_GH_SHIM_DEBUG:-}" ]; then
+    echo "tgc gh shim: $*" >&2
+  fi
+}
+
+real=
+old_ifs=$IFS
+IFS=:
+for dir in $PATH; do
+  candidate="${dir:-.}/gh"
+  if [ -x "$candidate" ] && [ ! "$candidate" -ef "$self" ]; then
+    real=$candidate
+    break
+  fi
+done
+IFS=$old_ifs
+
+if [ -z "$real" ]; then
+  echo "gh: command not found" >&2
+  exit 127
+fi
+
+if [ "$1" != pr ] || [ "$2" != create ]; then
+  exec "$real" "$@"
+fi
+
+tmp=$(mktemp "${TMPDIR:-/tmp}/tgc-gh.XXXXXX") || exec "$real" "$@"
+trap 'rm -f "$tmp" "$tmp.rc"' EXIT
+
+# Код возврата gh теряется в конвейере с tee — пишем его в файл из левой части.
+{ "$real" "$@"; echo $? > "$tmp.rc"; } | tee "$tmp"
+rc=$(cat "$tmp.rc" 2>/dev/null)
+rc=${rc:-1}
+
+if [ "$rc" -eq 0 ]; then
+  url=$(grep -Eo 'https://github\.com/[^/[:space:]]+/[^/[:space:]]+/pull/[0-9]+' "$tmp" | tail -n 1)
+  if [ -n "$url" ] && [ -n "${TELEGRAM_BINDING_KEYS:-}" ]; then
+    if ! tgc-ctl pr-own "$url" >/dev/null 2>"$tmp.err"; then
+      debug "pr-own failed: $(cat "$tmp.err" 2>/dev/null)"
+    fi
+    rm -f "$tmp.err"
+  else
+    debug "nothing to register (url='$url', keys='${TELEGRAM_BINDING_KEYS:-}')"
+  fi
+fi
+exit "$rc"

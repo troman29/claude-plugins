@@ -43,37 +43,45 @@ function renderEntry({ event, failed }: Entry): string {
     case 'checks_completed': {
       const checks = failed ?? []
       const list = checks.map(check => (check.link ? `${check.name} (${check.link})` : check.name)).join(', ')
-      return [`🐑 ${head(event)} — упал CI на ${shortSha(event)}`, `Упали: ${list}`, runLogHint(event, checks)].join('\n')
+      return [`🔔 ${head(event)} — упал CI на ${shortSha(event)}`, `Упали: ${list}`, runLogHint(event, checks)].join('\n')
     }
     case 'review':
       return [
-        `🐑 ${head(event)} — ревью от @${event.actor}: ${event.state} ${event.url}`,
+        `🔔 ${head(event)} — ревью от @${event.actor}: ${event.state} ${event.url}`,
         event.body.trim() ? quote('Текст ревью', event.body) : 'Текста у ревью нет.',
       ].join('\n')
     case 'review_comment':
       return [
-        `🐑 ${head(event)} — комментарий к коду от @${event.actor}, ${event.path}${event.line ? `:${event.line}` : ''} ${event.url}`,
+        `🔔 ${head(event)} — комментарий к коду от @${event.actor}, ${event.path}${event.line ? `:${event.line}` : ''} ${event.url}`,
         quote('Комментарий', event.body),
       ].join('\n')
     case 'comment':
-      return [`🐑 ${head(event)} — комментарий от @${event.actor} ${event.url}`, quote('Комментарий', event.body)].join('\n')
+      return [`🔔 ${head(event)} — комментарий от @${event.actor} ${event.url}`, quote('Комментарий', event.body)].join('\n')
     case 'pr_closed':
       return event.merged
-        ? `🐑 ${head(event)} — смержен${event.mergedBy ? ` (${event.mergedBy})` : ''}. Доделай работу после мержа: проверь выкатку, закрой задачу.`
-        : `🐑 ${head(event)} — закрыт без мержа (@${event.actor}).`
+        ? `🔔 ${head(event)} — смержен${event.mergedBy ? ` (${event.mergedBy})` : ''}. Доделай работу после мержа: проверь выкатку, закрой задачу.`
+        : `🔔 ${head(event)} — закрыт без мержа (@${event.actor}).`
     default:
-      return `🐑 ${head(event)} — ${event.kind}`
+      return `🔔 ${head(event)} — ${event.kind}`
   }
 }
 
-/** Одно сообщение на пачку событий PR; правило действий — один раз в конце. */
+/** Одно сообщение на пачку событий; у нескольких PR — раздел на каждый со ссылкой. Правило действий — в конце. */
 export function renderForAgent(entries: Entry[]): string {
+  const byPr = new Map<string, Entry[]>()
+  for (const entry of entries) {
+    byPr.set(prKeyOf(entry.event), [...(byPr.get(prKeyOf(entry.event)) ?? []), entry])
+  }
+  const sections = [...byPr.values()].map(group => {
+    const text = group.map(renderEntry).join('\n\n')
+    return byPr.size > 1 ? `${text}\n${group[0]!.event.prUrl}` : text
+  })
   const hasFix = entries.some(({ event }) => event.kind !== 'pr_closed')
-  return [...entries.map(renderEntry), ...(hasFix ? [RULE_HINT] : [])].join('\n\n')
+  return [...sections, ...(hasFix ? [RULE_HINT] : [])].join('\n\n')
 }
 
-function noticeOf({ event }: Entry): string {
-  const pr = `#${event.pr}`
+function noticeOf({ event }: Entry, multiRepo: boolean): string {
+  const pr = multiRepo ? `${event.repo}#${event.pr}` : `#${event.pr}`
   switch (event.kind) {
     case 'checks_completed':
       return `CI упал в ${pr}`
@@ -89,10 +97,15 @@ function noticeOf({ event }: Entry): string {
   }
 }
 
+function noticeList(entries: Entry[]): string {
+  const multiRepo = new Set(entries.map(({ event }) => event.repo)).size > 1
+  return [...new Set(entries.map(entry => noticeOf(entry, multiRepo)))].join(', ')
+}
+
 /** Тихая строка для Ромы в топике владельца. */
 export function renderQuietNotice(entries: Entry[], delivered: boolean): string {
-  const what = [...new Set(entries.map(noticeOf))].join(', ')
-  return delivered ? `🐑 ${what} — передал агенту` : `🐑 ${what}`
+  const what = noticeList(entries)
+  return delivered ? `🔔 ${what} — передал агенту` : `🔔 ${what}`
 }
 
 function describe(event: ShepherdEvent): string {
@@ -100,11 +113,11 @@ function describe(event: ShepherdEvent): string {
 }
 
 export function renderUnowned(event: ShepherdEvent): string {
-  return `🐑 ${head(event)}: ${describe(event)}, владельца нет (ветка ${event.headRef}).\nЧтобы назначить, напиши /own ${event.prUrl} в топике нужной сессии.\n${event.prUrl}`
+  return `🔔 ${head(event)}: ${describe(event)}, владельца нет (ветка ${event.headRef}).\nЧтобы назначить, напиши /own ${event.prUrl} в топике нужной сессии.\n${event.prUrl}`
 }
 
 export function renderShadow(event: ShepherdEvent, owner: string | undefined): string {
-  return `🐑 [shadow] ${head(event)}: ${describe(event)} → ${owner ? `владелец ${owner}` : 'владельца нет'}`
+  return `🔔 [shadow] ${head(event)}: ${describe(event)} → ${owner ? `владелец ${owner}` : 'владельца нет'}`
 }
 
 export function renderEscalation(event: ShepherdEvent, failures: number): string {
@@ -112,6 +125,6 @@ export function renderEscalation(event: ShepherdEvent, failures: number): string
 }
 
 export function renderDead(entries: Entry[], key: string): string {
-  const what = [...new Set(entries.map(noticeOf))].join(', ')
-  return `🐑 Не смог доставить в ${key}: ${what}. Событие записано как dead.`
+  const what = noticeList(entries)
+  return `🔔 Не смог доставить в ${key}: ${what}. Событие записано как dead.`
 }

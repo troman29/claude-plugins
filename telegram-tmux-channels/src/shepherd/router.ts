@@ -28,7 +28,9 @@ export type RouterDeps = {
 }
 
 type HumanEvent = Extract<ShepherdEvent, { kind: 'review' | 'review_comment' | 'comment' }>
-type Bucket = { owner: OwnerRecord; entries: Entry[]; ids: string[]; cancel: () => void }
+// Пачка на владельца: события нескольких PR одной сессии уходят одним сообщением.
+type Member = { prKey: string; version: number; id: string; entry: Entry }
+type Bucket = { key: string; members: Member[]; cancel: () => void }
 type Route = { item: InboxItem; entry: Entry; immediate?: boolean }
 type GhCheck = { name: string; state: string; link?: string; bucket: string }
 
@@ -104,19 +106,36 @@ export class ShepherdRouter {
 
   /** `/own`: ручной владелец; версия растёт, ожидающие события прежнего владельца отбрасываются. */
   setOwner(repo: string, pr: number, key: string): OwnerRecord {
+    return this.writeOwner(prKeyOf({ repo, pr }), key, 'manual')
+  }
+
+  /** Владелец от обёртки `gh pr create`: перезаписывает ветку, но не ручной `/own` другого топика. */
+  registerFromGh(repo: string, pr: number, key: string): { owner: OwnerRecord; kept: boolean } {
     const prKey = prKeyOf({ repo, pr })
     const prev = this.deps.store.getOwner(prKey)
+    if (prev && prev.key === key) {
+      return { owner: prev, kept: false }
+    }
+    if (prev?.source === 'manual') {
+      this.deps.log(`shepherd: ${prKey} keeps manual owner ${prev.key}, ignoring gh registration for ${key}`)
+      return { owner: prev, kept: true }
+    }
+    return { owner: this.writeOwner(prKey, key, 'gh'), kept: false }
+  }
+
+  private writeOwner(prKey: string, key: string, source: OwnerRecord['source']): OwnerRecord {
+    const prev = this.deps.store.getOwner(prKey)
     const record: OwnerRecord = {
-      key, version: (prev?.version ?? 0) + 1, source: 'manual', at: new Date(this.deps.clock.now()).toISOString(),
+      key, version: (prev?.version ?? 0) + 1, source, at: new Date(this.deps.clock.now()).toISOString(),
     }
     this.deps.store.setOwner(prKey, record)
-    this.dropBucket(prKey, 'owner changed')
+    this.dropPending(prKey, 'owner changed')
     return record
   }
 
   status(key: string): string[] {
     return this.deps.store.ownedBy(key).map(([prKey, record]) => {
-      const waiting = this.buckets.get(prKey)?.entries.length ?? 0
+      const waiting = this.buckets.get(key)?.members.filter(member => member.prKey === prKey).length ?? 0
       return `${prKey} (v${record.version}, ${record.source})${waiting ? `, в очереди: ${waiting}` : ''}`
     })
   }
@@ -245,73 +264,73 @@ export class ShepherdRouter {
       this.done(item, 'unowned')
       return
     }
-    this.addToBucket(prKeyOf(event), owner, item.id, entry)
+    this.addToBucket(owner, { prKey: prKeyOf(event), version: owner.version, id: item.id, entry })
     this.deps.store.setState(item.id, 'routed')
     if (immediate) {
-      this.buckets.get(prKeyOf(event))?.cancel()
-      void this.flush(prKeyOf(event))
+      this.buckets.get(owner.key)?.cancel()
+      void this.flush(owner.key)
     }
   }
 
-  private addToBucket(prKey: string, owner: OwnerRecord, id: string, entry: Entry): void {
-    let bucket = this.buckets.get(prKey)
-    if (bucket && bucket.owner.version !== owner.version) {
-      this.dropBucket(prKey, 'owner changed')
-      bucket = undefined
-    }
+  private addToBucket(owner: OwnerRecord, member: Member): void {
+    let bucket = this.buckets.get(owner.key)
     if (!bucket) {
-      const cancel = this.deps.clock.after(AGGREGATE_MS, () => void this.flush(prKey))
+      const cancel = this.deps.clock.after(AGGREGATE_MS, () => void this.flush(owner.key))
       this.cancels.add(cancel)
-      bucket = { owner, entries: [], ids: [], cancel }
-      this.buckets.set(prKey, bucket)
+      bucket = { key: owner.key, members: [], cancel }
+      this.buckets.set(owner.key, bucket)
     }
-    bucket.entries.push(entry)
-    bucket.ids.push(id)
+    bucket.members.push(member)
   }
 
-  private dropBucket(prKey: string, note: string): void {
-    const bucket = this.buckets.get(prKey)
+  /** События PR, чей владелец сменился, не доставляем: их ждёт уже не тот адресат. */
+  private dropPending(prKey: string, note: string): void {
+    for (const [key, bucket] of this.buckets) {
+      const dropped = bucket.members.filter(member => member.prKey === prKey)
+      bucket.members = bucket.members.filter(member => member.prKey !== prKey)
+      dropped.forEach(member => this.deps.store.setState(member.id, 'dropped', note))
+      if (!bucket.members.length) {
+        bucket.cancel()
+        this.buckets.delete(key)
+      }
+    }
+  }
+
+  private async flush(key: string): Promise<void> {
+    const bucket = this.buckets.get(key)
     if (!bucket) {
       return
     }
-    bucket.cancel()
-    this.buckets.delete(prKey)
-    bucket.ids.forEach(id => this.deps.store.setState(id, 'dropped', note))
+    this.buckets.delete(key)
+    await this.deliverWithRetry(bucket)
   }
 
-  private async flush(prKey: string): Promise<void> {
-    const bucket = this.buckets.get(prKey)
-    if (!bucket) {
-      return
-    }
-    this.buckets.delete(prKey)
-    await this.deliverWithRetry(prKey, bucket)
+  private currentOwnerIs(member: Member, key: string): boolean {
+    const current = this.deps.store.getOwner(member.prKey)
+    return current?.version === member.version && current.key === key
   }
 
-  private currentOwnerIs(prKey: string, owner: OwnerRecord): boolean {
-    const current = this.deps.store.getOwner(prKey)
-    return current?.version === owner.version && current.key === owner.key
-  }
-
-  private async deliverWithRetry(prKey: string, bucket: Bucket): Promise<void> {
+  private async deliverWithRetry(bucket: Bucket): Promise<void> {
     const { store } = this.deps
     const deps = this.deps
-    const text = renderForAgent(bucket.entries)
     for (let attempt = 0; ; attempt++) {
-      if (!this.currentOwnerIs(prKey, bucket.owner)) {
-        bucket.ids.forEach(id => store.setState(id, 'dropped', 'owner changed'))
+      const current = bucket.members.filter(member => this.currentOwnerIs(member, bucket.key))
+      bucket.members.filter(member => !current.includes(member)).forEach(member => store.setState(member.id, 'dropped', 'owner changed'))
+      bucket.members = current
+      if (!current.length) {
         return
       }
-      if (await this.tryDeliver(bucket.owner.key, text) === 'ok') {
-        bucket.ids.forEach(id => store.setState(id, 'delivered'))
-        deps.log(`shepherd: ${prKey} delivered to ${bucket.owner.key} (${bucket.ids.length} event(s))`)
-        await this.say(bucket.owner.key, renderQuietNotice(bucket.entries, true), true)
+      const entries = current.map(member => member.entry)
+      if (await this.tryDeliver(bucket.key, renderForAgent(entries)) === 'ok') {
+        current.forEach(member => store.setState(member.id, 'delivered'))
+        deps.log(`shepherd: delivered to ${bucket.key} (${current.length} event(s), ${new Set(current.map(member => member.prKey)).size} PR(s))`)
+        await this.say(bucket.key, renderQuietNotice(entries, true), true)
         return
       }
       const delay = DELIVERY_RETRY_MS[attempt]
       if (delay === undefined) {
-        bucket.ids.forEach(id => store.setState(id, 'dead', 'delivery failed'))
-        await this.say(deps.config().serviceChat, renderDead(bucket.entries, bucket.owner.key), false)
+        current.forEach(member => store.setState(member.id, 'dead', 'delivery failed'))
+        await this.say(deps.config().serviceChat, renderDead(entries, bucket.key), false)
         return
       }
       await this.sleep(delay)

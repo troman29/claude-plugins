@@ -2991,7 +2991,7 @@ async function handleStubMessage(sock: Socket<undefined>, msg: StubToHub): Promi
   }
   if (msg.op === 'control') {
     try {
-      send(sock, { op: 'result', id: msg.id, ok: true, result: await handleControl(msg.command, msg.key) })
+      send(sock, { op: 'result', id: msg.id, ok: true, result: await handleControl(msg.command, msg.key, msg.arg) })
     } catch (err) {
       send(sock, { op: 'result', id: msg.id, ok: false, error: err instanceof Error ? err.message : String(err) })
     }
@@ -4930,7 +4930,10 @@ async function restartLiveSession(key: string, binding: BindingEntry, s: Restart
 
 /** Рестарт по tgc-ctl: тот же путь и тот же пост в топике, что у `/restart` из чата, но ответ
  *  ждёт подъёма — вызывающему нужен итог, а не «команда принята». */
-async function handleControl(command: ControlCommand, key: string): Promise<string> {
+async function handleControl(command: ControlCommand, key: string, arg?: string): Promise<string> {
+  if (command === 'pr-own') {
+    return registerPrOwner(key, arg)
+  }
   const binding = loadBindings()[key]
   if (!binding) {
     throw new Error(`no binding ${key}`)
@@ -6470,7 +6473,7 @@ bot.on('callback_query:data', async ctx => {
 
 bot.catch(err => log(`handler error (polling continues): ${err.error}`))
 
-// ── PR shepherd: события GitHub в сессию-владельца (docs/shepherd/README.md) ──
+// ── PR shepherd: события GitHub в сессию-владельца (docs/shepherd.md) ──
 let shepherd: Shepherd | undefined
 
 /** Свой код хаба кладёт текст в очередь топика как `/queue`; итог приходит, когда стаб принял сообщение. */
@@ -6509,26 +6512,43 @@ function startShepherd(): void {
   shepherd.start()
 }
 
+/** `tgc-ctl pr-own` из обёртки gh: сессия `key` открыла PR `url`. */
+function registerPrOwner(key: string, url: string | undefined): string {
+  const pr = url ? parsePrUrl(url) : undefined
+  if (!shepherd) {
+    throw new Error('shepherd is off')
+  }
+  if (!pr) {
+    throw new Error('bad PR url')
+  }
+  if (!loadBindings()[key]) {
+    throw new Error(`no binding ${key}`)
+  }
+  const { owner, kept } = shepherd.router.registerFromGh(pr.repo, pr.pr, key)
+  log(`shepherd: pr-own ${pr.repo}#${pr.pr} → ${owner.key} (${owner.source}${kept ? ', kept' : ''})`)
+  return kept ? `kept ${owner.source} owner ${owner.key}` : `owner ${owner.key}`
+}
+
 function handleShepherdCommand(command: { cmd: 'own' | 'shepherd'; arg?: string }, key: string, admin: boolean): string {
   if (!shepherd) {
-    return '🐑 Шеперд выключен: нет shepherd.json.'
+    return '🔔 Шеперд выключен: нет shepherd.json.'
   }
   if (!admin) {
-    return '🐑 Только для админов.'
+    return '🔔 Только для админов.'
   }
   if (command.cmd === 'shepherd') {
     const lines = shepherd.router.status(key)
-    return lines.length ? `🐑 PR этого топика:\n${lines.join('\n')}` : '🐑 За этим топиком PR не числится.'
+    return lines.length ? `🔔 PR этого топика:\n${lines.join('\n')}` : '🔔 За этим топиком PR не числится.'
   }
   const pr = command.arg ? parsePrUrl(command.arg) : undefined
   if (!pr) {
-    return '🐑 Формат: /own https://github.com/owner/repo/pull/123'
+    return '🔔 Формат: /own https://github.com/owner/repo/pull/123'
   }
   if (!loadBindings()[key]) {
-    return '🐑 Топик не привязан к сессии.'
+    return '🔔 Топик не привязан к сессии.'
   }
   const record = shepherd.router.setOwner(pr.repo, pr.pr, key)
-  return `🐑 ${pr.repo}#${pr.pr} теперь за этим топиком (версия ${record.version}).`
+  return `🔔 ${pr.repo}#${pr.pr} теперь за этим топиком (версия ${record.version}).`
 }
 
 let shuttingDown = false

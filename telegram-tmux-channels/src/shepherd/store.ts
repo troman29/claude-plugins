@@ -10,7 +10,7 @@ export type ItemState =
   | 'delivered' | 'shadowed' | 'unowned' | 'escalated' | 'dead' | 'logged' | 'dropped' | 'stale'
 
 export type InboxItem = { id: string; deliveryId: string; semKey?: string; receivedAt: string; event: ShepherdEvent }
-export type OwnerRecord = { key: string; version: number; source: 'branch' | 'manual'; at: string }
+export type OwnerRecord = { key: string; version: number; source: 'branch' | 'manual' | 'gh'; at: string }
 export type PersistResult = { status: 'persisted'; item: InboxItem } | { status: 'duplicate' }
 
 type StateLine = { id: string; at: string; state: ItemState; note?: string }
