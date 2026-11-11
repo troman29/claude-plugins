@@ -6473,7 +6473,7 @@ bot.on('callback_query:data', async ctx => {
 
 bot.catch(err => log(`handler error (polling continues): ${err.error}`))
 
-// ── PR shepherd: события GitHub в сессию-владельца (docs/shepherd/README.md) ──
+// ── PR shepherd: события GitHub в сессию-владельца (docs/shepherd.md) ──
 let shepherd: Shepherd | undefined
 
 /** Свой код хаба кладёт текст в очередь топика как `/queue`; итог приходит, когда стаб принял сообщение. */

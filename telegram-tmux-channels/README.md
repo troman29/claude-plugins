@@ -461,7 +461,7 @@ The hub can wake the session that owns a pull request when its CI fails, a human
 { "repos": { "owner/name": "on" }, "serviceChat": "-100123/1" }
 ```
 
-A repo is `on`, `shadow` (route and log, never deliver) or `off`; a repo that is not listed is `off`. `serviceChat` (`<chat>/<thread>`) receives events that have no owner and shadow lines. The owner of a PR is, in order of strength: `/own` (manual), the `gh` shim (`bin/gh`, installed next to `tgc-run`, first on `PATH` only for hub-launched sessions; after a successful `gh pr create` it runs `tgc-ctl pr-own <url>`), then branch matching. Events of several PRs of one owner leave as one message. In a topic, `/own <PR url>` makes that topic the owner of a PR and `/shepherd` lists the PRs it owns. Contract and design: `docs/shepherd/README.md`.
+A repo is `on`, `shadow` (route and log, never deliver) or `off`; a repo that is not listed is `off`. `serviceChat` (`<chat>/<thread>`) receives events that have no owner and shadow lines. The owner of a PR is, in order of strength: `/own` (manual), the `gh` shim (`bin/gh`, installed next to `tgc-run`, first on `PATH` only for hub-launched sessions; after a successful `gh pr create` it runs `tgc-ctl pr-own <url>`), then branch matching. Events of several PRs of one owner leave as one message. In a topic, `/own <PR url>` makes that topic the owner of a PR and `/shepherd` lists the PRs it owns. Contract and design: `docs/shepherd.md`.
 
 ## Keeping the bot up without a session
 
