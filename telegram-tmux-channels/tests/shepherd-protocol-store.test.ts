@@ -5,6 +5,9 @@ import { parseRequest, semanticKey } from '../src/shepherd/protocol'
 import { ShepherdStore } from '../src/shepherd/store'
 import { event, request, tempDir, SHA } from './shepherd-helpers'
 
+// 5100 записей с fsync на каждую: на диске homelab это ~25 с, а не дефолтные 5.
+const COMPACTION_TIMEOUT_MS = 120_000
+
 describe('shepherd protocol', () => {
   test('every kind of the contract is accepted', () => {
     for (const kind of ['pr_opened', 'pr_reopened', 'pr_ready', 'pr_synchronize', 'pr_closed', 'checks_completed', 'review', 'review_comment', 'comment'] as const) {
@@ -66,7 +69,7 @@ describe('shepherd store', () => {
     const reopened = new ShepherdStore(dir)
     expect(reopened.undelivered().map(item => item.deliveryId)).toEqual(['open'])
     expect(new ShepherdStore(dir).undelivered()).toHaveLength(1)
-  })
+  }, COMPACTION_TIMEOUT_MS)
 
   test('persisted events survive a crash and replay until a final state', () => {
     const dir = tempDir()
