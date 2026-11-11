@@ -455,13 +455,17 @@ State lives next to it: `bindings.json` (topic → folder, hot-reloaded) and `kn
 
 ### PR shepherd
 
-The hub can wake the session that owns a pull request when its CI fails, a human reviews or comments, or the PR is merged or closed. It starts when `shepherd.json` exists next to `bindings.json` (or `TELEGRAM_SHEPHERD=1`), listens on `shepherd.sock` (0600, NDJSON, one op: `pr-event`) and keeps its durable state in `shepherd/` (`inbox.jsonl`, `events.jsonl`, `owners.json`). `shepherd.json` is hot-reloaded:
+The hub can wake the session that owns a pull request when its CI fails, a human reviews or comments, or the PR is merged or closed. It starts when `shepherd.json` exists next to `bindings.json` (or `TELEGRAM_SHEPHERD=1`), listens on `shepherd.sock` (0600, NDJSON, ops: `pr-event`, `pr-unowned`) and keeps its durable state in `shepherd/` (`inbox.jsonl`, `events.jsonl`, `owners.json`). `shepherd.json` is hot-reloaded:
 
 ```json
-{ "repos": { "owner/name": "on" }, "serviceChat": "-100123/1" }
+{
+  "repos": { "owner/name": "on" }, "serviceChat": "-100123/1",
+  "primary": true, "http": { "listen": "10.0.0.5:3457" },
+  "spawn": { "owner/name": { "chat": "-100123", "dir": "/home/me/projects/name" } }
+}
 ```
 
-A repo is `on`, `shadow` (route and log, never deliver) or `off`; a repo that is not listed is `off`. `serviceChat` (`<chat>/<thread>`) receives events that have no owner and shadow lines. The owner of a PR is, in order of strength: `/own` (manual), the `gh` shim (`bin/gh`, installed next to `tgc-run`, first on `PATH` only for hub-launched sessions; after a successful `gh pr create` it runs `tgc-ctl pr-own <url>`), then branch matching. Events of several PRs of one owner leave as one message. In a topic, `/own <PR url>` makes that topic the owner of a PR and `/shepherd` lists the PRs it owns. Contract and design: `docs/shepherd.md`.
+A repo is `on`, `shadow` (route and log, never deliver) or `off`; a repo that is not listed is `off`. `serviceChat` (`<chat>/<thread>`) receives events that have no owner and shadow lines. The owner of a PR is, in order of strength: `/own` (manual), the `gh` shim (`bin/gh`, installed next to `tgc-run`, first on `PATH` only for hub-launched sessions; after a successful `gh pr create` it runs `tgc-ctl pr-own <url>`), then branch matching. Events of several PRs of one owner leave as one message. In a topic, `/shepherd` lists the PRs it owns. Several hubs can run side by side, each with its own sessions: Cyrus sends every event to all of them, each hub answers `owner: mine|none` and a secondary hub (`"primary": false`) stays silent about PRs it does not own. `POST /shepherd/pr-event` (Bearer token from `shepherd.token`, body ≤ 256 KiB) takes the same request as the socket and listens only on `http.listen`. A PR with no owner gets its topic automatically: the primary hub reopens the closed topic of the PR's last owner, or creates a worktree on the PR branch, a forum topic and a session (at most 3 live spawned sessions; repo → group/dir comes from `spawn` or a trusted group whose `dir` has the same `origin`). Contract and design: `docs/shepherd.md`.
 
 ## Keeping the bot up without a session
 
