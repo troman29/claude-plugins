@@ -84,13 +84,14 @@ export function harness(options: { dir?: string; mode?: 'on' | 'shadow' | 'off';
   const clock = options.clock ?? new FakeClock()
   const store = new ShepherdStore(join(dir, 'shepherd'), () => clock.now())
   const state = {
-    config: { repos: { 'windbit/agentek-console': options.mode ?? 'on' }, serviceChat: SERVICE } as ShepherdConfig,
+    config: { repos: { 'windbit/agentek-console': options.mode ?? 'on' }, serviceChat: SERVICE, trustedLogins: new Set<string>() } as ShepherdConfig,
     bindings: { [OWNER_KEY]: { dir: '/w/one' } } as Record<string, BindingEntry>,
     git: { '/w/one': { branch: 'feat/x', remote: 'git@github.com:windbit/agentek-console.git' } } as Record<string, { branch: string; remote: string }>,
     head: { headRefOid: SHA, state: 'OPEN' },
     checks: [] as GhCheck[],
     deliverResults: [] as DeliveryResult[],
     ghCalls: 0,
+    ghCommands: [] as string[][],
   }
   const delivered: { key: string; text: string }[] = []
   const posts: { target: string; text: string; silent: boolean }[] = []
@@ -101,6 +102,10 @@ export function harness(options: { dir?: string; mode?: 'on' | 'shadow' | 'off';
       return { code: out ? 0 : 1, stdout: out ?? '' }
     }
     state.ghCalls++
+    state.ghCommands.push(cmd)
+    if (cmd[2] === 'merge') {
+      return { code: 0, stdout: '' }
+    }
     if (cmd[2] === 'view') {
       return { code: 0, stdout: JSON.stringify(state.head) }
     }

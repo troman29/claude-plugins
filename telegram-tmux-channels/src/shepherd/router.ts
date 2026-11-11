@@ -39,6 +39,7 @@ const CI_MAX_WAIT_MS = 40 * 60_000
 const DELIVERY_RETRY_MS = [30_000, 120_000, 600_000]
 const DELIVERY_TIMEOUT_MS = 6.5 * 3600_000
 const ESCALATE_AFTER_FAILURES = 3
+const AUTO_MERGE_SETTLE_MS = 3 * 60_000
 
 const IGNORED_LOGINS: ReadonlySet<string> = new Set(['thomas5788', 'agentek-bot[bot]'])
 const TRUSTED_ASSOCIATIONS: ReadonlySet<string> = new Set(['OWNER', 'MEMBER', 'COLLABORATOR'])
@@ -48,9 +49,12 @@ function isHumanEvent(event: ShepherdEvent): event is HumanEvent {
 }
 
 /** Ответы ботов и самого агента не возвращаем агенту: иначе он спорит сам с собой. */
-export function isTrustedHuman(event: HumanEvent): boolean {
+export function isTrustedHuman(event: HumanEvent, trustedLogins: ReadonlySet<string> = new Set()): boolean {
   const login = event.actor.toLowerCase()
-  return !IGNORED_LOGINS.has(login) && !login.endsWith('[bot]') && TRUSTED_ASSOCIATIONS.has(event.association)
+  if (IGNORED_LOGINS.has(login) || login.endsWith('[bot]')) {
+    return false
+  }
+  return TRUSTED_ASSOCIATIONS.has(event.association) || trustedLogins.has(login)
 }
 
 export class ShepherdRouter {
@@ -208,7 +212,7 @@ export class ShepherdRouter {
   }
 
   private async handleHuman(item: InboxItem, event: ShepherdEvent): Promise<void> {
-    if (!isHumanEvent(event) || !isTrustedHuman(event)) {
+    if (!isHumanEvent(event) || !isTrustedHuman(event, this.deps.config().trustedLogins)) {
       this.done(item, 'dropped', 'filtered sender')
       return
     }
@@ -217,6 +221,7 @@ export class ShepherdRouter {
       const owner = await this.resolveOwner(event, mode === 'on')
       if (mode === 'on' && owner) {
         await this.say(owner.key, renderQuietNotice([{ event }], false), true)
+        this.watchAutoMerge(event)
       }
       this.done(item, 'logged', 'approved')
       return
@@ -350,6 +355,28 @@ export class ShepherdRouter {
       store.setOwner(prKey, record)
     }
     return record
+  }
+
+  /** GitHub иногда не запускает уже включённый auto-merge после Approve: PR чистый, одобрен и висит. Перевключаем сами. */
+  private watchAutoMerge(event: ShepherdEvent): void {
+    const cancel = this.deps.clock.after(AUTO_MERGE_SETTLE_MS, () => {
+      this.cancels.delete(cancel)
+      void this.kickAutoMerge(event).catch(err => this.deps.log(`shepherd: ${prKeyOf(event)} auto-merge kick failed: ${err}`))
+    })
+    this.cancels.add(cancel)
+  }
+
+  private async kickAutoMerge(event: ShepherdEvent): Promise<void> {
+    const pr = await this.ghJson<{ state: string; mergeStateStatus: string; autoMergeRequest: { mergeMethod: string } | null }>(
+      ['pr', 'view', String(event.pr), '--repo', event.repo, '--json', 'state,mergeStateStatus,autoMergeRequest'],
+    )
+    if (pr.state !== 'OPEN' || pr.mergeStateStatus !== 'CLEAN' || !pr.autoMergeRequest) {
+      return
+    }
+    const method = `--${pr.autoMergeRequest.mergeMethod.toLowerCase()}`
+    await this.deps.exec(['gh', 'pr', 'merge', String(event.pr), '--repo', event.repo, '--disable-auto'])
+    await this.deps.exec(['gh', 'pr', 'merge', String(event.pr), '--repo', event.repo, '--auto', method])
+    this.deps.log(`shepherd: ${prKeyOf(event)} approved and clean but auto-merge stuck — re-enabled (${method})`)
   }
 
   private async ghJson<T>(args: string[]): Promise<T> {

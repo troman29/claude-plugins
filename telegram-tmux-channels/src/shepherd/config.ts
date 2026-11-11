@@ -5,7 +5,7 @@ import { join } from 'path'
 import { safeJsonParse } from '../util'
 
 export type RepoMode = 'on' | 'shadow' | 'off'
-export type ShepherdConfig = { repos: Record<string, RepoMode>; serviceChat?: string }
+export type ShepherdConfig = { repos: Record<string, RepoMode>; serviceChat?: string; trustedLogins: ReadonlySet<string> }
 
 const MODES: ReadonlySet<string> = new Set(['on', 'shadow', 'off'])
 
@@ -16,7 +16,7 @@ export function configPath(stateDir: string): string {
 /** Репозиторий вне списка — `off`: шеперд работает только там, где его включили явно. */
 export function loadConfig(stateDir: string): ShepherdConfig {
   const file = configPath(stateDir)
-  const parsed = existsSync(file) ? safeJsonParse<{ repos?: Record<string, unknown>; serviceChat?: unknown }>(readFileSync(file, 'utf8')) : undefined
+  const parsed = existsSync(file) ? safeJsonParse<{ repos?: Record<string, unknown>; serviceChat?: unknown; trustedLogins?: unknown }>(readFileSync(file, 'utf8')) : undefined
   const repos: Record<string, RepoMode> = {}
   for (const [repo, mode] of Object.entries(parsed?.repos ?? {})) {
     if (typeof mode === 'string' && MODES.has(mode)) {
@@ -24,7 +24,13 @@ export function loadConfig(stateDir: string): ShepherdConfig {
     }
   }
   const serviceChat = typeof parsed?.serviceChat === 'string' && /^-?\d+(\/\d+)?$/.test(parsed.serviceChat) ? parsed.serviceChat : undefined
-  return { repos, ...(serviceChat ? { serviceChat } : {}) }
+  // Вебхук отдаёт association NONE участнику организации со скрытым членством — таким людям доверяем по логину.
+  const trustedLogins = new Set(
+    Array.isArray(parsed?.trustedLogins)
+      ? parsed.trustedLogins.filter((login): login is string => typeof login === 'string').map(login => login.toLowerCase())
+      : [],
+  )
+  return { repos, trustedLogins, ...(serviceChat ? { serviceChat } : {}) }
 }
 
 export function modeOf(config: ShepherdConfig, repo: string): RepoMode {

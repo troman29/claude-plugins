@@ -106,6 +106,34 @@ describe('filters', () => {
     expect(h.posts[0]).toMatchObject({ target: OWNER_KEY, silent: true })
   })
 
+  test('approved and clean PR with stuck auto-merge gets auto-merge re-enabled', async () => {
+    const h = harness()
+    h.state.head = { headRefOid: SHA, state: 'OPEN', mergeStateStatus: 'CLEAN', autoMergeRequest: { mergeMethod: 'SQUASH' } } as typeof h.state.head
+    await h.send('d1', event('review', { state: 'approved' }))
+    await h.clock.advance(4 * MIN)
+    const merges = h.state.ghCommands.filter(cmd => cmd[2] === 'merge').map(cmd => cmd.slice(-1)[0])
+    expect(merges).toEqual(['--disable-auto', '--squash'])
+    expect(h.delivered).toEqual([])
+  })
+
+  test('approved PR that already merged is left alone', async () => {
+    const h = harness()
+    h.state.head = { headRefOid: SHA, state: 'MERGED', mergeStateStatus: 'UNKNOWN', autoMergeRequest: null } as typeof h.state.head
+    await h.send('d1', event('review', { state: 'approved' }))
+    await h.clock.advance(4 * MIN)
+    expect(h.state.ghCommands.filter(cmd => cmd[2] === 'merge')).toEqual([])
+  })
+
+  test('association NONE is trusted when the login is in trustedLogins', async () => {
+    const h = harness()
+    h.state.config = { ...h.state.config, trustedLogins: new Set(['troman29']) }
+    await h.send('d1', event('review', { state: 'changes_requested', association: 'NONE', actor: 'troman29' }))
+    await h.send('d2', event('comment', { association: 'NONE', actor: 'stranger', id: 99 }))
+    await h.clock.advance(5 * MIN)
+    expect(h.delivered).toHaveLength(1)
+    expect(h.delivered[0]!.text).toContain('troman29')
+  })
+
   test('opened/synchronize/ready/reopened only register the owner', async () => {
     const h = harness()
     for (const [i, kind] of (['pr_opened', 'pr_synchronize', 'pr_ready', 'pr_reopened'] as const).entries()) {
