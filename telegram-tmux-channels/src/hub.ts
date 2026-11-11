@@ -7,7 +7,7 @@ import { autoRetry } from '@grammyjs/auto-retry'
 import { apiThrottler } from '@grammyjs/transformer-throttler'
 import type { ReactionTypeEmoji } from 'grammy/types'
 import {
-  readFileSync, writeFileSync, mkdirSync, rmSync, statSync, realpathSync, chmodSync, readdirSync,
+  readFileSync, writeFileSync, mkdirSync, rmSync, statSync, realpathSync, chmodSync, readdirSync, existsSync,
 } from 'fs'
 import { join, sep, basename } from 'path'
 import { homedir } from 'os'
@@ -64,6 +64,8 @@ import { CompactionPosts } from './compaction'
 import { ProgressPost } from './progress-post'
 import { AnswerStream } from './answer-stream'
 import { literalSendText } from './literal-send'
+import { ackToOutcome, createShepherd, watchdogApplies, parsePrUrl, parseShepherdCommand, type Shepherd } from './shepherd/index'
+import { configPath as shepherdConfigPath } from './shepherd/config'
 import { isHeldTooLong, screenPollMs, uniqueByPane } from './screen-poll'
 import { mux } from './mux'
 import { cronHold, type SessionCron } from './session-crons'
@@ -2932,19 +2934,24 @@ function syncSessionId(bindingKeys: string[], sessionId: string): void {
 
 // Подтверждения доставки от стаба: id → кому его отдать. Прямой ответ «отдал/не отдал»
 // вместо гадания по транскрипту; старые стабы молчат, и сторож работает как раньше.
-const pendingAcks = new Map<string, (r: 'ok' | 'failed') => void>()
+const pendingAcks = new Map<string, Array<(r: 'ok' | 'failed') => void>>()
 const ACK_WAIT_MS = 10_000
 
+// Ответа на одно сообщение ждут несколько: сторож доставки и (для шеперда) тот, кто его отправил.
 function awaitAck(id: string): Promise<'ok' | 'failed' | 'silent'> {
   return new Promise(resolve => {
-    pendingAcks.set(id, r => { pendingAcks.delete(id); resolve(r) })
-    setTimeout(() => { if (pendingAcks.delete(id)) { resolve('silent') } }, ACK_WAIT_MS)
+    const listeners = pendingAcks.get(id) ?? []
+    listeners.push(resolve)
+    pendingAcks.set(id, listeners)
+    setTimeout(() => { pendingAcks.delete(id); resolve('silent') }, ACK_WAIT_MS)
   })
 }
 
 async function handleStubMessage(sock: Socket<undefined>, msg: StubToHub): Promise<void> {
   if (msg.op === 'ack') {
-    pendingAcks.get(msg.id)?.(msg.ok ? 'ok' : 'failed')
+    const listeners = pendingAcks.get(msg.id)
+    pendingAcks.delete(msg.id)
+    listeners?.forEach(listener => listener(msg.ok ? 'ok' : 'failed'))
     if (!msg.ok) {
       log(`delivery: стаб не отдал сообщение в сессию: ${msg.error ?? '?'}`)
     }
@@ -3870,7 +3877,7 @@ function enqueueForTopic(key: string, inbound: Inbound): void {
   const q = queuedMessages.get(key) ?? []
   q.push(inbound)
   queuedMessages.set(key, q)
-  stateRepo.setQueued(key, q.map(persistInbound))
+  stateRepo.setQueued(key, q.filter(isPersistable).map(persistInbound))
   const msgId = inbound.ctx.message?.message_id
   if (msgId != null) {
     // 😴 = «принято, лежит в очереди»; сменится на 👀, когда сообщение уйдёт в сессию.
@@ -3900,10 +3907,11 @@ function liveQueue(key: string): Inbound[] {
   if (live.length === q.length) {
     return q
   }
+  q.filter(inbound => !live.includes(inbound)).forEach(inbound => inbound.onDelivery?.('failed'))
   log(`queue: ${key} — выбросил ${q.length - live.length} придержанных сообщ. старше ${MAX_HOLD_MS / 3600_000} ч`)
   if (live.length) {
     queuedMessages.set(key, live)
-    stateRepo.setQueued(key, live.map(persistInbound))
+    stateRepo.setQueued(key, live.filter(isPersistable).map(persistInbound))
   } else {
     queuedMessages.delete(key)
     stateRepo.delQueued(key)
@@ -3915,7 +3923,7 @@ function liveQueue(key: string): Inbound[] {
 function holdInOrder(key: string, messages: Inbound[]): void {
   const ordered = bySendTime(messages, inbound => inbound.ctx.message?.date)
   queuedMessages.set(key, ordered)
-  stateRepo.setQueued(key, ordered.map(persistInbound))
+  stateRepo.setQueued(key, ordered.filter(isPersistable).map(persistInbound))
 }
 
 /** Отдать очередь топика в его полосе апдейтов — для вызовов извне обработчиков (подписка стаба,
@@ -4185,7 +4193,15 @@ type Inbound = {
   reply?: ReplyContext
   /** Отложено `/queue` до конца хода: обычное сообщение его обгоняет, так и задумано. */
   waitTurn?: boolean
+  /** Свой код хаба (шеперд), не человек из Telegram: проверку allow пропускает. */
+  trusted?: boolean
+  /** Живёт только в памяти и на диск очереди не пишется: повтор после рестарта — забота автора. */
+  ephemeral?: boolean
+  /** Итог доставки в сессию: 'ok' — стаб принял, 'failed' — не принял или сообщение выброшено. */
+  onDelivery?: (outcome: 'ok' | 'failed') => void
 }
+
+const isPersistable = (inbound: Inbound): boolean => !inbound.ephemeral
 
 function persistInbound(inbound: Inbound): PersistedInbound {
   const msg = inbound.ctx.message
@@ -4228,6 +4244,18 @@ for (const [key, value] of stateRepo.pendingModeEntries()) {
   pendingModeChoice.set(key, { cfg: value.cfg, topicName: value.topicName, say: sayFor(value.chatId, value.threadId), ...(value.agent ? { agent: value.agent } : {}), ...(value.hookOff ? { hookOff: true } : {}) })
 }
 
+/** Отдать сообщение в сессию между ходами: занятой — после хода, свободной (и выгруженной) — сразу.
+ *  Держать имеет смысл, только пока идёт ход: иначе сообщение ждало бы хода, который никто не начинал. */
+async function deliverBetweenTurns(key: string, held: Inbound): Promise<void> {
+  const binding = loadBindings()[key]
+  if (binding && keyIsWorking(key, binding.dir)) {
+    log(`queue: ${key} — держу до конца хода`)
+    enqueueForTopic(key, held) // принято, доставлю после хода
+    return
+  }
+  await handleInbound(held)
+}
+
 async function handleInbound(inbound: Inbound): Promise<void> {
   const { ctx, text, downloadImage, attachment } = inbound
   const from = ctx.from
@@ -4260,6 +4288,12 @@ async function handleInbound(inbound: Inbound): Promise<void> {
       .sendMessage(chat_id, html, { ...inTopic(threadId), parse_mode: 'HTML' })
       .catch(() => {})
 
+  const shepherdCmd = inbound.literal ? undefined : parseShepherdCommand(text)
+  if (shepherdCmd) {
+    say(escHtml(handleShepherdCommand(shepherdCmd, key, isAdmin(senderId))))
+    return
+  }
+
   // explicit commands always win — never swallowed by an auto-topic prompt waiting for text
   const ops = inbound.literal ? undefined : parseOpsCommand(text)
   // След на входе. Без него исчезнувшее сообщение неотличимо от неполученного: 25.08 `/delete`
@@ -4284,16 +4318,7 @@ async function handleInbound(inbound: Inbound): Promise<void> {
         say(t().queueUsage)
         return
       }
-      const held: Inbound = { ...inbound, text: body, waitTurn: true }
-      const binding = loadBindings()[key]
-      // Держать имеет смысл, только пока сессия занята ходом. Свободной отдаём сразу:
-      // иначе сообщение ждало бы конца хода, который никто не начинал.
-      if (binding && keyIsWorking(key, binding.dir)) {
-        log(`queue: ${key} — держу до конца хода`)
-        enqueueForTopic(key, held) // принято, доставлю после хода
-        return
-      }
-      await handleInbound(held)
+      await deliverBetweenTurns(key, { ...inbound, text: body, waitTurn: true })
       return
     }
     // A harmless ops command (notably /status while the mode keyboard is on screen)
@@ -4408,7 +4433,7 @@ async function handleInbound(inbound: Inbound): Promise<void> {
     log(`drop (unbound): key=${key} from=${senderId} text=${text.slice(0, 60)}`)
     return
   }
-  if (!isAdmin(senderId) && !binding.allow?.includes(senderId)) {
+  if (!inbound.trusted && !isAdmin(senderId) && !binding.allow?.includes(senderId)) {
     log(`drop (not allowed): key=${key} from=${senderId}`)
     return
   }
@@ -4521,7 +4546,7 @@ async function handleInbound(inbound: Inbound): Promise<void> {
   }
   snapshotScreens(key, text, conns)
   armPending(key, { dir: binding.dir, at: Date.now() }) // armed until the agent replies or turnend forwards
-  const delivered = await deliverMessage(key, binding.dir, { op: 'event', kind: 'message', content: text, meta }, text)
+  const delivered = await deliverMessage(key, binding.dir, { op: 'event', kind: 'message', content: text, meta }, text, inbound.onDelivery)
   if (delivered) {
     // 👀 = «ушло в сессию» — только после доставки: поставленная заранее, она минуту висела на
     // сообщении, которое потом всё равно уходило в очередь (😴), и порядок значков врал.
@@ -4610,7 +4635,9 @@ async function inboundPane(key: string, dir: string, adapter: AgentAdapter): Pro
     : undefined
 }
 
-async function deliverMessage(key: string, dir: string, payload: HubToStub, needle: string): Promise<number> {
+async function deliverMessage(
+  key: string, dir: string, payload: HubToStub, needle: string, onOutcome?: (outcome: 'ok' | 'failed') => void,
+): Promise<number> {
   const adapter = adapterForBinding(loadBindings()[key])
   const pane = await inboundPane(key, dir, adapter)
   const ready = await waitPane(pane, PANE_READY_MS, text => adapter.inboundReady(text))
@@ -4630,14 +4657,25 @@ async function deliverMessage(key: string, dir: string, payload: HubToStub, need
     ? { ...payload, id, meta: { delivery_id: id, ...payload.meta } }
     : payload
   const conns = connsForBinding(key, dir)
+  const native = adapter.capabilities.nativeInboundTransport
+  // Тот, кто просил итог (шеперд), сам решает о повторе; сторож рядом дал бы второй экземпляр.
+  if (onOutcome && native && conns.length) {
+    void awaitAck(id).then(ack => onOutcome(ackToOutcome(ack)))
+  }
   if (adapter.capabilities.nativeInboundTransport) {
     for (const conn of conns) send(conn, tagged)
   } else if (pane) {
     // Codex has no Claude Channels notification transport. Its MCP stub still supplies reply,
     // files and session identity; inbound text is submitted through the same tmux TUI users see.
-    await typeInbound({ pane, key, msg: tagged, adapter })
+    try {
+      await typeInbound({ pane, key, msg: tagged, adapter })
+    } catch (err) {
+      onOutcome?.('failed')
+      throw err
+    }
+    onOutcome?.('ok')
   }
-  if (conns.length || pane) {
+  if ((conns.length || pane) && watchdogApplies(!!onOutcome, native)) {
     const correlationNeedle = adapter.kind === 'codex'
       ? deliveryNeedle(id)
       : needle.trim().slice(0, 60)
@@ -6432,6 +6470,67 @@ bot.on('callback_query:data', async ctx => {
 
 bot.catch(err => log(`handler error (polling continues): ${err.error}`))
 
+// ── PR shepherd: события GitHub в сессию-владельца (docs/shepherd/README.md) ──
+let shepherd: Shepherd | undefined
+
+/** Свой код хаба кладёт текст в очередь топика как `/queue`; итог приходит, когда стаб принял сообщение. */
+function deliverToKey(key: string, text: string): Promise<'ok' | 'failed'> {
+  if (!loadBindings()[key]) {
+    return Promise.resolve('failed')
+  }
+  const target = keyToTarget(key)
+  const ctx = {
+    from: { id: 0, username: 'github' },
+    chat: { id: Number(target.chat_id), type: key.startsWith('dm:') ? 'private' : 'supergroup' },
+    message: { message_thread_id: target.thread_id, date: Math.floor(Date.now() / 1000) },
+  } as unknown as Context
+  return new Promise(resolve => {
+    const held: Inbound = { ctx, text, literal: true, waitTurn: true, trusted: true, ephemeral: true, onDelivery: resolve }
+    deliverBetweenTurns(key, held).catch(err => {
+      log(`shepherd: deliver to ${key} failed: ${err instanceof Error ? err.stack : err}`)
+      resolve('failed')
+    })
+  })
+}
+
+async function postToTarget(key: string, text: string, options: { silent: boolean }): Promise<void> {
+  const target = keyToTarget(key)
+  await bot.api.sendMessage(target.chat_id, text, {
+    ...inTopic(target.thread_id), ...(options.silent ? { disable_notification: true } : {}),
+    link_preview_options: { is_disabled: true },
+  })
+}
+
+function startShepherd(): void {
+  if (!existsSync(shepherdConfigPath(STATE_DIR)) && process.env.TELEGRAM_SHEPHERD !== '1') {
+    return
+  }
+  shepherd = createShepherd({ stateDir: STATE_DIR, bindings: loadBindings, deliver: deliverToKey, post: postToTarget, log })
+  shepherd.start()
+}
+
+function handleShepherdCommand(command: { cmd: 'own' | 'shepherd'; arg?: string }, key: string, admin: boolean): string {
+  if (!shepherd) {
+    return '🐑 Шеперд выключен: нет shepherd.json.'
+  }
+  if (!admin) {
+    return '🐑 Только для админов.'
+  }
+  if (command.cmd === 'shepherd') {
+    const lines = shepherd.router.status(key)
+    return lines.length ? `🐑 PR этого топика:\n${lines.join('\n')}` : '🐑 За этим топиком PR не числится.'
+  }
+  const pr = command.arg ? parsePrUrl(command.arg) : undefined
+  if (!pr) {
+    return '🐑 Формат: /own https://github.com/owner/repo/pull/123'
+  }
+  if (!loadBindings()[key]) {
+    return '🐑 Топик не привязан к сессии.'
+  }
+  const record = shepherd.router.setOwner(pr.repo, pr.pr, key)
+  return `🐑 ${pr.repo}#${pr.pr} теперь за этим топиком (версия ${record.version}).`
+}
+
 let shuttingDown = false
 function shutdown(): void {
   if (shuttingDown) {
@@ -6439,6 +6538,7 @@ function shutdown(): void {
   }
   shuttingDown = true
   log('shutting down')
+  shepherd?.stop()
   stateRepo.flush() // persist pending markers synchronously before exit
   // A replacement hub writes its PID before the old poller finishes reacting to SIGTERM.
   // Do not let this old process unlink the replacement's socket: that race made newly started
@@ -6472,6 +6572,7 @@ export async function start(): Promise<void> {
   process.on('SIGINT', shutdown)
   claimPollerSlot()
   listenForStubs()
+  startShepherd()
   void closeStalePickers() // кнопки, пережившие рестарт, гасим сразу — иначе они врут, что живы
   startScreenPoll()
   installLauncher(log)

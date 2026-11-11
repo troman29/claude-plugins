@@ -29,15 +29,16 @@ export function agentAdapter(kind: AgentKind | undefined): AgentAdapter {
 /** Что позволено «выучить» из живой сессии в биндинг.
  *
  * `owned` — сессия несёт ключ биндинга, то есть её поднял хаб: ей верим полностью.
- * Посторонний процесс в том же каталоге (руками запущенный агент, зонд, соседний топик) может
- * уточнить только argv и только для СВОЕГО харнесса: 2026-08-17 пробный codex в папке claude-топика
- * переписал биндингу агента, и доставка в тот топик встала намертво.
+ * Посторонний процесс в том же каталоге (руками запущенный агент, зонд, `claude mcp list`)
+ * не учит ничего: ему отдавали все биндинги каталога, и он переписывал им argv.
+ * 2026-08-17 пробный codex в папке claude-топика переписал биндингу агента,
+ * и доставка в тот топик встала намертво.
  */
 export function mayLearn(
   owned: boolean, sessionAgent: AgentKind, bindingAgent: AgentKind | undefined,
 ): { argv: boolean; agent: boolean } {
   const same = (bindingAgent ?? 'claude') === sessionAgent
-  return { argv: owned || same, agent: owned && !same }
+  return { argv: owned, agent: owned && !same }
 }
 
 /** Что теряет биндинг при смене харнесса: разговор и argv прежнего.

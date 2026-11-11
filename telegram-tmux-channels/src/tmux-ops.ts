@@ -205,8 +205,16 @@ export function normalizeClaudeExtendedContextModel(argv: string[]): string[] {
 // process still connects as a session (it can carry channel flags + binding keys), so it must be
 // distinguishable from a real interactive launch — a binding that "learns" it would relaunch the
 // batch prompt on every revive and die immediately, looping. Pure — tested in core.test.ts.
+// Подкоманды и флаги, после которых claude не открывает интерактивную сессию, хотя MCP-стаб
+// при этом стартует (`claude mcp list` поднимает все MCP-серверы, включая наш).
+const NON_INTERACTIVE_SUBCOMMANDS = new Set(['mcp', 'doctor', 'update', 'install', 'plugin', 'plugins', 'config', 'auth', 'setup-token', 'migrate-installer'])
+const NON_INTERACTIVE_FLAGS = new Set(['--version', '-v', '--help', '-h'])
+
 export function isHeadlessArgv(argv: string[]): boolean {
-  return argv.some(a => a === '-p' || a === '--print' || a.startsWith('--print='))
+  if (argv.some(a => a === '-p' || a === '--print' || a.startsWith('--print=') || NON_INTERACTIVE_FLAGS.has(a))) {
+    return true
+  }
+  return argv[1] !== undefined && NON_INTERACTIVE_SUBCOMMANDS.has(argv[1])
 }
 
 export function stripResumeFlags(argv: string[]): string[] {

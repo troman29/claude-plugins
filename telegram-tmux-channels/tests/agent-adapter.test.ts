@@ -207,8 +207,8 @@ describe('чему верить от живой сессии (mayLearn)', () => 
     expect(mayLearn(true, 'claude', 'claude')).toEqual({ argv: true, agent: false })
   })
 
-  test('чужой процесс того же харнесса — только argv', () => {
-    expect(mayLearn(false, 'claude', 'claude')).toEqual({ argv: true, agent: false })
+  test('чужой процесс того же харнесса — ничего (`claude mcp list` в общей папке)', () => {
+    expect(mayLearn(false, 'claude', 'claude')).toEqual({ argv: false, agent: false })
   })
 
   test('чужой процесс ДРУГОГО харнесса — ничего (тот самый зонд)', () => {
@@ -217,7 +217,7 @@ describe('чему верить от живой сессии (mayLearn)', () => 
   })
 
   test('пустой agent в биндинге читается как claude', () => {
-    expect(mayLearn(false, 'claude', undefined)).toEqual({ argv: true, agent: false })
+    expect(mayLearn(false, 'claude', undefined)).toEqual({ argv: false, agent: false })
     expect(mayLearn(false, 'codex', undefined)).toEqual({ argv: false, agent: false })
   })
 })
