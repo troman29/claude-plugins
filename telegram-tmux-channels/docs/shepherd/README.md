@@ -15,7 +15,7 @@ GitHub App agentek-bot ──HMAC──► nginx wh.lab ──► Cyrus :3456 /g
                      агрегация 60 с, CI — по head sha через `gh pr checks`
                                                    ▼
                   доставка как обычное входящее: занята → после Stop; выгружена → --resume
-                     + тихая строка в топике: «🐑 CI упал в #12 — передал агенту»
+                     + тихая строка в топике: «🔔 CI упал в #12 — передал агенту»
 ```
 
 ## Решения
@@ -71,7 +71,7 @@ Unix-сокет `$TELEGRAM_STATE_DIR/shepherd.sock` (по умолчанию `~/
 ## Сообщение агенту
 
 ```text
-🐑 PR windbit/agentek-console#1687 «…» — упал CI на abc1234
+🔔 PR windbit/agentek-console#1687 «…» — упал CI на abc1234
 Упали: Tests passed (https://…), Typecheck and lint (https://…)
 Лог: gh run view <id> --log-failed --repo windbit/agentek-console
 Действуй по правилу «Pull request'ы»: исправь и запушь, если причина в твоём изменении; если уже чинишь — продолжай.

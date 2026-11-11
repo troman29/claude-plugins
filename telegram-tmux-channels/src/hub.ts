@@ -6531,24 +6531,24 @@ function registerPrOwner(key: string, url: string | undefined): string {
 
 function handleShepherdCommand(command: { cmd: 'own' | 'shepherd'; arg?: string }, key: string, admin: boolean): string {
   if (!shepherd) {
-    return '🐑 Шеперд выключен: нет shepherd.json.'
+    return '🔔 Шеперд выключен: нет shepherd.json.'
   }
   if (!admin) {
-    return '🐑 Только для админов.'
+    return '🔔 Только для админов.'
   }
   if (command.cmd === 'shepherd') {
     const lines = shepherd.router.status(key)
-    return lines.length ? `🐑 PR этого топика:\n${lines.join('\n')}` : '🐑 За этим топиком PR не числится.'
+    return lines.length ? `🔔 PR этого топика:\n${lines.join('\n')}` : '🔔 За этим топиком PR не числится.'
   }
   const pr = command.arg ? parsePrUrl(command.arg) : undefined
   if (!pr) {
-    return '🐑 Формат: /own https://github.com/owner/repo/pull/123'
+    return '🔔 Формат: /own https://github.com/owner/repo/pull/123'
   }
   if (!loadBindings()[key]) {
-    return '🐑 Топик не привязан к сессии.'
+    return '🔔 Топик не привязан к сессии.'
   }
   const record = shepherd.router.setOwner(pr.repo, pr.pr, key)
-  return `🐑 ${pr.repo}#${pr.pr} теперь за этим топиком (версия ${record.version}).`
+  return `🔔 ${pr.repo}#${pr.pr} теперь за этим топиком (версия ${record.version}).`
 }
 
 let shuttingDown = false
