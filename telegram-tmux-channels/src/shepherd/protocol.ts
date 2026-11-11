@@ -83,12 +83,11 @@ export function prKeyOf(event: { repo: string; pr: number }): string {
   return `${event.repo}#${event.pr}`
 }
 
-/** Ключ смысла: один и тот же факт GitHub может прийти под разными deliveryId. */
+/** Ключ смысла: один и тот же факт GitHub может прийти под разными deliveryId.
+ *  У CI ключа нет: новый suite на том же sha — новая информация, его склеивает наблюдатель роутера. */
 export function semanticKey(event: ShepherdEvent): string | undefined {
   const pr = prKeyOf(event)
   switch (event.kind) {
-    case 'checks_completed':
-      return `${pr}:ci:${event.headSha.toLowerCase()}`
     case 'review':
       return `${pr}:review:${event.id}`
     case 'review_comment':

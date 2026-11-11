@@ -155,11 +155,33 @@ describe('CI', () => {
     expect(h.posts.at(-1)!.text).toContain('CI упал в #1687')
   })
 
-  test('two suites on one sha produce one evaluation', async () => {
+  test('a second suite on a sha being watched extends the watch: one evaluation, one message', async () => {
     const h = harness()
     h.state.checks = failing
-    expect((await h.send('d1', event('checks_completed', { suiteId: 1 }))).ok).toBe(true)
-    expect(await h.send('d2', event('checks_completed', { suiteId: 2 }))).toEqual({ ok: true, status: 'duplicate' })
+    await h.send('d1', event('checks_completed', { suiteId: 1 }))
+    await h.clock.advance(30_000)
+    expect(await h.send('d2', event('checks_completed', { suiteId: 2 }))).toEqual({ ok: true, status: 'persisted' })
+    await h.clock.advance(40_000) // первый срез был бы здесь, но наблюдение продлено
+    expect(h.state.ghCalls).toBe(0)
+    await h.clock.advance(5 * MIN)
+    expect(h.delivered).toHaveLength(1)
+  })
+
+  test('a late suite failing on an already green sha is not hidden by dedup', async () => {
+    const h = harness()
+    h.state.checks = [{ name: 'Tests passed', state: 'SUCCESS', bucket: 'pass' }]
+    await h.send('d1', event('checks_completed', { suiteId: 1, conclusion: 'success' }))
+    await h.clock.advance(3 * MIN)
+    expect(h.delivered).toEqual([])
+    h.state.checks = [...h.state.checks, { name: 'E2E', state: 'FAILURE', bucket: 'fail' }]
+    expect(await h.send('d2', event('checks_completed', { suiteId: 2 }))).toEqual({ ok: true, status: 'persisted' })
+    await h.clock.advance(3 * MIN)
+    expect(h.delivered).toHaveLength(1)
+    expect(h.delivered[0]!.text).toContain('E2E')
+    // третий suite с теми же упавшими проверками не шлёт то же самое снова
+    await h.send('d3', event('checks_completed', { suiteId: 3 }))
+    await h.clock.advance(3 * MIN)
+    expect(h.delivered).toHaveLength(1)
   })
 
   test('stale: head moved or PR closed', async () => {
@@ -275,5 +297,56 @@ describe('modes and delivery', () => {
     expect(after.delivered).toHaveLength(1)
     expect(before.delivered).toEqual([])
     expect(new ShepherdStore(`${dir}/shepherd`).undelivered()).toEqual([])
+  })
+})
+
+describe('required notices', () => {
+  test('unowned hint: a Telegram error keeps the event open, a retry delivers it', async () => {
+    const h = harness()
+    h.state.git['/w/one']!.branch = 'other'
+    let failures = 2
+    const router = h.router as unknown as { deps: { post: (t: string, x: string, o: { silent: boolean }) => Promise<void> } }
+    router.deps.post = async (target, text, { silent }) => {
+      if (failures-- > 0) {
+        throw new Error('429')
+      }
+      h.posts.push({ target, text, silent })
+    }
+    await h.send('d1', event('comment'))
+    expect(h.posts).toEqual([])
+    expect(h.store.undelivered()).toHaveLength(1)
+    await h.clock.advance(31_000)
+    await h.clock.advance(2 * MIN + 1000)
+    expect(h.posts).toHaveLength(1)
+    expect(h.store.undelivered()).toEqual([])
+  })
+
+  test('exhausted retries leave the event open for the next replay', async () => {
+    const h = harness()
+    h.state.git['/w/one']!.branch = 'other'
+    const router = h.router as unknown as { deps: { post: () => Promise<void> } }
+    router.deps.post = async () => {
+      throw new Error('down')
+    }
+    await h.send('d1', event('comment'))
+    await h.clock.advance(20 * MIN)
+    expect(h.store.undelivered()).toHaveLength(1)
+  })
+
+  test('escalation is not final until the alarm is posted', async () => {
+    const h = harness()
+    h.state.checks = failing
+    const router = h.router as unknown as { deps: { post: () => Promise<void> } }
+    for (const [i, sha] of [SHA, SHA2, SHA3].entries()) {
+      h.state.head = { headRefOid: sha, state: 'OPEN' }
+      if (i === 2) {
+        router.deps.post = async () => {
+          throw new Error('down')
+        }
+      }
+      await h.send(`d${i}`, event('checks_completed', { headSha: sha }))
+      await h.clock.advance(20 * MIN)
+    }
+    expect(h.store.undelivered()).toHaveLength(1)
   })
 })

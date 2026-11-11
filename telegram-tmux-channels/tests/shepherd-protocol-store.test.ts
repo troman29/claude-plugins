@@ -45,13 +45,29 @@ describe('shepherd protocol', () => {
   })
 
   test('semantic keys identify the same fact under different deliveries', () => {
-    expect(semanticKey(event('checks_completed'))).toBe(semanticKey(event('checks_completed', { suiteId: 2 })))
-    expect(semanticKey(event('checks_completed'))).not.toBe(semanticKey(event('checks_completed', { headSha: 'b'.repeat(40) })))
+    expect(semanticKey(event('checks_completed'))).toBeUndefined()
+    expect(semanticKey(event('comment', { id: 7 }))).toBe(semanticKey(event('comment', { id: 7 })))
     expect(semanticKey(event('pr_synchronize'))).toBeUndefined()
   })
 })
 
 describe('shepherd store', () => {
+  test('open events survive compaction even when finished ones exceed the cap', () => {
+    const dir = tempDir()
+    const store = new ShepherdStore(dir)
+    const open = store.persist('open', event('comment', { id: 1 }))
+    for (let i = 0; i < 5100; i++) {
+      const done = store.persist(`d${i}`, event('comment', { id: 100 + i }))
+      if (done.status === 'persisted') {
+        store.setState(done.item.id, 'delivered')
+      }
+    }
+    expect(open.status).toBe('persisted')
+    const reopened = new ShepherdStore(dir)
+    expect(reopened.undelivered().map(item => item.deliveryId)).toEqual(['open'])
+    expect(new ShepherdStore(dir).undelivered()).toHaveLength(1)
+  })
+
   test('persisted events survive a crash and replay until a final state', () => {
     const dir = tempDir()
     const first = new ShepherdStore(dir)

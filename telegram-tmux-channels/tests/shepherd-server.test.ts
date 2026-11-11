@@ -1,7 +1,7 @@
 import { statSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { afterEach, describe, expect, test } from 'bun:test'
-import { createShepherd, parsePrUrl, parseShepherdCommand, type Shepherd } from '../src/shepherd/index'
+import { ackToOutcome, createShepherd, parsePrUrl, watchdogApplies, parseShepherdCommand, type Shepherd } from '../src/shepherd/index'
 import { event, request, tempDir, OWNER_KEY } from './shepherd-helpers'
 
 let running: Shepherd | undefined
@@ -74,5 +74,19 @@ describe('shepherd commands', () => {
     expect(parseShepherdCommand('/ownership')).toBeUndefined()
     expect(parsePrUrl('https://github.com/o/r/pull/5/files')).toEqual({ repo: 'o/r', pr: 5 })
     expect(parsePrUrl('https://example.com/o/r/pull/5')).toBeUndefined()
+  })
+})
+
+describe('delivery outcome', () => {
+  test('only a positive stub ack counts as delivered', () => {
+    expect(ackToOutcome('ok')).toBe('ok')
+    expect(ackToOutcome('failed')).toBe('failed')
+    expect(ackToOutcome('silent')).toBe('failed')
+  })
+
+  test('the watchdog does not retry what the shepherd retries itself', () => {
+    expect(watchdogApplies(true, true)).toBe(false)
+    expect(watchdogApplies(false, true)).toBe(true)
+    expect(watchdogApplies(true, false)).toBe(true)
   })
 })

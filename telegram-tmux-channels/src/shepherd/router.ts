@@ -57,6 +57,9 @@ export class ShepherdRouter {
   private lanes = new Map<string, Promise<void>>()
   private buckets = new Map<string, Bucket>()
   private cancels = new Set<() => void>()
+  private watchers = new Map<string, { touchedAt: number }>()
+  // Какие упавшие проверки sha уже ушли владельцу; живёт до рестарта (после него оценка повторится).
+  private reported = new Map<string, Set<string>>()
 
   constructor(private readonly deps: RouterDeps) {}
 
@@ -147,15 +150,34 @@ export class ShepherdRouter {
     this.deps.log(`shepherd: ${prKeyOf(item.event)} ${item.event.kind} → ${state}${note ? ` (${note})` : ''}`)
   }
 
+  /** Информационная строка: ошибка Telegram не должна ронять обработку. */
   private async say(target: string | undefined, text: string, silent: boolean): Promise<void> {
+    try {
+      await this.postRequired(target, text, silent, [])
+    } catch (e) {
+      this.deps.log(`shepherd: post to ${target} failed: ${e instanceof Error ? e.stack : e}`)
+    }
+  }
+
+  /** Обязательное уведомление: при ошибке Telegram повторяем, затем бросаем — событие остаётся
+   *  открытым и вернётся после рестарта. Не настроенный адресат — не сбой, а конфигурация. */
+  private async postRequired(target: string | undefined, text: string, silent: boolean, retryMs = DELIVERY_RETRY_MS): Promise<void> {
     if (!target) {
       this.deps.log(`shepherd: no target for message: ${text.split('\n')[0]}`)
       return
     }
-    try {
-      await this.deps.post(target, text, { silent })
-    } catch (e) {
-      this.deps.log(`shepherd: post to ${target} failed: ${e instanceof Error ? e.stack : e}`)
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await this.deps.post(target, text, { silent })
+        return
+      } catch (e) {
+        const delay = retryMs[attempt]
+        if (delay === undefined) {
+          throw e
+        }
+        this.deps.log(`shepherd: post to ${target} failed, retry in ${delay} ms: ${e instanceof Error ? e.message : e}`)
+        await this.sleep(delay)
+      }
     }
   }
 
@@ -175,8 +197,7 @@ export class ShepherdRouter {
         this.done(item, 'logged')
         return
       case 'checks_completed':
-        this.done(item, 'routed')
-        void this.watchCi(item)
+        this.startCiWatch(item)
         return
       case 'pr_closed':
         await this.route({ item, entry: { event }, immediate: true })
@@ -215,7 +236,7 @@ export class ShepherdRouter {
       return
     }
     if (!owner) {
-      await this.say(config.serviceChat, renderUnowned(event), false)
+      await this.postRequired(config.serviceChat, renderUnowned(event), false)
       this.done(item, 'unowned')
       return
     }
@@ -336,16 +357,42 @@ export class ShepherdRouter {
     return JSON.parse(stdout) as T // gh pr checks шлёт JSON и при кодах 1/8 (упало/ждёт)
   }
 
+  /** Новый suite на sha, который уже наблюдают, продлевает наблюдение: ранний срез мог не видеть его. */
+  private startCiWatch(item: InboxItem): void {
+    const { event } = item
+    const watchKey = `${prKeyOf(event)}:${event.headSha.toLowerCase()}`
+    const active = this.watchers.get(watchKey)
+    if (active) {
+      active.touchedAt = this.deps.clock.now()
+      this.done(item, 'logged', 'merged into the running CI watch')
+      return
+    }
+    const watch = { touchedAt: 0 }
+    this.watchers.set(watchKey, watch)
+    this.done(item, 'routed')
+    void this.watchCi(item, watch).finally(() => this.watchers.delete(watchKey))
+  }
+
   /** CI по head sha: ждём, пока всё завершится, и сверяем, что sha ещё голова открытого PR. */
-  private async watchCi(item: InboxItem): Promise<void> {
+  private async watchCi(item: InboxItem, watch: { touchedAt: number }): Promise<void> {
     const { event } = item
     if (event.kind !== 'checks_completed') {
       return
     }
-    const started = this.deps.clock.now()
-    await this.sleep(CI_SETTLE_MS)
+    let started = this.deps.clock.now()
+    const settle = async () => {
+      do {
+        const sleptFrom = this.deps.clock.now()
+        await this.sleep(CI_SETTLE_MS)
+        if (watch.touchedAt > sleptFrom) {
+          started = watch.touchedAt
+        }
+      } while (watch.touchedAt > this.deps.clock.now() - CI_SETTLE_MS)
+    }
+    await settle()
     for (;;) {
-      const timedOut = this.deps.clock.now() - started >= CI_MAX_WAIT_MS
+      const snapshotAt = this.deps.clock.now()
+      const timedOut = snapshotAt - started >= CI_MAX_WAIT_MS
       let checks: GhCheck[]
       try {
         const pr = await this.ghJson<{ headRefOid: string; state: string }>(
@@ -366,6 +413,11 @@ export class ShepherdRouter {
         await this.sleep(CI_POLL_MS)
         continue
       }
+      if (watch.touchedAt > snapshotAt) {
+        started = watch.touchedAt
+        await settle()
+        continue
+      }
       const pending = checks.some(check => check.bucket === 'pending')
       if (pending && !timedOut) {
         await this.sleep(CI_POLL_MS)
@@ -384,13 +436,22 @@ export class ShepherdRouter {
   private async finishCi(item: InboxItem, failed: FailedCheck[]): Promise<void> {
     const { event } = item
     const prKey = prKeyOf(event)
+    const reportKey = `${prKey}:${event.headSha.toLowerCase()}`
+    const reported = this.reported.get(reportKey) ?? new Set<string>()
+    const fresh = failed.filter(check => !reported.has(check.name))
+    if (failed.length && !fresh.length) {
+      this.done(item, 'logged', 'failures already reported for this sha')
+      return
+    }
     const config = this.deps.config()
     const mode = modeOf(config, event.repo)
     if (mode === 'on') {
       const failures = this.deps.store.recordCi(prKey, event.headSha, failed.length > 0)
       if (failed.length && failures >= ESCALATE_AFTER_FAILURES) {
         const owner = await this.resolveOwner(event, true)
-        await this.say(owner?.key ?? config.serviceChat, renderEscalation(event, failures), false)
+        await this.postRequired(owner?.key ?? config.serviceChat, renderEscalation(event, failures), false)
+        fresh.forEach(check => reported.add(check.name))
+        this.reported.set(reportKey, reported)
         this.done(item, 'escalated', `${failures} failures in a row`)
         return
       }
@@ -399,6 +460,8 @@ export class ShepherdRouter {
       this.done(item, 'logged', 'ci green')
       return
     }
-    await this.route({ item, entry: { event, failed } })
+    await this.route({ item, entry: { event, failed: fresh } })
+    fresh.forEach(check => reported.add(check.name))
+    this.reported.set(reportKey, reported)
   }
 }

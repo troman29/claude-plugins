@@ -112,9 +112,12 @@ export class ShepherdStore {
       this.states.set(line.id, line.state)
     }
     const cutoff = this.now() - RETENTION_MS
-    const kept = readLines<InboxItem>(this.inboxFile)
-      .filter(item => OPEN_STATES.has(this.states.get(item.id) ?? 'received') || Date.parse(item.receivedAt) >= cutoff)
-      .slice(-MAX_RETAINED_ITEMS)
+    const all = readLines<InboxItem>(this.inboxFile)
+    const isOpen = (item: InboxItem) => OPEN_STATES.has(this.states.get(item.id) ?? 'received')
+    // Лимит и срок — только для конечных событий: открытое нельзя терять ни при каком размере.
+    const finished = all.filter(item => !isOpen(item) && Date.parse(item.receivedAt) >= cutoff).slice(-MAX_RETAINED_ITEMS)
+    const keep = new Set([...all.filter(isOpen), ...finished])
+    const kept = all.filter(item => keep.has(item))
     kept.forEach(item => this.track(item))
     this.seq = kept.length
     const ids = new Set(kept.map(item => item.id))

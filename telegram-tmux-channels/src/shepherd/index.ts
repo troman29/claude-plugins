@@ -26,6 +26,16 @@ export type Shepherd = {
   stop(): void
 }
 
+/** Только положительный ACK стаба — доставка; молчание старого или зависшего стаба — нет. */
+export function ackToOutcome(ack: 'ok' | 'failed' | 'silent'): DeliveryResult {
+  return ack === 'ok' ? 'ok' : 'failed'
+}
+
+/** Сторож доставки шлёт повтор при отказе стаба; когда итог ждёт шеперд, повторы только у него. */
+export function watchdogApplies(outcomeRequested: boolean, nativeTransport: boolean): boolean {
+  return !(outcomeRequested && nativeTransport)
+}
+
 const GH_TIMEOUT_MS = 20_000
 const PR_URL_RE = /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)(?:[/?#].*)?$/
 

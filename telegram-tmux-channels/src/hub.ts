@@ -64,7 +64,7 @@ import { CompactionPosts } from './compaction'
 import { ProgressPost } from './progress-post'
 import { AnswerStream } from './answer-stream'
 import { literalSendText } from './literal-send'
-import { createShepherd, parsePrUrl, parseShepherdCommand, type Shepherd } from './shepherd/index'
+import { ackToOutcome, createShepherd, watchdogApplies, parsePrUrl, parseShepherdCommand, type Shepherd } from './shepherd/index'
 import { configPath as shepherdConfigPath } from './shepherd/config'
 import { isHeldTooLong, screenPollMs, uniqueByPane } from './screen-poll'
 import { mux } from './mux'
@@ -4657,19 +4657,25 @@ async function deliverMessage(
     ? { ...payload, id, meta: { delivery_id: id, ...payload.meta } }
     : payload
   const conns = connsForBinding(key, dir)
-  if (onOutcome && (conns.length || pane)) {
-    // Codex без нативного канала ack не шлёт: впечатанное в пейн считаем принятым.
-    const outcome = adapter.capabilities.nativeInboundTransport ? awaitAck(id) : Promise.resolve('silent' as const)
-    void outcome.then(result => onOutcome(result === 'failed' ? 'failed' : 'ok'))
+  const native = adapter.capabilities.nativeInboundTransport
+  // Тот, кто просил итог (шеперд), сам решает о повторе; сторож рядом дал бы второй экземпляр.
+  if (onOutcome && native && conns.length) {
+    void awaitAck(id).then(ack => onOutcome(ackToOutcome(ack)))
   }
   if (adapter.capabilities.nativeInboundTransport) {
     for (const conn of conns) send(conn, tagged)
   } else if (pane) {
     // Codex has no Claude Channels notification transport. Its MCP stub still supplies reply,
     // files and session identity; inbound text is submitted through the same tmux TUI users see.
-    await typeInbound({ pane, key, msg: tagged, adapter })
+    try {
+      await typeInbound({ pane, key, msg: tagged, adapter })
+    } catch (err) {
+      onOutcome?.('failed')
+      throw err
+    }
+    onOutcome?.('ok')
   }
-  if (conns.length || pane) {
+  if ((conns.length || pane) && watchdogApplies(!!onOutcome, native)) {
     const correlationNeedle = adapter.kind === 'codex'
       ? deliveryNeedle(id)
       : needle.trim().slice(0, 60)
