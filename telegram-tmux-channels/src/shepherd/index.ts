@@ -5,7 +5,8 @@ import type { BindingEntry } from '../registry'
 import { loadConfig, type ShepherdConfig } from './config'
 import type { Exec } from './owner'
 import { ShepherdRouter, type Clock, type DeliveryResult } from './router'
-import { startShepherdServer } from './server'
+import { startShepherdHttp, startShepherdServer } from './server'
+import { spawnForPr, type SpawnDeps } from './spawn'
 import { ShepherdStore } from './store'
 
 export type ShepherdOptions = {
@@ -13,6 +14,8 @@ export type ShepherdOptions = {
   bindings: () => Record<string, BindingEntry>
   deliver: (key: string, text: string) => Promise<DeliveryResult>
   post: (target: string, text: string, options: { silent: boolean }) => Promise<void>
+  reopenTopic: (key: string) => Promise<void>
+  spawn: Pick<SpawnDeps, 'groups' | 'createTopic' | 'saveBinding'>
   log: (line: string) => void
   exec?: Exec
   clock?: Clock
@@ -22,6 +25,8 @@ export type ShepherdOptions = {
 export type Shepherd = {
   router: ShepherdRouter
   socketPath: string
+  /** Порт HTTP-приёмника; нет секции `http` — undefined. */
+  httpPort(): number | undefined
   start(): void
   stop(): void
 }
@@ -67,27 +72,42 @@ const realExec: Exec = async cmd => {
 export function createShepherd(options: ShepherdOptions): Shepherd {
   const clock = options.clock ?? realClock
   const store = new ShepherdStore(join(options.stateDir, 'shepherd'), clock.now)
+  const config = options.config ?? (() => loadConfig(options.stateDir))
+  const exec = options.exec ?? realExec
+  const spawnDeps: SpawnDeps = { ...options.spawn, exec, config, bindings: options.bindings, log: options.log }
   const router = new ShepherdRouter({
     store,
-    config: options.config ?? (() => loadConfig(options.stateDir)),
+    config,
     bindings: options.bindings,
-    exec: options.exec ?? realExec,
+    exec,
     clock,
     deliver: options.deliver,
     post: options.post,
+    reopenTopic: options.reopenTopic,
+    spawn: event => spawnForPr(spawnDeps, event),
     log: options.log,
   })
   const socketPath = join(options.stateDir, 'shepherd.sock')
   let stopServer: (() => void) | undefined
+  let http: ReturnType<typeof startShepherdHttp> | undefined
   return {
     router,
     socketPath,
+    httpPort: () => http?.port,
     start() {
       stopServer = startShepherdServer(socketPath, raw => router.accept(raw), options.log)
+      const listen = config().http
+      if (listen) {
+        if (!config().token) {
+          options.log('shepherd: http is configured but there is no token — every request gets 401')
+        }
+        http = startShepherdHttp({ ...listen, token: () => config().token, handle: raw => router.accept(raw), log: options.log })
+      }
       router.replay()
     },
     stop() {
       stopServer?.()
+      http?.stop()
       router.stop()
     },
   }

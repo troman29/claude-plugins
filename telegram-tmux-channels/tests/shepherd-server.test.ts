@@ -4,6 +4,7 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import { ackToOutcome, createShepherd, parsePrUrl, watchdogApplies, parseShepherdCommand, type Shepherd } from '../src/shepherd/index'
 import { event, request, tempDir, OWNER_KEY } from './shepherd-helpers'
 
+const noSpawn = { groups: () => ({}), createTopic: async () => ({ key: '-100/9' }), saveBinding: async () => {} }
 let running: Shepherd | undefined
 afterEach(() => running?.stop())
 
@@ -44,6 +45,7 @@ describe('shepherd.sock', () => {
         return 'ok'
       },
       post: async () => {}, log: () => {},
+      reopenTopic: async () => {}, spawn: noSpawn,
       exec: async () => ({ code: 0, stdout: '' }),
     })
     running.start()
@@ -57,8 +59,8 @@ describe('shepherd.sock', () => {
       '{not json',
       JSON.stringify({ op: 'restart', key: '1/2' }),
     ])
-    expect(replies[0]).toEqual({ ok: true, status: 'persisted' })
-    expect(replies[1]).toEqual({ ok: true, status: 'duplicate' })
+    expect(replies[0]).toEqual({ ok: true, status: 'persisted', owner: 'none' })
+    expect(replies[1]).toEqual({ ok: true, status: 'duplicate', owner: 'none' })
     expect(replies[2]).toMatchObject({ ok: false, error: expect.stringContaining('invalid') })
     expect(replies[3]).toEqual({ ok: false, error: 'disabled' })
     expect(replies[4]).toMatchObject({ ok: false, error: 'invalid: not json' })

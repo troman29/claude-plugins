@@ -6504,11 +6504,50 @@ async function postToTarget(key: string, text: string, options: { silent: boolea
   })
 }
 
+/** Закрытый топик открываем перед доставкой; «уже открыт» — не ошибка, «топика нет» — ошибка. */
+async function reopenTopic(key: string): Promise<void> {
+  const target = keyToTarget(key)
+  if (target.thread_id == null) {
+    return
+  }
+  try {
+    await bot.api.reopenForumTopic(target.chat_id, target.thread_id)
+  } catch (err) {
+    if (!String(err).includes('TOPIC_NOT_MODIFIED')) {
+      throw err
+    }
+  }
+}
+
+async function createShepherdTopic(chat: string, title: string): Promise<{ key: string }> {
+  const topic = await bot.api.createForumTopic(chat, title)
+  const key = messageKey({ chatType: 'supergroup', chatId: chat, threadId: topic.message_thread_id })
+  recordTopic(chat, topic.message_thread_id, title, new Date().toISOString())
+  return { key }
+}
+
+// Биндинг пишем без сессии: её поднимает первая доставка (revive по входящему), как у выгруженной.
+async function saveShepherdBinding(key: string, binding: BindingEntry): Promise<void> {
+  const { chat_id: chatId, thread_id: threadId } = keyToTarget(key)
+  const group = loadTrustedGroups()[chatId]
+  const reg = loadBindings()
+  reg[key] = {
+    ...binding,
+    tmux: await freeTmuxName(tmuxSessionName(basename(binding.dir), key, slugFromTopicName(topicTitle(chatId, threadId!) ?? ''))),
+    ...(group?.agent ? { agent: group.agent } : {}),
+    ...(group?.cmdline && agentAdapter(group.agent).isProcessArgv(group.cmdline) ? { cmdline: group.cmdline } : {}),
+  }
+  saveBindings(reg)
+}
+
 function startShepherd(): void {
   if (!existsSync(shepherdConfigPath(STATE_DIR)) && process.env.TELEGRAM_SHEPHERD !== '1') {
     return
   }
-  shepherd = createShepherd({ stateDir: STATE_DIR, bindings: loadBindings, deliver: deliverToKey, post: postToTarget, log })
+  shepherd = createShepherd({
+    stateDir: STATE_DIR, bindings: loadBindings, deliver: deliverToKey, post: postToTarget, reopenTopic, log,
+    spawn: { groups: loadTrustedGroups, createTopic: createShepherdTopic, saveBinding: saveShepherdBinding },
+  })
   shepherd.start()
 }
 

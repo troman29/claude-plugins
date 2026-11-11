@@ -7,16 +7,17 @@ import { semanticKey, type ShepherdEvent } from './protocol'
 
 export type ItemState =
   | 'received' | 'routed'
-  | 'delivered' | 'shadowed' | 'unowned' | 'escalated' | 'dead' | 'logged' | 'dropped' | 'stale'
+  | 'awaiting-fanout' | 'queued'
+  | 'delivered' | 'shadowed' | 'unowned' | 'escalated' | 'dead' | 'logged' | 'dropped' | 'stale' | 'not-mine'
 
 export type InboxItem = { id: string; deliveryId: string; semKey?: string; receivedAt: string; event: ShepherdEvent }
-export type OwnerRecord = { key: string; version: number; source: 'branch' | 'manual' | 'gh'; at: string }
+export type OwnerRecord = { key: string; version: number; source: 'branch' | 'manual' | 'gh' | 'spawn'; at: string }
 export type PersistResult = { status: 'persisted'; item: InboxItem } | { status: 'duplicate' }
 
 type StateLine = { id: string; at: string; state: ItemState; note?: string }
 type CiRecord = { failures: number; lastSha: string }
 
-const OPEN_STATES: ReadonlySet<ItemState> = new Set(['received', 'routed'])
+const OPEN_STATES: ReadonlySet<ItemState> = new Set(['received', 'routed', 'awaiting-fanout', 'queued'])
 const RETENTION_MS = 7 * 24 * 3600_000
 const MAX_RETAINED_ITEMS = 5000
 

@@ -112,8 +112,14 @@ function describe(event: ShepherdEvent): string {
   return `${event.kind}${event.kind === 'checks_completed' ? ` ${shortSha(event)}` : ''}`
 }
 
-export function renderUnowned(event: ShepherdEvent): string {
-  return `🔔 ${head(event)}: ${describe(event)}, владельца нет (ветка ${event.headRef}).\nЧтобы назначить, напиши /own ${event.prUrl} в топике нужной сессии.\n${event.prUrl}`
+/** Служебная строка: PR без владельца и почему шеперд не завёл сессию сам. */
+export function renderUnowned(event: ShepherdEvent, reason: string): string {
+  return `🔔 ${head(event)}: ${describe(event)}, владельца нет (ветка ${event.headRef}). ${reason}\n${event.prUrl}`
+}
+
+/** Первая строка спавненной сессии: контекст PR, затем само событие. */
+export function renderSpawnIntro(event: ShepherdEvent): string {
+  return `Ты ведёшь PR ${event.prUrl} (ветка ${event.headRef}). Пришло событие:`
 }
 
 export function renderShadow(event: ShepherdEvent, owner: string | undefined): string {
