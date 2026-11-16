@@ -50,6 +50,8 @@ export type AgentLaunchEnvironment = {
   env: Record<string, string>
   envFiles?: AgentEnvFile[]
   unsetEnv?: string[]
+  // Переменные этого файла уходят агенту слоем `--settings`: он старше ~/.claude/settings.json.
+  settingsEnvFile?: string
 }
 
 // All agent-specific knowledge belongs behind this contract. The Telegram hub may still own

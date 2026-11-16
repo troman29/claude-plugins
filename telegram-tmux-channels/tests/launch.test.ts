@@ -1,5 +1,8 @@
+import { readFileSync, statSync, writeFileSync } from 'fs'
+import { join } from 'path'
 import { describe, expect, test } from 'bun:test'
-import { launchLine, launchScript, parseLaunchArgs } from '../src/launch'
+import { launchLine, launchScript, parseLaunchArgs, writeSettingsLayer } from '../src/launch'
+import { tempDir } from './shepherd-helpers'
 
 describe('tgc-run', () => {
   test('хаб печатает в пейн одну короткую строку', () => {
@@ -61,5 +64,21 @@ describe('tgc-run', () => {
     })
 
     expect(script).toContain('set -a; . /provider.env; set +a')
+  })
+})
+
+describe('writeSettingsLayer', () => {
+  test('turns a dotenv backend file into a private settings layer', () => {
+    const envFile = join(tempDir(), 'chatgpt.env')
+    writeFileSync(envFile, '# sub2api\nANTHROPIC_BASE_URL=http://127.0.0.1:8791\nANTHROPIC_AUTH_TOKEN=sk-test\n')
+    const layer = writeSettingsLayer(envFile)
+    expect(JSON.parse(readFileSync(layer, 'utf8'))).toEqual({
+      env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:8791', ANTHROPIC_AUTH_TOKEN: 'sk-test' },
+    })
+    expect(statSync(layer).mode & 0o777).toBe(0o600)
+  })
+
+  test('missing backend file fails the launch', () => {
+    expect(() => writeSettingsLayer(join(tempDir(), 'absent.env'))).toThrow('Required backend configuration is missing')
   })
 })
