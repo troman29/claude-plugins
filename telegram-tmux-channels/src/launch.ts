@@ -1,4 +1,4 @@
-import { lstatSync, mkdirSync, readlinkSync, rmSync, symlinkSync } from 'fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'fs'
 import { homedir } from 'os'
 import { dirname, join } from 'path'
 import { shellQuote, type LaunchMode } from './tmux-ops'
@@ -53,6 +53,23 @@ export function launchScript(plan: LaunchPlan): string {
     `exec ${shellQuote(plan.argv)}`,
   ]
   return `${lines.join('\n')}\n`
+}
+
+/** Переводит dotenv-файл в settings-слой `<file>.settings.json` (права 600) и возвращает его путь. */
+export function writeSettingsLayer(envFile: string): string {
+  if (!existsSync(envFile)) {
+    throw new Error('Required backend configuration is missing')
+  }
+  const env: Record<string, string> = {}
+  for (const line of readFileSync(envFile, 'utf8').split('\n')) {
+    const m = line.match(/^(\w+)=(.*)$/)
+    if (m) {
+      env[m[1]!] = m[2]!
+    }
+  }
+  const layer = `${envFile}.settings.json`
+  writeFileSync(layer, JSON.stringify({ env }), { mode: 0o600 })
+  return layer
 }
 
 /** Кладёт `tgc-run`, `tgc-ctl` и обёртку `gh` в `~/.local/bin`: хаб печатает `tgc-run` голым именем, и шелл

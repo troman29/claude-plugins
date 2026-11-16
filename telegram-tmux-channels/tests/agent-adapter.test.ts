@@ -52,6 +52,12 @@ describe('agent adapter registry', () => {
     expect(codexAdapter.launchEnvironment(['dm:7'], {}).env).toEqual({ TELEGRAM_BINDING_KEYS: 'dm:7' })
   })
 
+  test('ChatGPT backend outranks the Claude key in ~/.claude/settings.json via a settings layer', () => {
+    expect(claudeAdapter.launchEnvironment(['dm:7'], { claudeBackend: 'chatgpt' }).settingsEnvFile)
+      .toMatch(/\/\.claude\/backends\/chatgpt\.env$/)
+    expect(claudeAdapter.launchEnvironment(['dm:7'], { claudeBackend: 'claude' }).settingsEnvFile).toBeUndefined()
+  })
+
   test('direct Claude backend removes inherited Sub2API routing', () => {
     expect(claudeAdapter.launchEnvironment(['dm:7'], { claudeBackend: 'claude' }).unsetEnv)
       .toEqual(['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN'])

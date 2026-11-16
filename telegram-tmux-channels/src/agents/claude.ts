@@ -75,7 +75,7 @@ export const claudeAdapter: AgentAdapter = {
         { path: join(homedir(), '.claude', 'claude.env'), required: false },
         ...(backend === 'chatgpt' ? [{ path: chatgptEnvFile(), required: true }] : []),
       ],
-      ...(backend === 'claude' ? { unsetEnv: PROVIDER_ENV_KEYS } : {}),
+      ...(backend === 'claude' ? { unsetEnv: PROVIDER_ENV_KEYS } : { settingsEnvFile: chatgptEnvFile() }),
     }
   },
 }

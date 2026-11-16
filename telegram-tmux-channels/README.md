@@ -497,9 +497,10 @@ tgc-run -1001234567890/447 resume 0b6e1c2a-5f3d-4c8e-9a71-2d4f6e8b0c13
 It takes binding key(s), `new|resume|fork` and an optional conversation id; the folder, the learned
 argv and the environment (`TELEGRAM_BINDING_KEYS`, Claude's resume thresholds) come from
 `bindings.json`. For Claude it also sources `~/.claude/claude.env` when readable. A `chatgpt`
-binding then sources `TELEGRAM_CLAUDE_CHATGPT_ENV`; a `claude` binding removes inherited
-`ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN`. Provider variables must not live in Claude Code's
-global `settings.json`, because user settings would override the binding choice inside the CLI.
+binding then sources `TELEGRAM_CLAUDE_CHATGPT_ENV` and also passes its variables as a `--settings`
+layer (`<file>.settings.json`, mode 600): Claude Code applies `env` from the user `settings.json` over
+the process environment, so only a flag layer outranks a default provider key kept there. A `claude`
+binding removes inherited `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` from the process environment.
 The launcher ends in `exec`, so the pane's foreground process is the agent itself. The hub links it into `~/.local/bin` on start,
 which has to be on the pane shell's `PATH`.
 
