@@ -19,19 +19,47 @@ describe('tgc-run', () => {
     expect(() => parseLaunchArgs([])).toThrow('usage')
   })
 
-  test('скрипт: папка, окружение, env-файл агента и exec последней строкой', () => {
+  test('скрипт: папка, окружение, env-файлы агента и exec последней строкой', () => {
     const script = launchScript({
       dir: '/home/u/my project',
       env: { TELEGRAM_BINDING_KEYS: 'dm:7' },
-      envFile: '/home/u/.claude/claude.env',
+      envFiles: [
+        { path: '/home/u/.claude/claude.env', required: false },
+        { path: '/home/u/.claude/backends/chatgpt.env', required: true },
+      ],
       argv: ['claude', '--model', 'opus[1m]', '--resume', 'abc'],
     })
     expect(script).toBe([
       "cd '/home/u/my project'",
       'export TELEGRAM_BINDING_KEYS=dm:7',
-      'if [ -r /home/u/.claude/claude.env ]; then . /home/u/.claude/claude.env; fi',
+      'if [ -r /home/u/.claude/claude.env ]; then set -a; . /home/u/.claude/claude.env; set +a; fi',
+      'if [ ! -r /home/u/.claude/backends/chatgpt.env ]; then echo \'Required backend configuration is missing\' >&2; exit 1; fi',
+      'set -a; . /home/u/.claude/backends/chatgpt.env; set +a',
       "exec claude --model 'opus[1m]' --resume abc",
       '',
     ].join('\n'))
+  })
+
+  test('скрипт удаляет переменные другого провайдера после общих env-файлов', () => {
+    const script = launchScript({
+      dir: '/work',
+      env: {},
+      envFiles: [{ path: '/home/u/.claude/claude.env', required: false }],
+      unsetEnv: ['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN'],
+      argv: ['claude'],
+    })
+
+    expect(script).toContain('unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN\nexec claude')
+  })
+
+  test('env-файл подключается с allexport для обычных KEY=value', () => {
+    const script = launchScript({
+      dir: '/work',
+      env: {},
+      envFiles: [{ path: '/provider.env', required: true }],
+      argv: ['sh', '-c', 'test "$PROVIDER_KEY" = secret'],
+    })
+
+    expect(script).toContain('set -a; . /provider.env; set +a')
   })
 })

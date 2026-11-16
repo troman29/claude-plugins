@@ -1,6 +1,7 @@
 import { existsSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
+import type { ClaudeBackend } from '../claude-backend'
 import type { AgentAdapter, AgentKind } from './types'
 import { claudeAdapter } from './claude'
 import { codexAdapter } from './codex'
@@ -48,7 +49,7 @@ export function mayLearn(
  * так и жили с claude-id под `agent: codex`). Правит биндинг на месте: реестр сохраняет вызывающий.
  */
 export function forgetForeignConversation(
-  binding: { agent?: AgentKind; sessionId?: string; cmdline?: string[] },
+  binding: { agent?: AgentKind; sessionId?: string; cmdline?: string[]; backend?: ClaudeBackend },
   agent: AgentKind | undefined,
 ): void {
   if ((binding.agent ?? 'claude') === (agent ?? 'claude')) {
@@ -56,4 +57,7 @@ export function forgetForeignConversation(
   }
   delete binding.sessionId
   delete binding.cmdline
+  if ((agent ?? 'claude') !== 'claude') {
+    delete binding.backend
+  }
 }

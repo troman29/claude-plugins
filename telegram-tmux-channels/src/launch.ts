@@ -5,7 +5,15 @@ import { shellQuote, type LaunchMode } from './tmux-ops'
 
 export type LaunchRequest = { keys: string[]; mode: LaunchMode; sessionId?: string }
 
-export type LaunchPlan = { dir: string; env: Record<string, string>; envFile?: string; argv: string[]; pathPrepend?: string }
+export type EnvFile = { path: string; required: boolean }
+export type LaunchPlan = {
+  dir: string
+  env: Record<string, string>
+  envFiles?: EnvFile[]
+  unsetEnv?: string[]
+  argv: string[]
+  pathPrepend?: string
+}
 
 export const LAUNCHER = 'tgc-run'
 const TOOLS = [LAUNCHER, 'tgc-ctl', 'gh']
@@ -29,11 +37,19 @@ export function parseLaunchArgs(args: string[]): LaunchRequest {
 
 /** Shell-скрипт для `eval` в обёртке: последней строкой он заменяет шелл агентом через exec. */
 export function launchScript(plan: LaunchPlan): string {
+  const sourceFile = (path: string) => `set -a; . ${shellQuote([path])}; set +a`
+  const envFileLines = (plan.envFiles ?? []).flatMap(file => file.required
+    ? [
+        `if [ ! -r ${shellQuote([file.path])} ]; then echo 'Required backend configuration is missing' >&2; exit 1; fi`,
+        sourceFile(file.path),
+      ]
+    : [`if [ -r ${shellQuote([file.path])} ]; then ${sourceFile(file.path)}; fi`])
   const lines = [
     `cd ${shellQuote([plan.dir])}`,
     ...Object.entries(plan.env).map(([name, value]) => `export ${name}=${shellQuote([value])}`),
     ...(plan.pathPrepend ? [`export PATH=${shellQuote([plan.pathPrepend])}":$PATH"`] : []),
-    ...(plan.envFile ? [`if [ -r ${shellQuote([plan.envFile])} ]; then . ${shellQuote([plan.envFile])}; fi`] : []),
+    ...envFileLines,
+    ...(plan.unsetEnv?.length ? [`unset ${plan.unsetEnv.join(' ')}`] : []),
     `exec ${shellQuote(plan.argv)}`,
   ]
   return `${lines.join('\n')}\n`

@@ -117,10 +117,12 @@ describe('registry', () => {
       'not-a-key': { dir: '/bad' },
       '-1/3': { dir: '' },
       '-1/4': { dir: '/x', agent: 'other' },
+      '-1/5': { dir: '/x', backend: 'openrouter' },
+      '-1/6': { dir: '/x', agent: 'codex', backend: 'chatgpt' },
     })
     expect(got.bindings['-1/2']?.dir).toBe('/ok')
     expect((got.bindings['-1/2'] as Record<string, unknown>).extraFutureField).toBe(true)
-    expect(got.rejected).toHaveLength(3)
+    expect(got.rejected).toHaveLength(5)
   })
 })
 
@@ -273,6 +275,7 @@ describe('tmux-ops', () => {
     expect(parseOpsCommand('/status')).toEqual({ cmd: 'status' })
     expect(parseOpsCommand('/doctor')).toEqual({ cmd: 'doctor' })
     expect(parseOpsCommand('/model')).toEqual({ cmd: 'model' })
+    expect(parseOpsCommand('/backend chatgpt')).toEqual({ cmd: 'backend', arg: 'chatgpt' })
     expect(parseOpsCommand('/close')).toEqual({ cmd: 'close' })
     expect(parseOpsCommand('/stop')).toEqual({ cmd: 'esc' }) // «стоп» — прервать ход, а не закрыть сессию
     expect(parseOpsCommand('/screen')).toEqual({ cmd: 'screen' })

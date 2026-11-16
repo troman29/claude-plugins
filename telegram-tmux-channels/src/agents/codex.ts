@@ -475,5 +475,5 @@ export const codexAdapter: AgentAdapter = {
   canOpenStatusPanel: codexCanOpenStatusPanel,
   parseStatusPanel: parseCodexStatusPanel,
   cachedStatusLines: () => [],
-  launchEnv: keys => ({ TELEGRAM_BINDING_KEYS: keys.join(',') }),
+  launchEnvironment: keys => ({ env: { TELEGRAM_BINDING_KEYS: keys.join(',') } }),
 }

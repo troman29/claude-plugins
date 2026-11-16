@@ -8,6 +8,7 @@ import { safeJsonParse } from './util'
 import { rememberSessionTopics } from './session-topics'
 import { keyToTarget } from './bindings'
 import type { AgentKind } from './agents/types'
+import type { ClaudeBackend } from './claude-backend'
 import type { TrustedGroupMode } from './trusted-groups'
 
 export const BINDINGS_FILE = join(STATE_DIR, 'bindings.json')
@@ -20,6 +21,7 @@ export type BindingEntry = {
   // Missing means Claude for backwards compatibility with every binding written before
   // the multi-agent adapter existed. New bindings persist the choice explicitly.
   agent?: AgentKind
+  backend?: ClaudeBackend
   allow?: string[]
   cmdline?: string[]
   sessionId?: string // claude conversation id — --resume target when this binding's dir is shared
@@ -59,6 +61,15 @@ export function validBindings(parsed: unknown): { bindings: Record<string, Bindi
     const agent = (value as BindingEntry).agent
     if (agent != null && agent !== 'claude' && agent !== 'codex') {
       rejected.push(`bad agent for ${JSON.stringify(key)}`)
+      continue
+    }
+    const backend = (value as BindingEntry).backend
+    if (backend != null && (backend !== 'claude' && backend !== 'chatgpt')) {
+      rejected.push(`bad backend for ${JSON.stringify(key)}`)
+      continue
+    }
+    if (backend != null && agent === 'codex') {
+      rejected.push(`Claude backend on Codex binding ${JSON.stringify(key)}`)
       continue
     }
     bindings[key] = value as BindingEntry // unknown fields remain forward-compatible

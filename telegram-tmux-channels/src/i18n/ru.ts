@@ -28,6 +28,7 @@ export const ru: Strings = {
     '📥 <b>/queue &lt;текст&gt;</b> (или <code>/q</code>) — придержать текст до конца текущего хода, ' +
     'вместо того чтобы вклиниться в него. Если сессия свободна — уйдёт сразу.',
   cmd_model: 'Выбрать модель (интерактивно, кнопками)',
+  cmd_backend: 'Переключить эту Claude-сессию между Claude и ChatGPT',
   cmd_close: 'Закрыть сессию (graceful /exit); /stop прерывает ход',
   cmd_restart: 'Аккуратный перезапуск сессии',
   cmd_restart_all: 'Перезапустить все живые Claude и Codex сессии (админ)',
@@ -256,6 +257,18 @@ export const ru: Strings = {
   nowNothing: '🤷 В очереди ничего нет — следующее сообщение агент получит сразу.',
   toastNothingQueued: 'В очереди пусто',
   modelSent: '📋 <code>/model</code> отправлен — жди меню с кнопками.',
+  backendClaudeOnly: '⚠️ <code>/backend</code> работает только для биндингов Claude Code.',
+  backendStatus: backend => `🔌 Backend Claude Code: <b>${backend}</b>.`,
+  backendUsage: backend =>
+    `🔌 Сейчас: <b>${backend}</b>. Использование: <code>/backend claude</code> или <code>/backend chatgpt</code>.`,
+  backendSaved: backend => `✅ Backend <b>${backend}</b> сохранён. Он применится при следующем запуске сессии.`,
+  backendSwitching: backend => `🔌 <b>Переключаю Claude Code на ${backend}</b>…`,
+  backendSwitched: (backend, seconds) => `✅ <b>Claude Code работает через ${backend}</b> — сессия поднялась за ${seconds} с.`,
+  backendNotReady: (backend, seconds) =>
+    `⚠️ Backend изменён на <b>${backend}</b>, но сессия не подключилась за ${seconds} с. Вызови <code>/tui</code>.`,
+  backendRestartFailed: (backend, error) =>
+    `⚠️ Backend изменён на <b>${backend}</b>, но перезапуск не удался: ${error}`,
+  statusBackend: backend => `🔌 backend: <code>${backend}</code>`,
   stopNoProc: '⚠️ Стоп недоступен — не опознал процесс claude.',
   closing: '🛑 <b>Закрываю</b> сессию… Если всплывёт вопрос про фоновые задачи — ответь кнопками, иначе через ~10с выйду сам.',
   procNotDead: '⚠️ Процесс не умер — глянь руками в tmux.',

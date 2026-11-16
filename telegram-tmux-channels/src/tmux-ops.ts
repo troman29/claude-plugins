@@ -5,7 +5,7 @@ import { mux } from './mux'
 export type OpsCommand =
   | 'compact' | 'clear' | 'esc' | 'enter' | 'restart' | 'restart_all' | 'resume' | 'new' | 'fork' | 'status' | 'doctor'
   | 'bind' | 'unbind' | 'allow' | 'model' | 'close' | 'screen' | 'tui' | 'delete' | 'skills' | 'reload'
-  | 'stand_up' | 'stand_down' | 'pin' | 'unpin' | 'lang' | 'queue' | 'send' | 'now'
+  | 'stand_up' | 'stand_down' | 'pin' | 'unpin' | 'lang' | 'queue' | 'send' | 'now' | 'backend'
 
 // `/q` — короткий алиас `/queue`: команда набирается на бегу, посреди чужого хода.
 // /last — прежнее имя /tui: команду переименовали, привычку оставили работать.
@@ -17,7 +17,7 @@ export function parseOpsCommand(
   text: string,
 ): { cmd: OpsCommand; bot?: string; arg?: string } | undefined {
   const m =
-    /^\/(compact|clear|esc|enter|restart|restart_all|resume|new|fork|status|doctor|bind|unbind|allow|model|close|stop|screen|tui|last|delete|skills|reload|stand_up|stand_down|pin|unpin|lang|now)(?:@(\w+))?(?:\s+(\S.*?))?\s*$/.exec(
+    /^\/(compact|clear|esc|enter|restart|restart_all|resume|new|fork|status|doctor|bind|unbind|allow|model|backend|close|stop|screen|tui|last|delete|skills|reload|stand_up|stand_down|pin|unpin|lang|now)(?:@(\w+))?(?:\s+(\S.*?))?\s*$/.exec(
       text.trim(),
     ) ??
     // Отдельным разбором, потому что аргумент `/queue` — текст задачи, и он бывает

@@ -10,10 +10,10 @@ if (!binding) {
   throw new Error(`no binding ${req.keys[0]}`)
 }
 const adapter = agentAdapter(binding.agent)
+const launchEnvironment = adapter.launchEnvironment(req.keys, { claudeBackend: binding.backend })
 process.stdout.write(launchScript({
   dir: binding.dir,
-  env: adapter.launchEnv(req.keys),
-  ...(adapter.envFile ? { envFile: adapter.envFile } : {}),
+  ...launchEnvironment,
   pathPrepend: launcherDir(), // обёртка gh раньше настоящего gh — только у сессий хаба
   argv: adapter.buildLaunch(binding.cmdline, req.mode, req.sessionId),
 }))

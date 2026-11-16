@@ -1,4 +1,5 @@
 import type { TopicRef } from '../session-topics'
+import type { ClaudeBackend } from '../claude-backend'
 
 export type AgentKind = 'claude' | 'codex'
 
@@ -41,6 +42,14 @@ export type AgentStatusPanel = {
   contextLeftPct?: number
   limits: { label: string; remainingPct: number; resets?: string }[]
   stale?: boolean
+}
+
+export type AgentLaunchProfile = { claudeBackend?: ClaudeBackend }
+export type AgentEnvFile = { path: string; required: boolean }
+export type AgentLaunchEnvironment = {
+  env: Record<string, string>
+  envFiles?: AgentEnvFile[]
+  unsetEnv?: string[]
 }
 
 // All agent-specific knowledge belongs behind this contract. The Telegram hub may still own
@@ -93,7 +102,5 @@ export interface AgentAdapter {
   // Agent-owned status sources that do not require poking the live pane (e.g. Claude's
   // statusline cache). The hub only renders the returned lines.
   cachedStatusLines(dir: string, nowMs: number): string[]
-  launchEnv(bindingKeys: string[]): Record<string, string>
-  /** Shell-файл окружения агента: запуск подгружает его, если он читается. */
-  envFile?: string
+  launchEnvironment(bindingKeys: string[], profile: AgentLaunchProfile): AgentLaunchEnvironment
 }

@@ -27,6 +27,7 @@ export const en = {
     '📥 <b>/queue &lt;text&gt;</b> (or <code>/q</code>) — hold the text until the current turn ends, ' +
     'instead of cutting into it. With the session idle it goes straight through.',
   cmd_model: 'Pick a model (interactive, buttons)',
+  cmd_backend: 'Switch this Claude session between Claude and ChatGPT',
   cmd_close: 'Close the session (graceful /exit); /stop interrupts the turn',
   cmd_restart: 'Gracefully restart the session',
   cmd_restart_all: 'Restart all live Claude and Codex sessions (admin)',
@@ -267,6 +268,18 @@ Send <code>/tui</code> to see its terminal, or <code>/restart</code>.`,
   nowNothing: '🤷 Nothing is queued — your next message reaches the agent right away.',
   toastNothingQueued: 'Nothing queued',
   modelSent: '📋 <code>/model</code> sent — wait for the button menu.',
+  backendClaudeOnly: '⚠️ <code>/backend</code> applies only to Claude Code bindings.',
+  backendStatus: (backend: string) => `🔌 Claude Code backend: <b>${backend}</b>.`,
+  backendUsage: (backend: string) =>
+    `🔌 Current backend: <b>${backend}</b>. Usage: <code>/backend claude</code> or <code>/backend chatgpt</code>.`,
+  backendSaved: (backend: string) => `✅ Backend <b>${backend}</b> saved. It applies on the next session start.`,
+  backendSwitching: (backend: string) => `🔌 <b>Switching Claude Code to ${backend}</b>…`,
+  backendSwitched: (backend: string, seconds: number) => `✅ <b>Claude Code uses ${backend}</b> — resumed in ${seconds}s.`,
+  backendNotReady: (backend: string, seconds: number) =>
+    `⚠️ Backend changed to <b>${backend}</b>, but the session did not reconnect in ${seconds}s. Use <code>/tui</code>.`,
+  backendRestartFailed: (backend: string, error: string) =>
+    `⚠️ Backend changed to <b>${backend}</b>, but restart failed: ${error}`,
+  statusBackend: (backend: string) => `🔌 backend: <code>${backend}</code>`,
   stopNoProc: '⚠️ Stop unavailable — couldn\'t identify the claude process.',
   closing: '🛑 <b>Closing</b> the session… If a background-tasks question pops up — answer with buttons, otherwise I exit myself in ~10s.',
   procNotDead: '⚠️ Process didn\'t die — check tmux by hand.',

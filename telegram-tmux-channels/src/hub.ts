@@ -74,6 +74,7 @@ import { WORKFLOW_SUBAGENT } from './hook-normalize'
 import { replyContext, type ReplyContext } from './reply-context'
 import { installLauncher, launchLine } from './launch'
 import { selectRestartTargets, summarizeRestarts, type RestartableSession, type RestartOutcome } from './restart-all'
+import { effectiveClaudeBackend, parseClaudeBackend } from './claude-backend'
 
 const log = (s: string) => process.stderr.write(`telegram hub: ${s}\n`)
 
@@ -1635,7 +1636,7 @@ function paneBelongsToKey(pane: string, key: string): boolean {
 // so the menu re-registers (with translated descriptions) whenever /lang switches.
 const OPS_NAMES = new Set([
   'status', 'doctor', 'resume', 'screen', 'tui', 'new', 'fork', 'skills', 'stand_up', 'stand_down',
-  'pin', 'unpin', 'reload', 'compact', 'clear', 'esc', 'enter', 'now', 'model', 'close',
+  'pin', 'unpin', 'reload', 'compact', 'clear', 'esc', 'enter', 'now', 'model', 'backend', 'close',
   'restart', 'restart_all', 'bind', 'unbind', 'delete', 'allow', 'lang', 'send',
 ])
 function opsCommands(): { command: string; description: string }[] {
@@ -1662,6 +1663,7 @@ function opsCommands(): { command: string; description: string }[] {
     { command: 'now', description: L.cmd_now },
     { command: 'send', description: L.cmd_send },
     { command: 'model', description: L.cmd_model },
+    { command: 'backend', description: L.cmd_backend },
     { command: 'close', description: L.cmd_close },
     { command: 'restart', description: L.cmd_restart },
     { command: 'restart_all', description: L.cmd_restart_all },
@@ -5205,6 +5207,58 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
   let live = binding ? await liveOrReconnecting(key, binding) : []
   const session = live.length > 0 ? router.get(live[0]) : undefined
 
+  if (cmd === 'backend') {
+    if (!binding) {
+      void say(L.noBinding)
+      return
+    }
+    if ((binding.agent ?? 'claude') !== 'claude') {
+      void say(L.backendClaudeOnly)
+      return
+    }
+    const current = effectiveClaudeBackend(binding.backend)
+    if (!arg) {
+      void say(L.backendStatus(current))
+      return
+    }
+    const requested = parseClaudeBackend(arg)
+    if (!requested) {
+      void say(L.backendUsage(current))
+      return
+    }
+    if (requested === current && binding.backend === requested) {
+      void say(L.backendStatus(current))
+      return
+    }
+    const latest = loadBindings()
+    const latestBinding = latest[key]
+    if (!latestBinding) {
+      void say(L.noBinding)
+      return
+    }
+    latestBinding.backend = requested
+    saveBindings(latest)
+    if (requested === current) {
+      void say(L.backendSaved(requested))
+      return
+    }
+    if (!session?.pane || !session.pid) {
+      void say(L.backendSaved(requested))
+      return
+    }
+    const post = progressPost(chat_id, threadId, [L.backendSwitching(requested)])
+    const startedAt = Date.now()
+    post.running(seconds => L.restartWaiting(seconds))
+    const outcome = await restartLiveSession(key, latestBinding, session as RestartableSession)
+    const seconds = Math.round((Date.now() - startedAt) / 1000)
+    post.settle(
+      outcome.kind === 'ready' ? L.backendSwitched(requested, seconds)
+        : outcome.kind === 'not-ready' ? L.backendNotReady(requested, seconds)
+          : L.backendRestartFailed(requested, escHtml(String(outcome.error))),
+    )
+    return
+  }
+
   // /stand_up | /stand_down — stand hooks from the binding folder's `.tmux-channels.json`. The hook prints
   // `internal=…`/`external=…` — those are the links; the rest of the output is shown as a tail.
   if (cmd === 'stand_up' || cmd === 'stand_down') {
@@ -5272,6 +5326,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
       dir: binding.dir,
       tmux: await freeTmuxName(tmuxSessionName(basename(binding.dir), newKey, slugFromTopicName(name))),
       ...(binding.agent ? { agent: binding.agent } : {}),
+      ...(binding.backend ? { backend: binding.backend } : {}),
       sessionId: binding.sessionId, // точка разветвления; свой id ветка выучит при старте
       ...(binding.cmdline ? { cmdline: binding.cmdline } : {}),
       ...(binding.allow ? { allow: [...binding.allow] } : {}),
@@ -5502,6 +5557,9 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
       const name = sessionName(key, binding)
       const tmuxState = (await hasTmuxSession(name)) ? L.tmuxHas : L.tmuxNone
       lines.push(L.statusTmux(escHtml(name), tmuxState), '', L.statusResumeHint)
+    }
+    if ((binding.agent ?? 'claude') === 'claude') {
+      lines.push(L.statusBackend(effectiveClaudeBackend(binding.backend)))
     }
     // Порядок строк = порядок причин: сперва почему НЕ уснёт, потом когда уснёт.
     const cronsHere = sessionCrons.get(key)?.crons ?? []

@@ -11,6 +11,9 @@ import {
 } from '../session-id'
 import { paneReady } from '../picker'
 import { formatLimits, readLimits } from '../limits'
+import { chatgptEnvFile, effectiveClaudeBackend } from '../claude-backend'
+
+const PROVIDER_ENV_KEYS = ['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN']
 
 export const claudeAdapter: AgentAdapter = {
   kind: 'claude',
@@ -60,10 +63,19 @@ export const claudeAdapter: AgentAdapter = {
   // Возобновляя из чата, сессию поднимают целиком и осознанно — диалог «взять саммари вместо
   // истории?» тут только блокирует подъём, отвечать на него некому. Его открывают два порога
   // CLI — по токенам (≥100k) и по возрасту (>70 мин); гасим оба, только для наших сессий.
-  launchEnv: keys => ({
-    CLAUDE_CODE_RESUME_TOKEN_THRESHOLD: '999999999',
-    CLAUDE_CODE_RESUME_THRESHOLD_MINUTES: '999999999',
-    TELEGRAM_BINDING_KEYS: keys.join(','),
-  }),
-  envFile: join(homedir(), '.claude', 'claude.env'),
+  launchEnvironment: (keys, profile) => {
+    const backend = effectiveClaudeBackend(profile.claudeBackend)
+    return {
+      env: {
+        CLAUDE_CODE_RESUME_TOKEN_THRESHOLD: '999999999',
+        CLAUDE_CODE_RESUME_THRESHOLD_MINUTES: '999999999',
+        TELEGRAM_BINDING_KEYS: keys.join(','),
+      },
+      envFiles: [
+        { path: join(homedir(), '.claude', 'claude.env'), required: false },
+        ...(backend === 'chatgpt' ? [{ path: chatgptEnvFile(), required: true }] : []),
+      ],
+      ...(backend === 'claude' ? { unsetEnv: PROVIDER_ENV_KEYS } : {}),
+    }
+  },
 }

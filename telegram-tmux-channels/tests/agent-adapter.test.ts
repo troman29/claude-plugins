@@ -10,6 +10,7 @@ import {
   codexCanOpenStatusPanel, parseCodexStatusPanel,
 } from '../src/agents/codex'
 import { codexAssistantDraftText } from '../src/agents/codex'
+import { defaultClaudeBackend, effectiveClaudeBackend, parseClaudeBackend } from '../src/claude-backend'
 
 describe('agent adapter registry', () => {
   test('old bindings remain Claude and both explicit adapters resolve', () => {
@@ -40,13 +41,20 @@ describe('agent adapter registry', () => {
   })
 
   test('agent-specific launch environment stays behind the adapter contract', () => {
-    expect(claudeAdapter.launchEnv(['dm:7', 'dm:8'])).toMatchObject({
+    const claudeLaunch = claudeAdapter.launchEnvironment(['dm:7', 'dm:8'], { claudeBackend: 'chatgpt' })
+    expect(claudeLaunch.env).toMatchObject({
       CLAUDE_CODE_RESUME_TOKEN_THRESHOLD: '999999999',
       TELEGRAM_BINDING_KEYS: 'dm:7,dm:8',
     })
-    expect(claudeAdapter.envFile).toEndWith('/.claude/claude.env')
-    expect(codexAdapter.launchEnv(['dm:7'])).toEqual({ TELEGRAM_BINDING_KEYS: 'dm:7' })
-    expect(codexAdapter.envFile).toBeUndefined()
+    expect(claudeLaunch.envFiles?.map(file => file.path).every(path => path.startsWith('/'))).toBe(true)
+    expect(claudeLaunch.envFiles?.[0]?.path.endsWith('/.claude/claude.env')).toBe(true)
+    expect(claudeLaunch.envFiles?.[1]?.path.endsWith('/.claude/backends/chatgpt.env')).toBe(true)
+    expect(codexAdapter.launchEnvironment(['dm:7'], {}).env).toEqual({ TELEGRAM_BINDING_KEYS: 'dm:7' })
+  })
+
+  test('direct Claude backend removes inherited Sub2API routing', () => {
+    expect(claudeAdapter.launchEnvironment(['dm:7'], { claudeBackend: 'claude' }).unsetEnv)
+      .toEqual(['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN'])
   })
 
   test('recognises only its own live pane command for foreign-pane protection', () => {
@@ -54,6 +62,23 @@ describe('agent adapter registry', () => {
     expect(claudeAdapter.isPaneCommand('codex')).toBe(false)
     expect(codexAdapter.isPaneCommand('/usr/local/bin/codex')).toBe(true)
     expect(codexAdapter.isPaneCommand('zsh')).toBe(false)
+  })
+})
+
+describe('Claude backend', () => {
+  test('accepts only supported command values', () => {
+    expect(parseClaudeBackend('CLAUDE')).toBe('claude')
+    expect(parseClaudeBackend('chatgpt')).toBe('chatgpt')
+    expect(parseClaudeBackend('openrouter')).toBeUndefined()
+  })
+
+  test('binding override wins over the host default', () => {
+    expect(effectiveClaudeBackend(undefined, 'chatgpt')).toBe('chatgpt')
+    expect(effectiveClaudeBackend('claude', 'chatgpt')).toBe('claude')
+  })
+
+  test('invalid host default fails instead of silently changing provider', () => {
+    expect(() => defaultClaudeBackend('openrouter')).toThrow('Unsupported Claude backend')
   })
 })
 
@@ -296,8 +321,8 @@ test('streaming draft reads only agent_message snapshots, never commentary or to
 
 describe('смена харнесса у биндинга (forgetForeignConversation)', () => {
   test('claude-разговор не переезжает в codex: id и argv уходят', () => {
-    const binding: { agent?: 'claude' | 'codex'; sessionId?: string; cmdline?: string[] } =
-      { agent: 'claude', sessionId: '645fc99c', cmdline: ['claude', '--resume', '645fc99c'] }
+    const binding: { agent?: 'claude' | 'codex'; sessionId?: string; cmdline?: string[]; backend?: string } =
+      { agent: 'claude', sessionId: '645fc99c', cmdline: ['claude', '--resume', '645fc99c'], backend: 'chatgpt' }
     forgetForeignConversation(binding, 'codex')
     expect(binding).toEqual({ agent: 'claude' })
   })

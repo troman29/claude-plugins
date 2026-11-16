@@ -208,6 +208,7 @@ Sent in a bound topic or DM. These are handled by the bot and never reach the ag
 | `/now` | Hand input Claude Code has queued (typed mid-turn) to the **running** turn — the course correction its pane offers as `ctrl+x ctrl+s`. The agent reads it at once and running tools drop to the background; unlike `/esc` the turn is not killed. The same action rides as a ⚡ button under a command that landed in the queue |
 | `/send <text>` | Send text literally through the normal delivery path, even when it starts with a hub/CLI slash command. Bare `/send` as a reply sends the replied message's text or caption |
 | `/model` | The CLI's model picker, as buttons |
+| `/backend [claude\|chatgpt]` | Show or switch this Claude Code binding's backend. A live session restarts and resumes the same conversation; Codex bindings are unchanged |
 
 **Looking inside**
 
@@ -435,6 +436,8 @@ Environment, in `~/.claude/channels/telegram/.env`:
 | `TELEGRAM_LANG` | `en` | Initial UI language (`en`/`ru`); `/lang` overrides at runtime |
 | `TELEGRAM_PROJECTS_DIR` | `$HOME/projects` | Where `/bind <name>` looks |
 | `TELEGRAM_LAUNCH_CMD` | `claude --permission-mode bypassPermissions` | Claude launch command until the binding learns its live argv; stale Opus/Sonnet/Fable aliases get `[1m]`. Codex defaults to `codex` and learns its live argv the same way |
+| `TELEGRAM_CLAUDE_BACKEND` | `claude` | Default backend for Claude bindings without an explicit `/backend` choice |
+| `TELEGRAM_CLAUDE_CHATGPT_ENV` | `~/.claude/backends/chatgpt.env` | Required shell env file for `chatgpt`; contains `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` |
 | `TELEGRAM_CODEX_APPROVALS` | off | `1` keeps Codex sandboxed and asks for approvals in the topic instead of running with full access |
 | `TELEGRAM_IDLE_UNLOAD_MINUTES` | `0` | Idle minutes before a session is stopped; `0` disables |
 | `TELEGRAM_CONTEXT_WARN_PCT` | `80` | Warn under a reply once the context window is this full; `0` disables |
@@ -493,8 +496,11 @@ tgc-run -1001234567890/447 resume 0b6e1c2a-5f3d-4c8e-9a71-2d4f6e8b0c13
 
 It takes binding key(s), `new|resume|fork` and an optional conversation id; the folder, the learned
 argv and the environment (`TELEGRAM_BINDING_KEYS`, Claude's resume thresholds) come from
-`bindings.json`. For Claude it also sources `~/.claude/claude.env` when readable. It ends in `exec`, so
-the pane's foreground process is the agent itself. The hub links it into `~/.local/bin` on start,
+`bindings.json`. For Claude it also sources `~/.claude/claude.env` when readable. A `chatgpt`
+binding then sources `TELEGRAM_CLAUDE_CHATGPT_ENV`; a `claude` binding removes inherited
+`ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN`. Provider variables must not live in Claude Code's
+global `settings.json`, because user settings would override the binding choice inside the CLI.
+The launcher ends in `exec`, so the pane's foreground process is the agent itself. The hub links it into `~/.local/bin` on start,
 which has to be on the pane shell's `PATH`.
 
 Details worth knowing, because they explain most of the behaviour:
