@@ -447,7 +447,7 @@ Environment, in `~/.claude/channels/telegram/.env`:
 | `TELEGRAM_HERDR_SESSION` | `agents` | herdr session that holds the agents' workspaces |
 | `TELEGRAM_SHEPHERD` | off | `1` starts the PR shepherd even without `shepherd.json` (see below) |
 | `TELEGRAM_DEBUG_LOG` | `0` | `1` records all hub traffic to `screenlog.jsonl` (off by default — the plugin logs nobody's messages) |
-| `TELEGRAM_SILENT` | `0` | `1` sends every hub message without a notification — for a test bot whose replies would otherwise ping the test account even in a muted group |
+| `TELEGRAM_SILENT` | `0` | `1` sends every hub message without sound, without quoting the human message and without reactions — for a test bot whose replies and reactions would otherwise ping the test account even in a muted group |
 | `OPENAI_API_KEY` | — | Enables voice; without it voice is silently off |
 | `STT_OPENAI_MODEL` | `gpt-4o-transcribe` | Transcription model |
 | `TTS_OPENAI_MODEL` | `gpt-4o-mini-tts` | Speech model for `reply(voice: true)` |
