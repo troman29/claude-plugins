@@ -318,6 +318,8 @@ const MAX_BACKOFF_MS = 15_000
 const SCREEN_POLL_MS = screenPollMs(process.env.TELEGRAM_SCREEN_POLL_MS)
 // Почему в топике нет «печатает…»: видно, дошло ли дело до вызова и на чём отсеклось.
 const TYPING_DEBUG = process.env.TELEGRAM_TYPING_DEBUG === '1'
+// Тестовый стенд: ответ бота на сообщение тестового аккаунта звенит и в заглушённой группе.
+const SILENT = /^(1|true|yes|on)$/i.test(process.env.TELEGRAM_SILENT ?? '')
 const CUSTOM_TIMEOUT_MS = 120_000
 
 // Заглушка вместо токена — чтобы модуль импортировался в тесте. Сам объект в сеть не ходит:
@@ -337,6 +339,11 @@ bot.api.config.use((prev, method, payload, signal) => {
   }
   return prev(method, payload, signal)
 })
+if (SILENT) {
+  bot.api.config.use((prev, method, payload, signal) =>
+    prev(method, isRepeatUnsafe(method) ? { ...payload, disable_notification: true } : payload, signal),
+  )
+}
 // Resilience: retry on 429 honouring retry_after (never silently drop a message), and throttle
 // outbound to stay under Telegram's limits (~30/s global, ~20/min per group). sendChatAction
 // (the "typing…" nudge) bypasses the throttler — it's ephemeral, must fire promptly, and a
