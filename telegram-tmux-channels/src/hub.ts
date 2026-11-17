@@ -75,6 +75,7 @@ import { replyContext, type ReplyContext } from './reply-context'
 import { installLauncher, launchLine } from './launch'
 import { selectRestartTargets, summarizeRestarts, type RestartableSession, type RestartOutcome } from './restart-all'
 import { effectiveClaudeBackend, parseClaudeBackend } from './claude-backend'
+import { isRejectedRequest, isRepeatUnsafe } from './send-safety'
 
 const log = (s: string) => process.stderr.write(`telegram hub: ${s}\n`)
 
@@ -340,7 +341,14 @@ bot.api.config.use((prev, method, payload, signal) => {
 // outbound to stay under Telegram's limits (~30/s global, ~20/min per group). sendChatAction
 // (the "typing…" nudge) bypasses the throttler — it's ephemeral, must fire promptly, and a
 // rare 429 on it is caught by auto-retry anyway; queueing it would let the indicator lapse.
-bot.api.config.use(autoRetry({ maxRetryAttempts: 3, maxDelaySeconds: 20 }))
+// Публикующие методы на 5xx и обрыве сети не повторяем: Telegram мог уже принять сообщение (send-safety.ts).
+const retryAny = autoRetry({ maxRetryAttempts: 3, maxDelaySeconds: 20 })
+const retryRateLimitOnly = autoRetry({
+  maxRetryAttempts: 3, maxDelaySeconds: 20, rethrowInternalServerErrors: true, rethrowHttpErrors: true,
+})
+bot.api.config.use((prev, method, payload, signal) =>
+  (isRepeatUnsafe(method) ? retryRateLimitOnly : retryAny)(prev, method, payload, signal),
+)
 const throttler = apiThrottler()
 bot.api.config.use((prev, method, payload, signal) =>
   method === 'sendChatAction' ? prev(method, payload, signal) : throttler(prev, method, payload, signal),
@@ -425,6 +433,10 @@ async function handleRpc(
       const keys = ownKeys(conn)
       const active = keys.find(key => answerStream.has(key))
       let result = ''
+      // Попытка уже считается ответом: зависшую отправку агент видит сам, а досыл продублировал бы её.
+      for (const key of keys) {
+        fallbackGate.noteAnswered(key)
+      }
       if (active) {
         await answerStream.finalize(active, async () => { result = await doReply(conn, params) })
         for (const key of keys) if (key !== active) answerStream.discard(key)
@@ -499,10 +511,12 @@ async function sendMarkdown(
       const sent = await bot.api.sendRichMessage(chat_id, { markdown: escapeForRich(text) }, base)
       return [sent.message_id]
     } catch (err) {
-      // 404 = the method itself is missing (old local Bot API server); anything else is this
-      // one message's content, so keep rich enabled for the next.
+      // 404 = the method itself is missing (old local Bot API server); 400 = this one message's
+      // content, so keep rich enabled for the next. Anything else may have been published already.
       if (err instanceof GrammyError && err.error_code === 404) {
         richSupported = false
+      } else if (!isRejectedRequest(err)) {
+        throw err
       }
       log(`rich send failed (${err}) — falling back to HTML`)
     }
@@ -512,7 +526,12 @@ async function sendMarkdown(
   for (const part of chunk(text, MAX_CHUNK_LIMIT, 'length')) {
     const sent = await bot.api
       .sendMessage(chat_id, mdToHtml(part), { ...base, parse_mode: 'HTML' })
-      .catch(() => bot.api.sendMessage(chat_id, part, base)) // never lose a message to formatting
+      .catch((err: unknown) => {
+        if (!isRejectedRequest(err)) {
+          throw err
+        }
+        return bot.api.sendMessage(chat_id, part, base) // never lose a message to formatting
+      })
     ids.push(sent.message_id)
   }
   return ids
@@ -581,7 +600,8 @@ async function doReply(conn: Socket<undefined>, params: Record<string, unknown>)
     if (target.thread_id != null && isThreadGoneError(err)) {
       void onTopicGone(`${target.chat_id}/${target.thread_id}`) // topic deleted mid-session
     }
-    throw new Error(`reply failed after ${sentIds.length} of ${chunks.length} chunk(s) sent: ${msg}`)
+    const unknownOutcome = isRejectedRequest(err) ? '' : ' Telegram may still have published it: do not resend the same text.'
+    throw new Error(`reply failed after ${sentIds.length} of ${chunks.length} chunk(s) sent: ${msg}.${unknownOutcome}`)
   }
   const mediaOpts = {
     ...threadOpt,
