@@ -75,7 +75,7 @@ Unix-сокет `$TELEGRAM_STATE_DIR/shepherd.sock` (по умолчанию `~/
 - `deliveryId` — любая непустая строка до 100 символов. Событие `check_suite` с несколькими PR Cyrus шлёт отдельным запросом на каждый PR с `deliveryId` вида `<X-GitHub-Delivery>#<pr>`; для одного PR — просто `X-GitHub-Delivery`.
 - Необязательные поля (`mergedBy`, `line`) при отсутствии не передаются. `association` — всегда одно из значений GitHub; когда GitHub его не даёт, Cyrus шлёт `NONE`, и хаб такой комментарий отбрасывает.
 - `checks_completed` приходит при любом `conclusion`, в том числе `success`; решает хаб по `gh pr checks`.
-- Репозиторий, которого нет в `shepherd.json`, считается `off`: ответ `disabled`.
+- Репозиторий, которого нет в `shepherd.json`, считается `off`: ответ `disabled`. Исключение — PR, который сессия сама записала за собой (`gh`-обёртка или `/own`): его хаб ведёт как `on`, иначе новый репозиторий молча теряет события своих PR.
 - Дедуп по смыслу: `checks_completed` — только по `deliveryId`: новый suite на том же sha продлевает идущее наблюдение или запускает новое, а уже отправленные упавшие проверки sha второй раз не шлются; `review`, `review_comment`, `comment` — по `id`; `pr_closed` — по времени события.
 - Состояния события в `events.jsonl`: `received`, `routed`, `awaiting-fanout`, `queued` (открытые, переигрываются после рестарта) и конечные `delivered`, `shadowed`, `unowned`, `escalated`, `dead`, `not-mine` (второстепенный хаб, PR чужой), `logged` (только журнал: зелёный CI, approved, opened/synchronize), `dropped` (фильтр, смена владельца), `stale` (CI для уже не головного sha или закрытого PR).
 

@@ -290,6 +290,26 @@ describe('modes and delivery', () => {
     expect(h.store.undelivered()).toEqual([])
   })
 
+  const UNLISTED = { repo: 'windbit/agentek-new', pr: 5, prUrl: 'https://github.com/windbit/agentek-new/pull/5' }
+
+  test('a PR the session registered is followed even when its repo is not listed', async () => {
+    const h = harness()
+    h.router.registerFromGh(UNLISTED.repo, UNLISTED.pr, OWNER_KEY)
+    await h.send('d1', event('pr_closed', UNLISTED))
+    expect(h.delivered.map(entry => entry.key)).toEqual([OWNER_KEY])
+  })
+
+  test('an unregistered PR of an unlisted repo stays disabled', async () => {
+    const h = harness()
+    expect(await h.router.accept(request('d1', event('comment', UNLISTED)))).toEqual({ ok: false, error: 'disabled' })
+  })
+
+  test('an explicit off wins over a registered owner', async () => {
+    const h = harness({ mode: 'off' })
+    h.router.registerFromGh('windbit/agentek-console', 1687, OWNER_KEY)
+    expect(await h.router.accept(request('d1', event('comment')))).toEqual({ ok: false, error: 'disabled' })
+  })
+
   test('failed delivery is retried with backoff, then delivered', async () => {
     const h = harness()
     h.state.deliverResults = ['failed', 'failed']

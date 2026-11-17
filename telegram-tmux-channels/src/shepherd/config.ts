@@ -95,6 +95,7 @@ export function loadConfig(stateDir: string): ShepherdConfig {
   }
 }
 
-export function modeOf(config: ShepherdConfig, repo: string): RepoMode {
-  return config.repos[repo.toLowerCase()] ?? 'off'
+/** Репозиторий вне списка — `off`, кроме PR, который сессия сама записала за собой: его ведём как `on`. */
+export function modeOf(config: ShepherdConfig, repo: string, ownerRegistered: boolean): RepoMode {
+  return config.repos[repo.toLowerCase()] ?? (ownerRegistered ? 'on' : 'off')
 }
