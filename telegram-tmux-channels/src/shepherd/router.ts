@@ -2,7 +2,7 @@
 // Всё внешнее (часы, gh/git, доставка в сессию, Telegram) приходит через RouterDeps — так
 // логику можно гонять в тестах на фальшивых часах.
 import type { BindingEntry } from '../registry'
-import { modeOf, type ShepherdConfig } from './config'
+import { modeOf, type RepoMode, type ShepherdConfig } from './config'
 import { findByBranch, type Exec } from './owner'
 import { parseRequest, parseUnowned, prKeyOf, type ShepherdEvent } from './protocol'
 import {
@@ -96,7 +96,7 @@ export class ShepherdRouter {
     if (!parsed.ok) {
       return { ok: false, error: parsed.error }
     }
-    const mode = modeOf(this.deps.config(), parsed.event.repo)
+    const mode = this.modeFor(parsed.event)
     if (mode === 'off') {
       return { ok: false, error: 'disabled' }
     }
@@ -260,7 +260,7 @@ export class ShepherdRouter {
 
   private async handle(item: InboxItem): Promise<void> {
     const { event } = item
-    const mode = modeOf(this.deps.config(), event.repo)
+    const mode = this.modeFor(event)
     if (mode === 'off') {
       this.done(item, 'dropped', 'repo is off')
       return
@@ -295,7 +295,7 @@ export class ShepherdRouter {
       return
     }
     if (event.kind === 'review' && event.state === 'approved') {
-      const mode = modeOf(this.deps.config(), event.repo)
+      const mode = this.modeFor(event)
       const owner = await this.resolveOwner(event, mode === 'on')
       if (mode === 'on' && owner) {
         await this.say(owner.key, renderQuietNotice([{ event }], false), true)
@@ -312,7 +312,7 @@ export class ShepherdRouter {
     const { item } = route
     const { event } = item
     const config = this.deps.config()
-    const mode = modeOf(config, event.repo)
+    const mode = this.modeFor(event)
     const owner = await this.resolveOwner(event, mode === 'on')
     if (mode === 'shadow') {
       await this.say(config.serviceChat, renderShadow(event, owner?.key), true)
@@ -538,6 +538,10 @@ export class ShepherdRouter {
   }
 
   /** Владелец: запись в owners.json (с версией), иначе единственный биндинг на ветке PR. */
+  private modeFor(event: ShepherdEvent): RepoMode {
+    return modeOf(this.deps.config(), event.repo, this.deps.store.getOwner(prKeyOf(event)) !== undefined)
+  }
+
   private async resolveOwner(event: ShepherdEvent, register: boolean): Promise<OwnerRecord | undefined> {
     const { store } = this.deps
     const deps = this.deps
@@ -675,7 +679,7 @@ export class ShepherdRouter {
       return
     }
     const config = this.deps.config()
-    const mode = modeOf(config, event.repo)
+    const mode = this.modeFor(event)
     if (mode === 'on') {
       const failures = this.deps.store.recordCi(prKey, event.headSha, failed.length > 0)
       if (failed.length && failures >= ESCALATE_AFTER_FAILURES) {
