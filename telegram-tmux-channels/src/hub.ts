@@ -22,6 +22,7 @@ import {
 } from './registry'
 import { encode, makeLineDecoder, type ControlCommand, type StubToHub, type HubToStub, type SessionInfo } from './protocol'
 import { Router } from './router'
+import { NativeDshHub } from './native-dsh'
 import { chunk, MAX_CHUNK_LIMIT, MAX_RICH_LIMIT, MAX_ATTACHMENT_BYTES, planAttachments } from './chunk'
 import { escapeForRich, mdToHtml, needsRich } from './md-html'
 import {
@@ -396,6 +397,10 @@ bot.use((ctx, next) => {
 })
 
 const router = new Router<Socket<undefined>>()
+const nativeDsh = new NativeDshHub<Socket<undefined>>({
+  binding: key => loadBindings()[key]?.dsh,
+  send: (conn, message) => conn.write(encode(message)),
+})
 const feeders = new Map<Socket<undefined>, (chunk: string) => void>()
 
 function send(sock: Socket<undefined>, msg: HubToStub): void {
@@ -408,9 +413,14 @@ function send(sock: Socket<undefined>, msg: HubToStub): void {
 
 // a session's outbound is limited to the chats of its own keys
 function ownKeys(conn: Socket<undefined>): string[] {
+  const nativeKey = nativeDsh.key(conn)
+  if (nativeKey) {
+    return [nativeKey]
+  }
   const s = router.get(conn)
   if (s?.bindingKeys?.length) {
-    return s.bindingKeys
+    const bindings = loadBindings()
+    return s.bindingKeys.filter(key => !bindings[key]?.dsh)
   }
   if (!s?.cwd) {
     return []
@@ -425,7 +435,8 @@ function ownKeys(conn: Socket<undefined>): string[] {
       }
     }
   }
-  return keysForDir(loadBindings(), s.cwd).filter(k => !claimed.has(k))
+  const bindings = loadBindings()
+  return keysForDir(bindings, s.cwd).filter(k => !bindings[k]?.dsh && !claimed.has(k))
 }
 
 async function handleRpc(
@@ -851,6 +862,7 @@ Bun.listen<undefined>({
     close(sock) {
       const s = router.get(sock)
       router.unsubscribe(sock)
+      nativeDsh.disconnect(sock)
       feeders.delete(sock)
       log(`stub disconnected (${router.size()} left)`)
       if (s) {
@@ -1110,9 +1122,9 @@ async function ackStartupPromptsOnBoundPanes(): Promise<void> {
   }
 }
 
-async function scanPrestartPanes(): Promise<void> {
+export async function scanPrestartPanes(): Promise<void> {
   for (const [key, b] of Object.entries(loadBindings())) {
-    if (!b?.dir) {
+    if (!b?.dir || b.dsh) {
       continue
     }
     const name = sessionName(key, b)
@@ -1646,6 +1658,9 @@ function paneBelongsToKey(pane: string, key: string): boolean {
   // (он и не поднимется, пока на неё не ответят). Сверяем по имени сессии этого биндинга —
   // проверка «чужому пейну не пишем» остаётся, просто опирается на имя, а не на подключение.
   const binding = loadBindings()[key]
+  if (binding?.dsh) {
+    return false
+  }
   if (binding && pane === prestartTarget(sessionName(key, binding))) {
     return true
   }
@@ -1987,6 +2002,9 @@ async function forwardFallbackReply(key: string, attempt = 0): Promise<void> {
   // topic's answer into this one. Resolved now, not at arm time — /clear or an in-TUI /resume
   // may have moved the binding to another session id since the inbound arrived.
   const binding = loadBindings()[key]
+  if (binding?.dsh) {
+    return
+  }
   const sessionId = binding?.sessionId
   const adapter = adapterForBinding(binding)
   // Wait for the turn's transcript writes to FINISH before reading — not just for some text
@@ -2561,7 +2579,7 @@ async function pollScreens(): Promise<void> {
   // make that distinction return empty and are deliberately not streamed.
   for (const [key, pending] of pendingAnswer) {
     const binding = loadBindings()[key]
-    if (!binding || binding.dir !== pending.dir) {
+    if (!binding || binding.dsh || binding.dir !== pending.dir) {
       answerStream.discard(key)
       continue
     }
@@ -2656,8 +2674,11 @@ function sleepStand(keys: string[], dir: string, why: string): void {
 }
 
 // Stop a quiet, unpinned, past-threshold session; the next inbound message revives it.
-async function maybeIdleUnload(s: SessionInfo & { pane: string }, working: boolean): Promise<void> {
+export async function maybeIdleUnload(s: SessionInfo & { pane: string }, working: boolean): Promise<void> {
   const keys = s.bindingKeys ?? []
+  if (keys.some(key => loadBindings()[key]?.dsh)) {
+    return
+  }
   if (keys.length === 0) {
     return
   }
@@ -2916,7 +2937,7 @@ function verifyClaimedKeys(session: SessionInfo): SessionInfo {
   const canon = (p: string) => { try { return realpathSync(p) } catch { return p } }
   const cwd = session.cwd
   const sameDir = (a: string, b: string) => a === b || canon(a) === canon(b)
-  const valid = session.bindingKeys.filter(k => cwd != null && reg[k] != null && sameDir(reg[k].dir, cwd))
+  const valid = session.bindingKeys.filter(k => cwd != null && reg[k] != null && !reg[k].dsh && sameDir(reg[k].dir, cwd))
   if (valid.length !== session.bindingKeys.length) {
     const dropped = session.bindingKeys.filter(k => !valid.includes(k))
     log(`subscribe: dropped unverified keys [${dropped}] for cwd=${cwd ?? '-'}`)
@@ -2948,7 +2969,7 @@ function syncSessionId(bindingKeys: string[], sessionId: string): void {
       log(`sessionId sync rejected for ${key}: ${sessionId} is owned by ${owner}`)
       continue
     }
-    if (b && b.sessionId !== sessionId) {
+    if (b && !b.dsh && b.sessionId !== sessionId) {
       log(`sessionId synced for ${key}: ${b.sessionId ?? '<none>'} → ${sessionId}`)
       b.sessionId = sessionId
       changed = true
@@ -2975,10 +2996,37 @@ function awaitAck(id: string): Promise<'ok' | 'failed' | 'silent'> {
 }
 
 async function handleStubMessage(sock: Socket<undefined>, msg: StubToHub): Promise<void> {
+  if (msg.op === 'dsh-subscribe') {
+    try {
+      if (router.get(sock)) {
+        throw new Error('Connection already subscribed')
+      }
+      nativeDsh.subscribe(sock, msg.claim)
+      send(sock, { op: 'result', id: 0, ok: true, result: 'subscribed' })
+    } catch (error) {
+      log(`native subscribe rejected: ${error}`)
+      send(sock, { op: 'result', id: 0, ok: false, error: 'Native binding authorization failed' })
+    }
+    return
+  }
+  if (msg.op === 'dsh-result') {
+    nativeDsh.result(sock, msg)
+    return
+  }
+  if (nativeDsh.subscribed(sock) && msg.op !== 'rpc') {
+    return
+  }
+  if (nativeDsh.subscribed(sock) && msg.op === 'rpc'
+    && (!nativeDsh.key(sock) || msg.method !== 'reply' || typeof msg.params.text !== 'string'
+      || Object.keys(msg.params).some(param => param !== 'text'))) {
+    send(sock, { op: 'result', id: msg.id, ok: false, error: 'Native bridge supports reply only' })
+    return
+  }
   if (msg.op === 'ack') {
     const listeners = pendingAcks.get(msg.id)
     pendingAcks.delete(msg.id)
-    listeners?.forEach(listener => listener(msg.ok ? 'ok' : 'failed'))
+    const outcome = msg.ok ? 'ok' : 'failed'
+    listeners?.forEach(listener => listener(outcome))
     if (!msg.ok) {
       log(`delivery: стаб не отдал сообщение в сессию: ${msg.error ?? '?'}`)
     }
@@ -3033,6 +3081,13 @@ async function handleStubMessage(sock: Socket<undefined>, msg: StubToHub): Promi
       send(sock, { op: 'result', id: msg.id, ok: false, error: e })
     }
     return
+  }
+  if ('bindingKeys' in msg) {
+    const bindings = loadBindings()
+    msg = { ...msg, bindingKeys: msg.bindingKeys.filter(key => !bindings[key]?.dsh) }
+    if (msg.bindingKeys.length === 0) {
+      return
+    }
   }
   // Every hook event carries the live session id — one chokepoint keeps bindings.json honest.
   if ('bindingKeys' in msg && msg.sessionId) {
@@ -3100,7 +3155,7 @@ function learnCmdline(session: SessionInfo): void {
   const keys = owned ? session.bindingKeys! : keysForDir(reg, session.cwd)
   const kind = session.agent ?? 'claude'
   for (const k of keys) {
-    if (!reg[k]) {
+    if (!reg[k] || reg[k].dsh) {
       continue // stale bindingKeys — the binding was removed after this session launched
     }
     // Чужой сессии верим только про СВОЙ харнесс и только про argv: агента меняет тот, кто
@@ -3132,6 +3187,9 @@ function safeName(s: string | undefined): string | undefined {
 // session, so an inbound to a topic with no live session revives a proper hub session
 // (handleInbound) instead of hijacking the terminal one. `dir` kept for call-site symmetry.
 function connsForBinding(key: string, _dir: string): Socket<undefined>[] {
+  if (loadBindings()[key]?.dsh) {
+    return []
+  }
   return router.byBindingKey(key)
 }
 
@@ -3207,6 +3265,9 @@ async function waitForBinding(key: string, timeoutMs: number): Promise<Socket<un
 
 // dir alone collides when several bindings share it (mode: shared) — tmux session is per-binding
 function sessionName(key: string, binding: BindingEntry): string {
+  if (binding.dsh) {
+    throw new Error('Native DSH bindings have no tmux session')
+  }
   return binding.tmux ?? tmuxSessionName(basename(binding.dir), key)
 }
 
@@ -3526,6 +3587,10 @@ async function spawnSession(
   notify: { say: (html: string) => void; quiet?: boolean; progress?: ProgressPost },
 ): Promise<void> {
   const { say } = notify
+  if (binding.dsh) {
+    say('Native DSH sessions are managed by their exact runtime binding.')
+    return
+  }
   // Пост подъёма один на всю операцию. Свой передаёт только тот, кто начал рассказ раньше
   // (авто-топик пишет «готовлю сессию…» ещё до spawnSession) — остальным заводим здесь,
   // чтобы «папка» и «режим старта» не расходились двумя сообщениями.
@@ -3652,6 +3717,9 @@ async function reviveBoundSessions(): Promise<void> {
   }
   revivedOnce = true
   for (const [key, binding] of Object.entries(loadBindings())) {
+    if (binding.dsh) {
+      continue
+    }
     if (binding.unloaded) {
       idleUnloaded.add(key) // it was asleep before the reboot — leave it so; an inbound wakes it
       continue
@@ -3701,7 +3769,7 @@ async function reviveBoundSessions(): Promise<void> {
 // binding was hook-created, else a plain `git worktree remove` when the dir is a linked
 // worktree). Shared by /unbind and topic-deletion cleanup. Returns an HTML summary plus
 // failed=true, если папку/стенд убрать не вышло — /delete по нему решает, сносить ли топик.
-async function teardownBinding(
+export async function teardownBinding(
   key: string,
   binding: BindingEntry,
   // force доводит снос до конца, даже если уборка провалилась: без него застрявший воркри
@@ -3709,6 +3777,12 @@ async function teardownBinding(
   opts: { force?: boolean } = {},
 ): Promise<{ note: string; failed: boolean }> {
   const reg = loadBindings()
+  if (binding.dsh) {
+    delete reg[key]
+    saveBindings(reg)
+    purgeBindingInteractions(key)
+    return { note: 'Native Telegram binding removed. DSH session and project files remain unchanged.', failed: false }
+  }
   // The report goes to General (the topic is already gone) — so it must name what was removed itself:
   // the topic (id + name, if known), the folder and the conversation id, else it's unreadable in the shared feed.
   const { chat_id: chatId, thread_id: tid } = keyToTarget(key)
@@ -4345,6 +4419,10 @@ async function handleInbound(inbound: Inbound): Promise<void> {
         say(t().queueUsage)
         return
       }
+      if (loadBindings()[key]?.dsh) {
+        await handleInbound({ ...inbound, text: body, waitTurn: true, literal: true })
+        return
+      }
       await deliverBetweenTurns(key, { ...inbound, text: body, waitTurn: true })
       return
     }
@@ -4462,6 +4540,22 @@ async function handleInbound(inbound: Inbound): Promise<void> {
   }
   if (!inbound.trusted && !isAdmin(senderId) && !binding.allow?.includes(senderId)) {
     log(`drop (not allowed): key=${key} from=${senderId}`)
+    return
+  }
+  if (binding.dsh) {
+    if (downloadImage || attachment || msgId == null) {
+      say('Native DSH currently accepts text messages only.')
+      return
+    }
+    try {
+      await nativeDsh.request(key, {
+        action: 'prompt', requestId: `telegram:${key}:${msgId}`,
+        mode: inbound.waitTurn ? 'queue' : 'steer', text,
+      })
+    } catch (error) {
+      log(`native delivery failed: ${error}`)
+      say('Native delivery was not confirmed. No automatic retry was made.')
+    }
     return
   }
   const wasIdle = idleUnloaded.has(key) // capture BEFORE markActivity clears it
@@ -4665,6 +4759,9 @@ async function inboundPane(key: string, dir: string, adapter: AgentAdapter): Pro
 async function deliverMessage(
   key: string, dir: string, payload: HubToStub, needle: string, onOutcome?: (outcome: 'ok' | 'failed') => void,
 ): Promise<number> {
+  if (loadBindings()[key]?.dsh) {
+    throw new Error('Native delivery requires an exact Telegram message identity')
+  }
   const adapter = adapterForBinding(loadBindings()[key])
   const pane = await inboundPane(key, dir, adapter)
   const ready = await waitPane(pane, PANE_READY_MS, text => adapter.inboundReady(text))
@@ -4775,7 +4872,7 @@ async function watchDelivery(
   if (!sessionId) return
   const reg = loadBindings()
   const binding = reg[key]
-  if (!binding || binding.dir !== dir) return
+  if (!binding || binding.dsh || binding.dir !== dir) return
   const owner = sessionOwner(reg, dir, sessionId, key)
   if (owner) {
     log(`incoming-correlated sessionId rejected for ${key}: ${sessionId} is owned by ${owner}`)
@@ -4965,6 +5062,9 @@ async function handleControl(command: ControlCommand, key: string, arg?: string)
   if (!binding) {
     throw new Error(`no binding ${key}`)
   }
+  if (binding.dsh) {
+    throw new Error('Native DSH lifecycle requires the DSH UI')
+  }
   if (spawningBindings.has(key)) {
     throw new Error(`${key} is already starting`)
   }
@@ -5035,6 +5135,26 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
     bot.api.sendMessage(chat_id, html, { ...threadOpt, parse_mode: 'HTML' }).catch(() => {})
   const reg = loadBindings()
   const binding: BindingEntry | undefined = reg[key]
+  if (binding?.dsh) {
+    if (!isAdmin(senderId) && !binding.allow?.includes(senderId)) {
+      return
+    }
+    if (cmd !== 'status' && cmd !== 'resume') {
+      await say('Native DSH supports /status and /resume. Other lifecycle controls require the DSH UI.')
+      return
+    }
+    if (cmd === 'resume' && !isAdmin(senderId)) {
+      return
+    }
+    try {
+      const result = await nativeDsh.request(key, { action: cmd })
+      await say(escHtml(result))
+    } catch (error) {
+      log(`native control failed: ${error}`)
+      await say('Native operation was not confirmed.')
+    }
+    return
+  }
 
   // /lang — switch the UI language globally (admin), then re-register command descriptions.
   if (cmd === 'lang') {
@@ -6478,6 +6598,10 @@ bot.on('callback_query:data', async ctx => {
     const senderId = String(ctx.from.id)
     const reg = loadBindings()
     const binding = reg[key]
+    if (binding?.dsh) {
+      await ctx.answerCallbackQuery({ text: 'Use the DSH UI for native session controls.' }).catch(() => {})
+      return
+    }
     if (!binding) {
       await ctx.answerCallbackQuery({ text: t().toastBindingGone }).catch(() => {})
       return

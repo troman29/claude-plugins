@@ -1,6 +1,7 @@
 // NDJSON protocol between stub and hub over the hub.sock unix socket.
 import type { AgentKind } from './agents/types'
 import type { SessionCron } from './session-crons'
+import type { DshClaim, DshCommand } from './native-dsh'
 
 export type SessionInfo = {
   agent?: AgentKind // absent on an old stub means Claude
@@ -21,6 +22,8 @@ export type RpcMethod =
 export type ControlCommand = 'restart' | 'pr-own'
 
 export type StubToHub =
+  | { op: 'dsh-subscribe'; claim: DshClaim }
+  | { op: 'dsh-result'; id: string; ok: boolean; result?: string }
   | { op: 'subscribe'; session: SessionInfo }
   | { op: 'rpc'; id: number; method: RpcMethod; params: Record<string, unknown> }
   // 'describe' = PreToolUse(Agent/Task) — carries the human description, correlated to the
@@ -68,6 +71,7 @@ export type StubToHub =
   | { op: 'control'; id: number; command: ControlCommand; key: string; arg?: string }
 
 export type HubToStub =
+  | { op: 'dsh-command'; id: string; command: DshCommand }
   // id есть только у входящих, чью доставку сторожим; стаб отвечает на него 'ack'
   | { op: 'event'; kind: 'message'; content: string; meta: Record<string, string>; id?: string }
   | { op: 'event'; kind: 'permission'; request_id: string; behavior: 'allow' | 'deny' }

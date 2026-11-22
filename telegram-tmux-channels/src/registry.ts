@@ -10,6 +10,7 @@ import { keyToTarget } from './bindings'
 import type { AgentKind } from './agents/types'
 import type { ClaudeBackend } from './claude-backend'
 import type { TrustedGroupMode } from './trusted-groups'
+import { validDshBinding, type DshBinding } from './native-dsh'
 
 export const BINDINGS_FILE = join(STATE_DIR, 'bindings.json')
 // Polling calls loadBindings often. Remember the malformed version so one
@@ -18,6 +19,7 @@ let lastReportedRegistryFault: string | undefined
 
 export type BindingEntry = {
   dir: string
+  dsh?: DshBinding
   // Missing means Claude for backwards compatibility with every binding written before
   // the multi-agent adapter existed. New bindings persist the choice explicitly.
   agent?: AgentKind
@@ -56,6 +58,11 @@ export function validBindings(parsed: unknown): { bindings: Record<string, Bindi
     }
     if (!value || typeof value !== 'object' || Array.isArray(value) || typeof (value as BindingEntry).dir !== 'string' || !(value as BindingEntry).dir) {
       rejected.push(`bad entry for ${JSON.stringify(key)}`)
+      continue
+    }
+    const native = (value as BindingEntry).dsh
+    if (native !== undefined && !validDshBinding(native)) {
+      rejected.push(`bad native binding for ${JSON.stringify(key)}`)
       continue
     }
     const agent = (value as BindingEntry).agent
