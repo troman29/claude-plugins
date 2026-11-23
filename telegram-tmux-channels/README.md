@@ -39,6 +39,16 @@ What you get beyond plain messaging:
   the terminal — see [Commands](#commands).
 
 
+## Native DSH transport (2.21.6)
+
+An opt-in `dsh` binding connects an existing DSH Web session to the hub through an exact
+runtime/profile/session capability. It uses native prompt admission, not tmux or cwd routing.
+The companion Host bundle lives in the Homelab repository under
+`hosts/homelab/services/dsh/telegram`; its README defines the private binding contract.
+This minimal transport supports text, `/queue`, passive `/status`, exact `/resume`, and scoped
+reply/fork tools. CLI controls, media, permissions and PR shepherd are outside its scope.
+Existing Claude/Codex bindings use their unchanged transports.
+
 ## Quick start
 
 You need [Bun](https://bun.sh), tmux, and a bot from [@BotFather](https://t.me/BotFather).
