@@ -23,6 +23,8 @@ import {
 import { encode, makeLineDecoder, type ControlCommand, type StubToHub, type HubToStub, type SessionInfo } from './protocol'
 import { Router } from './router'
 import { NativeDshHub } from './native-dsh'
+import { DshRuntimes } from './dsh-runtimes'
+import { DshBindingFlow } from './dsh-binding-flow'
 import { chunk, MAX_CHUNK_LIMIT, MAX_RICH_LIMIT, MAX_ATTACHMENT_BYTES, planAttachments } from './chunk'
 import { escapeForRich, mdToHtml, needsRich } from './md-html'
 import {
@@ -401,6 +403,11 @@ const nativeDsh = new NativeDshHub<Socket<undefined>>({
   binding: key => loadBindings()[key]?.dsh,
   send: (conn, message) => conn.write(encode(message)),
 })
+const dshRuntimes = new DshRuntimes<Socket<undefined>>({
+  bindings: () => Object.entries(loadBindings()).flatMap(([key, entry]) => entry.dsh ? [{ key, ...entry.dsh }] : []),
+  send: (conn, message) => conn.write(encode(message)),
+})
+const dshBindingFlow = new DshBindingFlow({ runtimes: dshRuntimes, load: loadBindings, save: saveBindings })
 const feeders = new Map<Socket<undefined>, (chunk: string) => void>()
 
 function send(sock: Socket<undefined>, msg: HubToStub): void {
@@ -863,6 +870,7 @@ Bun.listen<undefined>({
       const s = router.get(sock)
       router.unsubscribe(sock)
       nativeDsh.disconnect(sock)
+      dshRuntimes.disconnect(sock)
       feeders.delete(sock)
       log(`stub disconnected (${router.size()} left)`)
       if (s) {
@@ -2996,6 +3004,27 @@ function awaitAck(id: string): Promise<'ok' | 'failed' | 'silent'> {
 }
 
 async function handleStubMessage(sock: Socket<undefined>, msg: StubToHub): Promise<void> {
+  if (msg.op === 'dsh-runtime') {
+    try {
+      if (router.get(sock) || nativeDsh.subscribed(sock) || dshRuntimes.has(sock)) {
+        throw new Error('Connection already registered')
+      }
+      dshRuntimes.register(sock, msg.runtime)
+    } catch (error) {
+      console.error('DSH runtime registration failed', error)
+      sock.end()
+    }
+    return
+  }
+  if (dshRuntimes.has(sock)) {
+    if (msg.op === 'dsh-runtime-result') {
+      dshRuntimes.result(sock, msg)
+    }
+    return
+  }
+  if (msg.op === 'dsh-runtime-result') {
+    return
+  }
   if (msg.op === 'dsh-subscribe') {
     try {
       if (router.get(sock)) {
@@ -5135,7 +5164,40 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
     bot.api.sendMessage(chat_id, html, { ...threadOpt, parse_mode: 'HTML' }).catch(() => {})
   const reg = loadBindings()
   const binding: BindingEntry | undefined = reg[key]
-  if (binding?.dsh) {
+  const dshBindPath = cmd === 'bind' ? /^dsh\s+([\s\S]+)$/i.exec(arg?.trim() ?? '')?.[1] : undefined
+  if (dshBindPath || (binding?.dsh && cmd === 'new')) {
+    if (!isAdmin(senderId)) {
+      await say(L.adminOnly(cmd))
+      return
+    }
+    try {
+      if (binding && !binding.dsh) {
+        throw new Error('Run /unbind before switching a CLI topic to DSH.')
+      }
+      const dir = dshBindPath ? resolveProjectDir(dshBindPath, PROJECTS_DIR) : binding!.dir
+      const menu = await dshBindingFlow.menu(key, dir)
+      const keyboard = new InlineKeyboard()
+      menu.labels.forEach((label, index) => keyboard.text(label, `dshpick:${menu.token}:${index}`).row())
+      await bot.api.sendMessage(chat_id, '<b>DSH</b>\n\nChoose a new or existing session.',
+        { ...threadOpt, parse_mode: 'HTML', reply_markup: keyboard })
+    } catch (error) {
+      console.error('DSH binding menu failed', error)
+      await say(escHtml(error instanceof Error ? error.message : 'DSH binding failed.'))
+    }
+    return
+  }
+  if (binding?.dsh && cmd === 'unbind') {
+    if (!isAdmin(senderId)) {
+      await say(L.adminOnly(cmd))
+      return
+    }
+    delete reg[key]
+    saveBindings(reg)
+    dshRuntimes.sync()
+    await say('DSH session unbound. The conversation remains available in DSH.')
+    return
+  }
+  if (binding?.dsh && cmd !== 'bind' && cmd !== 'allow') {
     if (!isAdmin(senderId) && !binding.allow?.includes(senderId)) {
       return
     }
@@ -5263,6 +5325,10 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
       return
     }
     if (cmd === 'bind') {
+      if (binding?.dsh) {
+        await say('Run /unbind before switching a DSH topic to a CLI agent.')
+        return
+      }
       if (!arg) {
         void say(L.bindUsage(codePath(PROJECTS_DIR)))
         return
@@ -6312,6 +6378,29 @@ bot.on('message:sticker', async ctx => {
 })
 
 bot.on('callback_query:data', async ctx => {
+  const dshPick = /^dshpick:([a-f0-9]+):(\d+)$/.exec(ctx.callbackQuery.data)
+  if (dshPick) {
+    const key = dshBindingFlow.target(dshPick[1]!)
+    const message = ctx.callbackQuery.message
+    const target = key ? keyToTarget(key) : undefined
+    if (!isAdmin(String(ctx.from.id)) || !target || !message
+      || String(message.chat.id) !== target.chat_id || (target.thread_id !== undefined && message.message_thread_id !== target.thread_id)) {
+      await ctx.answerCallbackQuery({ text: t().toastMenuStale }).catch(() => {})
+      return
+    }
+    await ctx.answerCallbackQuery().catch(() => {})
+    await updateLanes.run(key!, async () => {
+      try {
+        const binding = await dshBindingFlow.select(dshPick[1]!, Number(dshPick[2]))
+        await ctx.editMessageText(`<b>DSH connected</b>\n\nSession: <code>${escHtml(binding.sessionId)}</code>`,
+          { parse_mode: 'HTML' })
+      } catch (error) {
+        console.error('DSH binding selection failed', error)
+        await ctx.editMessageText(escHtml(error instanceof Error ? error.message : 'DSH binding failed.')).catch(() => {})
+      }
+    })
+    return
+  }
   const sc = /^scrclose:(\S+)$/.exec(ctx.callbackQuery.data)
   if (sc) {
     const v = closeLiveScreen(sc[1])
