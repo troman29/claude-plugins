@@ -88,6 +88,10 @@ export class NativeDshHub<C> {
     }
   }
 
+  connected(key: string): boolean {
+    return [...this.claims.keys()].some(candidate => this.key(candidate) === key)
+  }
+
   request(key: string, command: DshCommand): Promise<string> {
     const conn = [...this.claims.keys()].find(candidate => this.key(candidate) === key)
     if (conn === undefined) {

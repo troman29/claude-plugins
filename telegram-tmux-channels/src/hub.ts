@@ -327,7 +327,7 @@ const CUSTOM_TIMEOUT_MS = 120_000
 
 // Заглушка вместо токена — чтобы модуль импортировался в тесте. Сам объект в сеть не ходит:
 // наружу выходит только bot.start(), а он в start().
-const bot = new Bot(TOKEN || 'import-only:no-token')
+export const bot = new Bot(TOKEN || 'import-only:no-token')
 let botUsername = ''
 
 // Raw Telegram traffic → debug log (see logDebugEvent below; hoisted).
@@ -3003,7 +3003,7 @@ function awaitAck(id: string): Promise<'ok' | 'failed' | 'silent'> {
   })
 }
 
-async function handleStubMessage(sock: Socket<undefined>, msg: StubToHub): Promise<void> {
+export async function handleStubMessage(sock: Socket<undefined>, msg: StubToHub): Promise<void> {
   if (msg.op === 'dsh-runtime') {
     try {
       if (router.get(sock) || nativeDsh.subscribed(sock) || dshRuntimes.has(sock)) {
@@ -3032,6 +3032,7 @@ async function handleStubMessage(sock: Socket<undefined>, msg: StubToHub): Promi
       }
       nativeDsh.subscribe(sock, msg.claim)
       send(sock, { op: 'result', id: 0, ok: true, result: 'subscribed' })
+      flushQueuedInLane(msg.claim.key)
     } catch (error) {
       log(`native subscribe rejected: ${error}`)
       send(sock, { op: 'result', id: 0, ok: false, error: 'Native binding authorization failed' })
@@ -3944,7 +3945,7 @@ async function onTopicGone(key: string): Promise<void> {
 }
 
 // new forum topic in a trusted group → auto-bind + auto-start, no /bind needed
-type PendingTopic = { cfg: TrustedGroupConfig; mode: TrustedGroupMode; topicName: string; say: (html: string) => void; base?: string; agent?: AgentKind }
+type PendingTopic = { cfg: TrustedGroupConfig; mode: TrustedGroupMode; topicName: string; say: (html: string) => void; base?: string; agent?: AgentKind | 'dsh' }
 const pendingTopics = new Map<string, PendingTopic>(interactions.entries('pending-topic').map(([key, value]) => [key, {
   cfg: value.cfg, mode: value.mode, topicName: value.topicName, say: sayFor(value.chatId, value.threadId),
   ...(value.base ? { base: value.base } : {}), ...(value.agent ? { agent: value.agent } : {}),
@@ -3964,7 +3965,7 @@ function armPendingTopic(key: string, value: PendingTopic): void {
 }
 function disarmPendingTopic(key: string): void { pendingTopics.delete(key); interactions.delete('pending-topic', key) }
 // mode picker sent, waiting for a button tap — before dir resolution starts
-type PendingModeChoice = { cfg: TrustedGroupConfig; topicName: string; say: (html: string) => void; agent?: AgentKind; hookOff?: boolean }
+type PendingModeChoice = { cfg: TrustedGroupConfig; topicName: string; say: (html: string) => void; agent?: AgentKind | 'dsh'; hookOff?: boolean }
 const pendingModeChoice = new Map<string, PendingModeChoice>()
 
 // Messages typed while a topic is still being set up (mode not yet picked, session not yet
@@ -3979,7 +3980,7 @@ const queuedMessages = new Map<string, Inbound[]>()
  *  очереди. Ловили только первые два, и сообщение, пришедшее третьим, уходило в ревайв, где
  *  spawnSession отбивал его внутренним «дубликат запуска пропущен» вместо 😴. */
 function isComingUp(key: string): boolean {
-  return pendingModeChoice.has(key) || settingUp.has(key) || spawningBindings.has(key)
+  return pendingModeChoice.has(key) || settingUp.has(key) || spawningBindings.has(key) || dshBindingFlow.pending(key)
 }
 
 const settingUp = new Set<string>()
@@ -4079,8 +4080,9 @@ async function flushQueued(key: string): Promise<void> {
   }
   flushing.add(key)
   try {
-    const conns = await waitForBinding(key, 30_000)
-    if (!conns.length) {
+    const native = !!loadBindings()[key]?.dsh
+    const conns = native ? [] : await waitForBinding(key, 30_000)
+    if (native ? !nativeDsh.connected(key) : !conns.length) {
       // Подъём затянулся — очередь НЕ выбрасываем: стаб подключится и сам позовёт flushQueued.
       log(`queue held: ${key} — сессия ещё не поднялась, ${q.length} сообщ. ждут подключения`)
       return
@@ -4122,7 +4124,7 @@ function beginTopicSession(
   topicName: string,
   say: (html: string) => void,
   base?: string,
-  agent?: AgentKind,
+  agent?: AgentKind | 'dsh',
 ): void {
   if (!cfg.dir) {
     say(t().sendFolderPromptBind(codePath(PROJECTS_DIR)))
@@ -4140,7 +4142,7 @@ async function runAutoTopic(
   branch: string,
   say: (html: string) => void,
   base?: string,
-  agent?: AgentKind,
+  agent?: AgentKind | 'dsh',
 ): Promise<void> {
   const usedAgent = agent ?? cfg.agent // выбор в пикере важнее группового умолчания
   const branchNote = mode === 'folder' ? '' : t().branchNote(escHtml(branch))
@@ -4169,6 +4171,18 @@ async function runAutoTopic(
     // launch a second agent into the topic behind the user's back.
     if (cancelledAutoTopics.has(key) || loadBindings()[key]) {
       log(`auto-topic cancelled: ${key} was manually bound while resolving its directory`)
+      return
+    }
+    if (usedAgent === 'dsh') {
+      const menu = await dshBindingFlow.menu(key, resolvedDir, {
+        mode, ...(usedHook ? { hookBranch: usedBranch } : {}),
+      })
+      const keyboard = new InlineKeyboard()
+      menu.labels.forEach((label, index) => keyboard.text(label, `dshpick:${menu.token}:${index}`).row())
+      await bot.api.sendMessage(chatId, t().whichSessionRaise, {
+        ...inTopic(threadId), reply_markup: keyboard,
+      })
+      progress.settle(t().sessionPickOffer)
       return
     }
     const reg = loadBindings()
@@ -4247,8 +4261,11 @@ const ownDirLabel = () => t().ownDirLabel
 // Оба CLI ставятся глобально, поэтому и переключатель глобальный: группа перечисляет `agents`
 // только чтобы СУЗИТЬ выбор. Без этого топики в группах без такой строки молча оставались
 // одноагентными, хотя второй агент стоит на той же машине.
-function harnessChoices(cfg: TrustedGroupConfig): AgentKind[] {
-  const choices = cfg.agents ?? installedAgents()
+function harnessChoices(cfg: TrustedGroupConfig): (AgentKind | 'dsh')[] {
+  const choices: (AgentKind | 'dsh')[] = [...(cfg.agents ?? installedAgents())]
+  if (dshRuntimes.list().length > 0) {
+    choices.push('dsh')
+  }
   return choices.length > 1 ? [...choices] : []
 }
 
@@ -4257,7 +4274,7 @@ function hasProjectHook(cfg: TrustedGroupConfig): boolean {
   return cfg.dir ? !!worktreeHook(cfg.dir, cfg.hook)?.create : false
 }
 
-function modeKeyboard(key: string, cfg: TrustedGroupConfig, agent?: AgentKind, hookOff = false): InlineKeyboard {
+function modeKeyboard(key: string, cfg: TrustedGroupConfig, agent?: AgentKind | 'dsh', hookOff = false): InlineKeyboard {
   const choices = harnessChoices(cfg)
   const current = agent ?? cfg.agent ?? choices[0]
   const buttons = modeButtons({
@@ -4266,7 +4283,7 @@ function modeKeyboard(key: string, cfg: TrustedGroupConfig, agent?: AgentKind, h
     bases: cfg.dir ? worktreeBases(cfg.dir) : [],
     hooked: hasProjectHook(cfg),
     hookOff,
-    ...(choices.length && current ? { harness: agentAdapter(current).displayName } : {}),
+    ...(choices.length && current ? { harness: current === 'dsh' ? 'DSH' : agentAdapter(current).displayName } : {}),
   })
   const kb = new InlineKeyboard()
   for (const b of buttons) {
@@ -6555,7 +6572,7 @@ bot.on('callback_query:data', async ctx => {
     const next = choices[(choices.indexOf(cur) + 1) % choices.length]!
     const target = keyToTarget(key!)
     armMode(key!, { ...pending, agent: next }, target.chat_id, target.thread_id!)
-    await ctx.answerCallbackQuery({ text: agentAdapter(next).displayName }).catch(() => {})
+    await ctx.answerCallbackQuery({ text: next === 'dsh' ? 'DSH' : agentAdapter(next).displayName }).catch(() => {})
     await ctx.editMessageReplyMarkup({ reply_markup: modeKeyboard(key!, pending.cfg, next, pending.hookOff) }).catch(() => {})
     return
   }
@@ -6660,7 +6677,7 @@ bot.on('callback_query:data', async ctx => {
     await ctx.answerCallbackQuery({ text: ownDirLabel() }).catch(() => {})
     await ctx.editMessageText(t().modeChosen(ownDirLabel())).catch(() => {})
     pending.say(t().sendFolderPromptShort(codePath(PROJECTS_DIR)))
-    armPendingTopic(key, { cfg: pending.cfg, mode: 'folder', topicName: pending.topicName, say: pending.say })
+    armPendingTopic(key, { cfg: pending.cfg, mode: 'folder', topicName: pending.topicName, say: pending.say, ...(pending.agent ? { agent: pending.agent } : {}) })
     return
   }
   const bt = /^bindto:(.+):([^:]+)$/.exec(ctx.callbackQuery.data)

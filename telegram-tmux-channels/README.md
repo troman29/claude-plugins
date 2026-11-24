@@ -41,8 +41,11 @@ What you get beyond plain messaging:
 
 ## Native DSH transport (2.22.0)
 
-**Use `/bind dsh <folder>` and choose a new or existing DSH session.** The companion Host
-bundle registers its running profile automatically. The hub creates and stores the exact
+**Create a topic in a trusted group and select DSH beside Claude and Codex.** Choose the
+folder or worktree mode, then a new or existing DSH session. No `/bind` command is required.
+The companion Host bundle registers its running profile automatically. DSH appears in the
+harness selector while that runtime is connected. `/bind dsh <folder>` remains a manual fallback.
+The hub creates and stores the exact
 runtime/profile/session binding and sends it over its private Unix socket. No manual binding
 file or environment variables are required. Reconnection restores the saved routes.
 

@@ -5,7 +5,8 @@ import type { DshClaim } from './native-dsh'
 
 type Registry = Record<string, BindingEntry>
 type Choice = { runtime: DshRuntime; sessionId?: string }
-type Menu = { key: string; dir: string; choices: Choice[]; previous: string | undefined }
+type TopicStorage = Pick<BindingEntry, 'mode' | 'hookBranch'>
+type Menu = { key: string; dir: string; choices: Choice[]; previous: string | undefined; storage: TopicStorage }
 const MENU_LIFETIME_MS = 10 * 60_000
 const MAX_SESSIONS = 30
 
@@ -20,7 +21,7 @@ export class DshBindingFlow<C> {
     save: (registry: Registry) => void
   }) {}
 
-  async menu(key: string, dir: string): Promise<{ token: string; labels: string[] }> {
+  async menu(key: string, dir: string, storage: TopicStorage = {}): Promise<{ token: string; labels: string[] }> {
     const runtimes = this.options.runtimes.list()
     if (runtimes.length === 0) {
       throw new Error('No DSH runtime is connected. Enable the Telegram plugin in DSH.')
@@ -47,7 +48,7 @@ export class DshBindingFlow<C> {
       }
     }
     const token = randomBytes(8).toString('hex')
-    this.menus.set(token, { key, dir, choices, previous: JSON.stringify(this.options.load()[key]) })
+    this.menus.set(token, { key, dir, choices, previous: JSON.stringify(this.options.load()[key]), storage })
     const timer = setTimeout(() => {
       this.menus.delete(token)
       this.timers.delete(token)
@@ -55,6 +56,10 @@ export class DshBindingFlow<C> {
     timer.unref?.()
     this.timers.set(token, timer)
     return { token, labels }
+  }
+
+  pending(key: string): boolean {
+    return this.busy.has(key) || [...this.menus.values()].some(menu => menu.key === key)
   }
 
   target(token: string): string | undefined {
@@ -113,7 +118,7 @@ export class DshBindingFlow<C> {
       const binding: DshClaim = { key: menu.key, runtime: choice.runtime.runtime,
         profile: choice.runtime.profile, sessionId, capability: randomBytes(32).toString('hex') }
       const { key, ...dsh } = binding
-      registry[key] = { dir: menu.dir, ...(existing?.allow ? { allow: existing.allow } : {}), dsh }
+      registry[key] = { ...menu.storage, dir: menu.dir, ...(existing?.allow ? { allow: existing.allow } : {}), dsh }
       this.options.save(registry)
       this.options.runtimes.sync()
       return binding

@@ -60,11 +60,11 @@ const schemas = {
     cfg: trustedGroupConfig, dir: z.string().min(1), branch: z.string(),
     mode: z.enum(['folder', 'worktree', 'worktree-plain']),
     chatId: z.string().min(1), threadId: z.number().int(),
-    base: z.string().optional(), agent: z.enum(['claude', 'codex']).optional(),
+    base: z.string().optional(), agent: z.enum(['claude', 'codex', 'dsh']).optional(),
   })),
   'pending-topic': envelope('pending-topic', z.object({
     cfg: trustedGroupConfig, mode: z.enum(['folder', 'worktree', 'worktree-plain']), topicName: z.string(),
-    chatId: z.string().min(1), threadId: z.number().int(), base: z.string().optional(), agent: z.enum(['claude', 'codex']).optional(),
+    chatId: z.string().min(1), threadId: z.number().int(), base: z.string().optional(), agent: z.enum(['claude', 'codex', 'dsh']).optional(),
   })),
 } as const
 
