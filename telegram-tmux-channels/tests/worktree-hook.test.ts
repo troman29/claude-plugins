@@ -3,7 +3,7 @@
 // by the hook, torn down by plain `git worktree remove` → wt.py rm never ran → claude-mem memory of
 // every such worktree stayed stranded under `<repo>/<slug>`.
 import { describe, expect, test } from 'bun:test'
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from 'fs'
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, realpathSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { resolveModeDir, worktreeHook, freeBranchName, worktreeDirFor, isPlainWorktreeDir, runStandCommand } from '../src/dir-resolve'
@@ -152,6 +152,27 @@ describe('stand hooks: сон и пробуждение', () => {
     })
     expect((await runStandCommand(dir, 'sleep'))?.out.trim()).toBe('slept')
     expect((await runStandCommand(dir, 'wake'))?.out.trim()).toBe('woke')
+  })
+
+  test('an opted-in main checkout supplies the hook for an older worktree', async () => {
+    const main = projectDir({ stand: { down: 'echo old-hook' } })
+    const git = (...args: string[]) => {
+      const res = Bun.spawnSync(['git', '-C', main, ...args])
+      if (res.exitCode !== 0) throw new Error(res.stderr.toString())
+    }
+    git('init', '-q')
+    git('add', '.tmux-channels.json')
+    git('-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'old hook')
+    const worktree = join(main, 'linked worktree')
+    git('worktree', 'add', '-qb', 'old', worktree)
+    writeFileSync(join(main, '.tmux-channels.json'), JSON.stringify({
+      standFromMain: true,
+      stand: { down: 'printf "%s|%s" "$TELEGRAM_PROJECT_ROOT" "$TELEGRAM_PROJECT_DIR"' },
+    }))
+    expect((await runStandCommand(worktree, 'down'))?.out).toBe([realpathSync(main), worktree].join('|'))
+
+    writeFileSync(join(main, '.tmux-channels.json'), JSON.stringify({ stand: { down: 'echo main' } }))
+    expect((await runStandCommand(worktree, 'down'))?.out.trim()).toBe('old-hook')
   })
 
   test('проект без этих хуков просто ничего не делает — сон не обязателен', async () => {

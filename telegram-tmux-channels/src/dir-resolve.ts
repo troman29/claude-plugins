@@ -202,13 +202,22 @@ export async function resolveModeDir(
   }
 }
 
-// Stand command from the binding folder's `.tmux-channels.json`. Returns the run result or undefined
-// if the project has no such command (in which case there should be no chat buttons/commands either).
+// Repositories can opt in to main-checkout hooks for all their worktrees.
+async function standHookDir(dir: string): Promise<string> {
+  const common = await run(['git', '-C', dir, 'rev-parse', '--path-format=absolute', '--git-common-dir'])
+  const gitDir = common.out.trim()
+  if (!common.ok || basename(gitDir) !== '.git') return dir
+
+  const main = dirname(gitDir)
+  return loadProjectConfig(main)?.standFromMain ? main : dir
+}
+
 export async function runStandCommand(
   dir: string,
   kind: 'up' | 'down' | 'status' | 'sleep' | 'wake',
 ): Promise<{ ok: boolean; out: string; err: string } | undefined> {
-  const cmd = loadProjectConfig(dir)?.stand?.[kind]
+  const hookDir = await standHookDir(dir)
+  const cmd = loadProjectConfig(hookDir)?.stand?.[kind]
   if (!cmd) {
     return undefined
   }
@@ -216,6 +225,9 @@ export async function runStandCommand(
   return run(['sh', '-c', fillTemplate(cmd, branch, dir)], {
     cwd: dir,
     stdin: 'ignore',
-    env: { ...process.env, TELEGRAM_TOPIC_BRANCH: branch, TELEGRAM_PROJECT_DIR: dir },
+    env: {
+      ...process.env, TELEGRAM_TOPIC_BRANCH: branch,
+      TELEGRAM_PROJECT_DIR: dir, TELEGRAM_PROJECT_ROOT: hookDir,
+    },
   })
 }

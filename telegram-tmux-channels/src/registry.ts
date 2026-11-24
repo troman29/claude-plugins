@@ -120,6 +120,27 @@ export function saveBindings(reg: Record<string, BindingEntry>): void {
   rememberSessionTopics(reg) // единственная точка, где сессия встаёт за топиком, — связь не теряется ни на одном пути
 }
 
+export function putBinding(key: string, binding: BindingEntry): void {
+  const bindings = loadBindings()
+  bindings[key] = binding
+  saveBindings(bindings)
+}
+
+export function sameBinding(current: BindingEntry, expected: BindingEntry): boolean {
+  return current.dir === expected.dir && current.tmux === expected.tmux
+    && current.hookBranch === expected.hookBranch && current.dsh?.capability === expected.dsh?.capability
+}
+
+export function removeBinding(key: string, expected: BindingEntry): boolean {
+  const bindings = loadBindings()
+  const current = bindings[key]
+  if (!current) return true
+  if (!sameBinding(current, expected)) return false
+  delete bindings[key]
+  saveBindings(bindings)
+  return true
+}
+
 export function keysForDir(reg: Record<string, BindingEntry>, dir: string): string[] {
   return Object.keys(reg).filter(k => reg[k].dir === dir)
 }

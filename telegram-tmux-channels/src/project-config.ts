@@ -18,6 +18,7 @@ export const PROJECT_CONFIG_FILE = '.tmux-channels.json'
 
 export type StandConfig = { up?: string; down?: string; status?: string; sleep?: string; wake?: string }
 export type ProjectConfig = {
+  standFromMain?: boolean
   stand?: StandConfig
   // create необязателен: база может быть задана и без хука — обычному `git worktree add` она
   // нужна ровно так же.
