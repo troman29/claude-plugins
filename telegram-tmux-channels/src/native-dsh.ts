@@ -48,7 +48,7 @@ export class NativeDshHub<C> {
     if (!matchesDshBinding(this.options.binding(claim.key), claim)) {
       throw new Error('Native binding authorization failed')
     }
-    if ([...this.claims].some(([other, owned]) => other !== conn && owned.key === claim.key)) {
+    if ([...this.claims].some(([other]) => other !== conn && this.key(other) === claim.key)) {
       throw new Error('Native binding already connected')
     }
     this.claims.set(conn, { ...claim })
@@ -86,6 +86,10 @@ export class NativeDshHub<C> {
     } else {
       pending.reject(new Error('Native operation failed'))
     }
+  }
+
+  connected(key: string): boolean {
+    return [...this.claims.keys()].some(candidate => this.key(candidate) === key)
   }
 
   request(key: string, command: DshCommand): Promise<string> {

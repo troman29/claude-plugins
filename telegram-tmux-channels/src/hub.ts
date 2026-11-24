@@ -23,6 +23,8 @@ import {
 import { encode, makeLineDecoder, type ControlCommand, type StubToHub, type HubToStub, type SessionInfo } from './protocol'
 import { Router } from './router'
 import { NativeDshHub } from './native-dsh'
+import { DshRuntimes } from './dsh-runtimes'
+import { DshBindingFlow } from './dsh-binding-flow'
 import { chunk, MAX_CHUNK_LIMIT, MAX_RICH_LIMIT, MAX_ATTACHMENT_BYTES, planAttachments } from './chunk'
 import { escapeForRich, mdToHtml, needsRich } from './md-html'
 import {
@@ -325,7 +327,7 @@ const CUSTOM_TIMEOUT_MS = 120_000
 
 // Заглушка вместо токена — чтобы модуль импортировался в тесте. Сам объект в сеть не ходит:
 // наружу выходит только bot.start(), а он в start().
-const bot = new Bot(TOKEN || 'import-only:no-token')
+export const bot = new Bot(TOKEN || 'import-only:no-token')
 let botUsername = ''
 
 // Raw Telegram traffic → debug log (see logDebugEvent below; hoisted).
@@ -401,6 +403,11 @@ const nativeDsh = new NativeDshHub<Socket<undefined>>({
   binding: key => loadBindings()[key]?.dsh,
   send: (conn, message) => conn.write(encode(message)),
 })
+const dshRuntimes = new DshRuntimes<Socket<undefined>>({
+  bindings: () => Object.entries(loadBindings()).flatMap(([key, entry]) => entry.dsh ? [{ key, ...entry.dsh }] : []),
+  send: (conn, message) => conn.write(encode(message)),
+})
+const dshBindingFlow = new DshBindingFlow({ runtimes: dshRuntimes, load: loadBindings, save: saveBindings })
 const feeders = new Map<Socket<undefined>, (chunk: string) => void>()
 
 function send(sock: Socket<undefined>, msg: HubToStub): void {
@@ -863,6 +870,7 @@ Bun.listen<undefined>({
       const s = router.get(sock)
       router.unsubscribe(sock)
       nativeDsh.disconnect(sock)
+      dshRuntimes.disconnect(sock)
       feeders.delete(sock)
       log(`stub disconnected (${router.size()} left)`)
       if (s) {
@@ -2995,7 +3003,28 @@ function awaitAck(id: string): Promise<'ok' | 'failed' | 'silent'> {
   })
 }
 
-async function handleStubMessage(sock: Socket<undefined>, msg: StubToHub): Promise<void> {
+export async function handleStubMessage(sock: Socket<undefined>, msg: StubToHub): Promise<void> {
+  if (msg.op === 'dsh-runtime') {
+    try {
+      if (router.get(sock) || nativeDsh.subscribed(sock) || dshRuntimes.has(sock)) {
+        throw new Error('Connection already registered')
+      }
+      dshRuntimes.register(sock, msg.runtime)
+    } catch (error) {
+      console.error('DSH runtime registration failed', error)
+      sock.end()
+    }
+    return
+  }
+  if (dshRuntimes.has(sock)) {
+    if (msg.op === 'dsh-runtime-result') {
+      dshRuntimes.result(sock, msg)
+    }
+    return
+  }
+  if (msg.op === 'dsh-runtime-result') {
+    return
+  }
   if (msg.op === 'dsh-subscribe') {
     try {
       if (router.get(sock)) {
@@ -3003,6 +3032,7 @@ async function handleStubMessage(sock: Socket<undefined>, msg: StubToHub): Promi
       }
       nativeDsh.subscribe(sock, msg.claim)
       send(sock, { op: 'result', id: 0, ok: true, result: 'subscribed' })
+      flushQueuedInLane(msg.claim.key)
     } catch (error) {
       log(`native subscribe rejected: ${error}`)
       send(sock, { op: 'result', id: 0, ok: false, error: 'Native binding authorization failed' })
@@ -3915,7 +3945,7 @@ async function onTopicGone(key: string): Promise<void> {
 }
 
 // new forum topic in a trusted group → auto-bind + auto-start, no /bind needed
-type PendingTopic = { cfg: TrustedGroupConfig; mode: TrustedGroupMode; topicName: string; say: (html: string) => void; base?: string; agent?: AgentKind }
+type PendingTopic = { cfg: TrustedGroupConfig; mode: TrustedGroupMode; topicName: string; say: (html: string) => void; base?: string; agent?: AgentKind | 'dsh' }
 const pendingTopics = new Map<string, PendingTopic>(interactions.entries('pending-topic').map(([key, value]) => [key, {
   cfg: value.cfg, mode: value.mode, topicName: value.topicName, say: sayFor(value.chatId, value.threadId),
   ...(value.base ? { base: value.base } : {}), ...(value.agent ? { agent: value.agent } : {}),
@@ -3935,7 +3965,7 @@ function armPendingTopic(key: string, value: PendingTopic): void {
 }
 function disarmPendingTopic(key: string): void { pendingTopics.delete(key); interactions.delete('pending-topic', key) }
 // mode picker sent, waiting for a button tap — before dir resolution starts
-type PendingModeChoice = { cfg: TrustedGroupConfig; topicName: string; say: (html: string) => void; agent?: AgentKind; hookOff?: boolean }
+type PendingModeChoice = { cfg: TrustedGroupConfig; topicName: string; say: (html: string) => void; agent?: AgentKind | 'dsh'; hookOff?: boolean }
 const pendingModeChoice = new Map<string, PendingModeChoice>()
 
 // Messages typed while a topic is still being set up (mode not yet picked, session not yet
@@ -3950,7 +3980,7 @@ const queuedMessages = new Map<string, Inbound[]>()
  *  очереди. Ловили только первые два, и сообщение, пришедшее третьим, уходило в ревайв, где
  *  spawnSession отбивал его внутренним «дубликат запуска пропущен» вместо 😴. */
 function isComingUp(key: string): boolean {
-  return pendingModeChoice.has(key) || settingUp.has(key) || spawningBindings.has(key)
+  return pendingModeChoice.has(key) || settingUp.has(key) || spawningBindings.has(key) || dshBindingFlow.pending(key)
 }
 
 const settingUp = new Set<string>()
@@ -4050,8 +4080,9 @@ async function flushQueued(key: string): Promise<void> {
   }
   flushing.add(key)
   try {
-    const conns = await waitForBinding(key, 30_000)
-    if (!conns.length) {
+    const native = !!loadBindings()[key]?.dsh
+    const conns = native ? [] : await waitForBinding(key, 30_000)
+    if (native ? !nativeDsh.connected(key) : !conns.length) {
       // Подъём затянулся — очередь НЕ выбрасываем: стаб подключится и сам позовёт flushQueued.
       log(`queue held: ${key} — сессия ещё не поднялась, ${q.length} сообщ. ждут подключения`)
       return
@@ -4093,7 +4124,7 @@ function beginTopicSession(
   topicName: string,
   say: (html: string) => void,
   base?: string,
-  agent?: AgentKind,
+  agent?: AgentKind | 'dsh',
 ): void {
   if (!cfg.dir) {
     say(t().sendFolderPromptBind(codePath(PROJECTS_DIR)))
@@ -4111,7 +4142,7 @@ async function runAutoTopic(
   branch: string,
   say: (html: string) => void,
   base?: string,
-  agent?: AgentKind,
+  agent?: AgentKind | 'dsh',
 ): Promise<void> {
   const usedAgent = agent ?? cfg.agent // выбор в пикере важнее группового умолчания
   const branchNote = mode === 'folder' ? '' : t().branchNote(escHtml(branch))
@@ -4140,6 +4171,18 @@ async function runAutoTopic(
     // launch a second agent into the topic behind the user's back.
     if (cancelledAutoTopics.has(key) || loadBindings()[key]) {
       log(`auto-topic cancelled: ${key} was manually bound while resolving its directory`)
+      return
+    }
+    if (usedAgent === 'dsh') {
+      const menu = await dshBindingFlow.menu(key, resolvedDir, {
+        mode, ...(usedHook ? { hookBranch: usedBranch } : {}),
+      })
+      const keyboard = new InlineKeyboard()
+      menu.labels.forEach((label, index) => keyboard.text(label, `dshpick:${menu.token}:${index}`).row())
+      await bot.api.sendMessage(chatId, t().whichSessionRaise, {
+        ...inTopic(threadId), reply_markup: keyboard,
+      })
+      progress.settle(t().sessionPickOffer)
       return
     }
     const reg = loadBindings()
@@ -4218,8 +4261,11 @@ const ownDirLabel = () => t().ownDirLabel
 // Оба CLI ставятся глобально, поэтому и переключатель глобальный: группа перечисляет `agents`
 // только чтобы СУЗИТЬ выбор. Без этого топики в группах без такой строки молча оставались
 // одноагентными, хотя второй агент стоит на той же машине.
-function harnessChoices(cfg: TrustedGroupConfig): AgentKind[] {
-  const choices = cfg.agents ?? installedAgents()
+function harnessChoices(cfg: TrustedGroupConfig): (AgentKind | 'dsh')[] {
+  const choices: (AgentKind | 'dsh')[] = [...(cfg.agents ?? installedAgents())]
+  if (dshRuntimes.list().length > 0) {
+    choices.push('dsh')
+  }
   return choices.length > 1 ? [...choices] : []
 }
 
@@ -4228,7 +4274,7 @@ function hasProjectHook(cfg: TrustedGroupConfig): boolean {
   return cfg.dir ? !!worktreeHook(cfg.dir, cfg.hook)?.create : false
 }
 
-function modeKeyboard(key: string, cfg: TrustedGroupConfig, agent?: AgentKind, hookOff = false): InlineKeyboard {
+function modeKeyboard(key: string, cfg: TrustedGroupConfig, agent?: AgentKind | 'dsh', hookOff = false): InlineKeyboard {
   const choices = harnessChoices(cfg)
   const current = agent ?? cfg.agent ?? choices[0]
   const buttons = modeButtons({
@@ -4237,7 +4283,7 @@ function modeKeyboard(key: string, cfg: TrustedGroupConfig, agent?: AgentKind, h
     bases: cfg.dir ? worktreeBases(cfg.dir) : [],
     hooked: hasProjectHook(cfg),
     hookOff,
-    ...(choices.length && current ? { harness: agentAdapter(current).displayName } : {}),
+    ...(choices.length && current ? { harness: current === 'dsh' ? 'DSH' : agentAdapter(current).displayName } : {}),
   })
   const kb = new InlineKeyboard()
   for (const b of buttons) {
@@ -5135,7 +5181,40 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
     bot.api.sendMessage(chat_id, html, { ...threadOpt, parse_mode: 'HTML' }).catch(() => {})
   const reg = loadBindings()
   const binding: BindingEntry | undefined = reg[key]
-  if (binding?.dsh) {
+  const dshBindPath = cmd === 'bind' ? /^dsh\s+([\s\S]+)$/i.exec(arg?.trim() ?? '')?.[1] : undefined
+  if (dshBindPath || (binding?.dsh && cmd === 'new')) {
+    if (!isAdmin(senderId)) {
+      await say(L.adminOnly(cmd))
+      return
+    }
+    try {
+      if (binding && !binding.dsh) {
+        throw new Error('Run /unbind before switching a CLI topic to DSH.')
+      }
+      const dir = dshBindPath ? resolveProjectDir(dshBindPath, PROJECTS_DIR) : binding!.dir
+      const menu = await dshBindingFlow.menu(key, dir)
+      const keyboard = new InlineKeyboard()
+      menu.labels.forEach((label, index) => keyboard.text(label, `dshpick:${menu.token}:${index}`).row())
+      await bot.api.sendMessage(chat_id, '<b>DSH</b>\n\nChoose a new or existing session.',
+        { ...threadOpt, parse_mode: 'HTML', reply_markup: keyboard })
+    } catch (error) {
+      console.error('DSH binding menu failed', error)
+      await say(escHtml(error instanceof Error ? error.message : 'DSH binding failed.'))
+    }
+    return
+  }
+  if (binding?.dsh && cmd === 'unbind') {
+    if (!isAdmin(senderId)) {
+      await say(L.adminOnly(cmd))
+      return
+    }
+    delete reg[key]
+    saveBindings(reg)
+    dshRuntimes.sync()
+    await say('DSH session unbound. The conversation remains available in DSH.')
+    return
+  }
+  if (binding?.dsh && cmd !== 'bind' && cmd !== 'allow') {
     if (!isAdmin(senderId) && !binding.allow?.includes(senderId)) {
       return
     }
@@ -5263,6 +5342,10 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
       return
     }
     if (cmd === 'bind') {
+      if (binding?.dsh) {
+        await say('Run /unbind before switching a DSH topic to a CLI agent.')
+        return
+      }
       if (!arg) {
         void say(L.bindUsage(codePath(PROJECTS_DIR)))
         return
@@ -6312,6 +6395,29 @@ bot.on('message:sticker', async ctx => {
 })
 
 bot.on('callback_query:data', async ctx => {
+  const dshPick = /^dshpick:([a-f0-9]+):(\d+)$/.exec(ctx.callbackQuery.data)
+  if (dshPick) {
+    const key = dshBindingFlow.target(dshPick[1]!)
+    const message = ctx.callbackQuery.message
+    const target = key ? keyToTarget(key) : undefined
+    if (!isAdmin(String(ctx.from.id)) || !target || !message
+      || String(message.chat.id) !== target.chat_id || (target.thread_id !== undefined && message.message_thread_id !== target.thread_id)) {
+      await ctx.answerCallbackQuery({ text: t().toastMenuStale }).catch(() => {})
+      return
+    }
+    await ctx.answerCallbackQuery().catch(() => {})
+    await updateLanes.run(key!, async () => {
+      try {
+        const binding = await dshBindingFlow.select(dshPick[1]!, Number(dshPick[2]))
+        await ctx.editMessageText(`<b>DSH connected</b>\n\nSession: <code>${escHtml(binding.sessionId)}</code>`,
+          { parse_mode: 'HTML' })
+      } catch (error) {
+        console.error('DSH binding selection failed', error)
+        await ctx.editMessageText(escHtml(error instanceof Error ? error.message : 'DSH binding failed.')).catch(() => {})
+      }
+    })
+    return
+  }
   const sc = /^scrclose:(\S+)$/.exec(ctx.callbackQuery.data)
   if (sc) {
     const v = closeLiveScreen(sc[1])
@@ -6466,7 +6572,7 @@ bot.on('callback_query:data', async ctx => {
     const next = choices[(choices.indexOf(cur) + 1) % choices.length]!
     const target = keyToTarget(key!)
     armMode(key!, { ...pending, agent: next }, target.chat_id, target.thread_id!)
-    await ctx.answerCallbackQuery({ text: agentAdapter(next).displayName }).catch(() => {})
+    await ctx.answerCallbackQuery({ text: next === 'dsh' ? 'DSH' : agentAdapter(next).displayName }).catch(() => {})
     await ctx.editMessageReplyMarkup({ reply_markup: modeKeyboard(key!, pending.cfg, next, pending.hookOff) }).catch(() => {})
     return
   }
@@ -6571,7 +6677,7 @@ bot.on('callback_query:data', async ctx => {
     await ctx.answerCallbackQuery({ text: ownDirLabel() }).catch(() => {})
     await ctx.editMessageText(t().modeChosen(ownDirLabel())).catch(() => {})
     pending.say(t().sendFolderPromptShort(codePath(PROJECTS_DIR)))
-    armPendingTopic(key, { cfg: pending.cfg, mode: 'folder', topicName: pending.topicName, say: pending.say })
+    armPendingTopic(key, { cfg: pending.cfg, mode: 'folder', topicName: pending.topicName, say: pending.say, ...(pending.agent ? { agent: pending.agent } : {}) })
     return
   }
   const bt = /^bindto:(.+):([^:]+)$/.exec(ctx.callbackQuery.data)

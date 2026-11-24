@@ -327,7 +327,7 @@ test('streaming draft reads only agent_message snapshots, never commentary or to
 
 describe('смена харнесса у биндинга (forgetForeignConversation)', () => {
   test('claude-разговор не переезжает в codex: id и argv уходят', () => {
-    const binding: { agent?: 'claude' | 'codex'; sessionId?: string; cmdline?: string[]; backend?: string } =
+    const binding: { agent?: 'claude' | 'codex'; sessionId?: string; cmdline?: string[]; backend?: 'claude' | 'chatgpt' } =
       { agent: 'claude', sessionId: '645fc99c', cmdline: ['claude', '--resume', '645fc99c'], backend: 'chatgpt' }
     forgetForeignConversation(binding, 'codex')
     expect(binding).toEqual({ agent: 'claude' })

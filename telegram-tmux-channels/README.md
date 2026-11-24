@@ -39,15 +39,26 @@ What you get beyond plain messaging:
   the terminal — see [Commands](#commands).
 
 
-## Native DSH transport (2.21.6)
+## Native DSH transport (2.22.0)
 
-An opt-in `dsh` binding connects an existing DSH Web session to the hub through an exact
-runtime/profile/session capability. It uses native prompt admission, not tmux or cwd routing.
-The companion Host bundle lives in the Homelab repository under
-`hosts/homelab/services/dsh/telegram`; its README defines the private binding contract.
-This minimal transport supports text, `/queue`, passive `/status`, exact `/resume`, and scoped
-reply/fork tools. CLI controls, media, permissions and PR shepherd are outside its scope.
-Existing Claude/Codex bindings use their unchanged transports.
+**Create a topic in a trusted group and select DSH beside Claude and Codex.** Choose the
+folder or worktree mode, then a new or existing DSH session. No `/bind` command is required.
+The companion Host bundle registers its running profile automatically. DSH appears in the
+harness selector while that runtime is connected. `/bind dsh <folder>` remains a manual fallback.
+The hub creates and stores the exact
+runtime/profile/session binding and sends it over its private Unix socket. No manual binding
+file or environment variables are required. Reconnection restores the saved routes.
+
+The companion bundle version 1.1.0 lives in the Homelab repository under
+`hosts/homelab/services/dsh/telegram` and targets DSH 0.2.2-rc.5. Both processes run as the
+same Unix user. If no DSH runtime is connected, enable the companion plugin and retry `/bind`.
+`/new` opens the session picker; `/unbind` removes the route but retains the DSH conversation.
+Switching between a CLI binding and DSH requires `/unbind` first. `/allow` retains the normal
+hub access rules. A DSH session can belong to only one topic.
+
+Text, `/queue`, passive `/status`, exact `/resume`, and scoped reply/fork tools use native
+prompt admission rather than tmux. CLI controls, media, permissions and PR shepherd are outside
+this transport's scope. Existing Claude/Codex bindings use their unchanged transports.
 
 ## Quick start
 
