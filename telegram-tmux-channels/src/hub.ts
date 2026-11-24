@@ -18,7 +18,7 @@ import './state-env'
 import { STATE_DIR, ENV_FILE, INBOX_DIR, PID_FILE, SOCK_PATH } from './paths'
 import { messageKey, keyToTarget, targetFor, type Target } from './bindings'
 import {
-  loadBindings, saveBindings, keysForDir, sessionOwner, setSessionId, resolveProjectDir, parseBindSpec, type BindingEntry,
+  loadBindings, saveBindings, putBinding, removeBinding, sameBinding, keysForDir, sessionOwner, setSessionId, resolveProjectDir, parseBindSpec, type BindingEntry,
 } from './registry'
 import { encode, makeLineDecoder, type ControlCommand, type StubToHub, type HubToStub, type SessionInfo } from './protocol'
 import { Router } from './router'
@@ -3799,17 +3799,29 @@ async function reviveBoundSessions(): Promise<void> {
 // binding was hook-created, else a plain `git worktree remove` when the dir is a linked
 // worktree). Shared by /unbind and topic-deletion cleanup. Returns an HTML summary plus
 // failed=true, если папку/стенд убрать не вышло — /delete по нему решает, сносить ли топик.
-export async function teardownBinding(
+const bindingCleanup = new Lanes()
+
+export function teardownBinding(
   key: string,
   binding: BindingEntry,
   // force доводит снос до конца, даже если уборка провалилась: без него застрявший воркри
   // не даёт закрыть топик вовсе.
   opts: { force?: boolean } = {},
 ): Promise<{ note: string; failed: boolean }> {
+  return bindingCleanup.run(binding.dir, () => teardownCurrentBinding(key, binding, opts))
+}
+
+async function teardownCurrentBinding(
+  key: string,
+  expected: BindingEntry,
+  opts: { force?: boolean },
+): Promise<{ note: string; failed: boolean }> {
   const reg = loadBindings()
+  const binding = reg[key]
+  if (!binding) return { note: t().nothingBoundHere, failed: false }
+  if (!sameBinding(binding, expected)) return { note: t().toastBindingGone, failed: true }
   if (binding.dsh) {
-    delete reg[key]
-    saveBindings(reg)
+    removeBinding(key, binding)
     purgeBindingInteractions(key)
     return { note: 'Native Telegram binding removed. DSH session and project files remain unchanged.', failed: false }
   }
@@ -3824,9 +3836,7 @@ export async function teardownBinding(
     `${binding.sessionId ? L.unboundSessionPart(escHtml(binding.sessionId)) : ''}`
   // Папку сносим, только если её больше никто не держит: /fork наследует dir родителя, и
   // `git worktree remove --force` по своему топику стёр бы живому соседу незакоммиченные правки.
-  const others = { ...reg }
-  delete others[key]
-  const alsoBound = keysForDir(others, binding.dir)
+  const alsoBound = keysForDir(reg, binding.dir).filter(other => other !== key)
   const groupCfg = loadTrustedGroups()[keyToTarget(key).chat_id]
   // same source as on creation: the project's `.tmux-channels.json` wins over the group hook
   const hook = groupCfg?.dir ? worktreeHook(groupCfg.dir, groupCfg.hook) : groupCfg?.hook
@@ -3879,8 +3889,9 @@ export async function teardownBinding(
   if (failed && !opts.force) {
     return { note: cleanup, failed: true }
   }
-  delete reg[key]
-  saveBindings(reg)
+  if (!removeBinding(key, binding)) {
+    return { note: L.toastBindingGone, failed: true }
+  }
   // Придержанное считаем ДО чистки: доставить его больше некуда, но и молча терять сообщение
   // Ромы нельзя — он о нём помнит и ждёт ответа.
   const held = liveQueue(key).length
@@ -4185,10 +4196,9 @@ async function runAutoTopic(
       progress.settle(t().sessionPickOffer)
       return
     }
-    const reg = loadBindings()
     // Имя tmux даём здесь же: слаг топика (или ветки ворктри) плюс имя проекта, без id чата.
     const tmux = await freeTmuxName(tmuxSessionName(basename(dir), key, mode === 'folder' ? branch : usedBranch))
-    reg[key] = {
+    const topicBinding: BindingEntry = {
       dir: resolvedDir,
       tmux,
       ...(usedAgent ? { agent: usedAgent } : {}),
@@ -4198,7 +4208,7 @@ async function runAutoTopic(
       ...(usedHook ? { hookBranch: usedBranch } : {}), // именно ту, что создали, — её же сносить
       mode, // разбирать обязаны тем же путём, каким создали
     }
-    saveBindings(reg)
+    putBinding(key, topicBinding)
     autoTopicBindings.add(key)
     if (cancelledAutoTopics.has(key)) {
       log(`auto-topic cancelled: ${key} was manually bound before launch`)
@@ -4206,17 +4216,17 @@ async function runAutoTopic(
     }
     // В папке уже жили разговоры — какой поднять, решает человек: молчаливый старт нового
     // прячет их, а имя топика в списке и есть самое полезное имя сессии.
-    const past = adapterForBinding(reg[key]).recentSessions(resolvedDir, SESSION_CANDIDATES)
+    const past = adapterForBinding(topicBinding).recentSessions(resolvedDir, SESSION_CANDIDATES)
     if (past.length > 0) {
       progress.settle(t().sessionPickOffer)
       void bot.api
         .sendMessage(chatId, t().whichSessionRaise, {
-          ...inTopic(threadId), parse_mode: 'HTML', reply_markup: startChoiceKeyboard(key, reg[key]),
+          ...inTopic(threadId), parse_mode: 'HTML', reply_markup: startChoiceKeyboard(key, topicBinding),
         })
         .catch(e => log(`auto-topic session picker send failed: ${e}`))
       return
     }
-    await spawnSession(key, reg[key], 'new', { say, progress })
+    await spawnSession(key, topicBinding, 'new', { say, progress })
   } catch (e) {
     // Причина почти всегда снаружи и чинится руками (заняты слоты, нет места, сеть). Кнопка
     // повтора возвращает тот же подъём с теми же аргументами — иначе пользователь упирается
@@ -5376,8 +5386,8 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
         if (kept) {
           forgetForeignConversation(kept, spec.agent)
         }
-        reg[key] = { ...kept, dir, agent: spec.agent, ...(tmux ? { tmux } : {}) }
-        saveBindings(reg)
+        const rebound = { ...kept, dir, agent: spec.agent, ...(tmux ? { tmux } : {}) }
+        putBinding(key, rebound)
         const boundText = binding
           ? L.rebound(
               escHtml(key),
@@ -5390,7 +5400,7 @@ async function handleOps({ cmd, arg, key, chat_id, threadId, senderId, msgId }: 
           .sendMessage(
             chat_id,
             boundText,
-            { ...threadOpt, parse_mode: 'HTML', reply_markup: startChoiceKeyboard(key, reg[key]!) },
+            { ...threadOpt, parse_mode: 'HTML', reply_markup: startChoiceKeyboard(key, rebound) },
           )
           .catch(() => {})
       } catch (e) {
@@ -6843,14 +6853,12 @@ async function createShepherdTopic(chat: string, title: string): Promise<{ key: 
 async function saveShepherdBinding(key: string, binding: BindingEntry): Promise<void> {
   const { chat_id: chatId, thread_id: threadId } = keyToTarget(key)
   const group = loadTrustedGroups()[chatId]
-  const reg = loadBindings()
-  reg[key] = {
+  putBinding(key, {
     ...binding,
     tmux: await freeTmuxName(tmuxSessionName(basename(binding.dir), key, slugFromTopicName(topicTitle(chatId, threadId!) ?? ''))),
     ...(group?.agent ? { agent: group.agent } : {}),
     ...(group?.cmdline && agentAdapter(group.agent).isProcessArgv(group.cmdline) ? { cmdline: group.cmdline } : {}),
-  }
-  saveBindings(reg)
+  })
 }
 
 function startShepherd(): void {

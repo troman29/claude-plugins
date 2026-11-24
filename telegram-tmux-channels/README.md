@@ -358,6 +358,10 @@ are optional:
 }
 ```
 
+Set `standFromMain: true` in the main checkout's config to use its stand hooks for linked worktrees.
+The hook still runs in the selected worktree and receives the config directory in
+`TELEGRAM_PROJECT_ROOT` so it can call a script from the main checkout.
+
 Print `internal=<url>` / `external=<url>` from a stand hook and the bot posts those links back.
 `{branch}` and `{dir}` are substituted; hooks run with stdin closed, so nothing hangs on a prompt.
 
