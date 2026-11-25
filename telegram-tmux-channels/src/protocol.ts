@@ -22,6 +22,7 @@ export type RpcMethod =
 export type ControlCommand = 'restart' | 'pr-own'
 
 export type StubToHub =
+  | { op: 'resources'; id: number; action: 'list' }
   | { op: 'dsh-runtime'; runtime: import('./dsh-runtimes').DshRuntime }
   | { op: 'dsh-runtime-result'; id: string; ok: boolean; result?: string }
   | { op: 'dsh-subscribe'; claim: DshClaim }
