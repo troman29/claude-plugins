@@ -22,6 +22,7 @@ import {
 } from './registry'
 import { encode, makeLineDecoder, type ControlCommand, type StubToHub, type HubToStub, type SessionInfo } from './protocol'
 import { Router } from './router'
+import { resourceReply } from './resources/dispatch'
 import { NativeDshHub } from './native-dsh'
 import { DshRuntimes } from './dsh-runtimes'
 import { DshBindingFlow } from './dsh-binding-flow'
@@ -3050,6 +3051,19 @@ export async function handleStubMessage(sock: Socket<undefined>, msg: StubToHub)
     && (!nativeDsh.key(sock) || msg.method !== 'reply' || typeof msg.params.text !== 'string'
       || Object.keys(msg.params).some(param => param !== 'text'))) {
     send(sock, { op: 'result', id: msg.id, ok: false, error: 'Native bridge supports reply only' })
+    return
+  }
+  if (msg.op === 'resources') {
+    if (router.get(sock) || nativeDsh.subscribed(sock) || msg.action !== 'list' || !Number.isSafeInteger(msg.id)) {
+      send(sock, { op: 'result', id: msg.id, ok: false, error: 'Resource request rejected' })
+      return
+    }
+    try {
+      send(sock, await resourceReply(msg))
+    } catch (error) {
+      console.error('Resource catalog failed', error)
+      send(sock, { op: 'result', id: msg.id, ok: false, error: 'Resource catalog unavailable' })
+    }
     return
   }
   if (msg.op === 'ack') {
