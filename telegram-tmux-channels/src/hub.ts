@@ -3108,6 +3108,12 @@ export async function handleStubMessage(sock: Socket<undefined>, msg: StubToHub)
     }
     return
   }
+  if (msg.op === 'terminal-wake') {
+    if (!router.get(sock)) {
+      await replyToTerminalWake(sock, msg)
+    }
+    return
+  }
   if (msg.op === 'control') {
     try {
       send(sock, { op: 'result', id: msg.id, ok: true, result: await handleControl(msg.command, msg.key, msg.arg) })
@@ -3605,6 +3611,7 @@ async function stopLiveSessions(key: string, binding: BindingEntry): Promise<boo
 // tmux+launch for a binding — shared by /resume,/new and auto-topic creation
 const spawningBindings = new Set<string>()
 const SPAWN_GUARD_MS = 30_000
+const RESUME_SHELLS = new Set(['bash', 'zsh', 'fish', 'sh', 'dash', 'ksh'])
 /** Пост операции: шаги дописываются в одно сообщение топика. Общая обёртка — см. progress-post.ts. */
 function progressPost(chatId: string | number, threadId?: number, initial: string[] = []): ProgressPost {
   return new ProgressPost(
@@ -3628,7 +3635,7 @@ async function spawnSession(
   // в чат всегда: тихий подъём над удалённой папкой оставлял топик молчать вовсе —
   // пользователь видел «поднимаю сессию…» и больше ничего.
   // progress — общий пост операции: шаги дописываются в него, а не сыплются сообщениями.
-  notify: { say: (html: string) => void; quiet?: boolean; progress?: ProgressPost },
+  notify: { say: (html: string) => void; quiet?: boolean; progress?: ProgressPost; exactResume?: string },
 ): Promise<void> {
   const { say } = notify
   if (binding.dsh) {
@@ -3670,6 +3677,10 @@ async function spawnSession(
   const resumeId = binding.sessionId && adapter.sessionMtimes(binding.dir).has(binding.sessionId)
     ? binding.sessionId
     : undefined
+  if (notify.exactResume !== undefined && resumeId !== notify.exactResume) {
+    say(t().conversationGone)
+    return
+  }
   const lostConversation = mode === 'resume' && !!binding.sessionId && !resumeId
   const lostId = binding.sessionId // запомнить ДО чистки ниже: иначе в лог уедет undefined
   // Не подменяем на --continue: у общей папки он подхватит разговор соседнего топика.
@@ -3694,6 +3705,18 @@ async function spawnSession(
       if (adapter.isPaneCommand(command)) {
         log(`spawn refused: ${key} has an unconnected ${adapter.kind} in ${name}`)
         say(t().tmuxForeignAgent(escHtml(command || adapter.displayName)))
+        return
+      }
+      if (notify.exactResume !== undefined && !RESUME_SHELLS.has(basename(command))) {
+        say('The terminal is not an idle shell.')
+        return
+      }
+    }
+    if (notify.exactResume !== undefined) {
+      const current = loadBindings()[key]
+      if (!terminalBindingMatches(current, { cwd: binding.dir, sessionId: notify.exactResume })
+          || !sameBinding(current, binding) || current.agent !== binding.agent || current.backend !== binding.backend) {
+        say('The terminal binding changed.')
         return
       }
     }
@@ -5120,6 +5143,70 @@ async function restartLiveSession(key: string, binding: BindingEntry, s: Restart
     setTimeout(() => expectedDisconnect.delete(key), 90_000)
     flushQueuedInLane(key) // всё, что придержали, пока сессия перезапускалась
   }
+}
+
+type TerminalWakeRequest = Extract<StubToHub, { op: 'terminal-wake' }>
+type TerminalWakeOutcome = 'ready' | 'starting' | 'changed' | 'busy' | 'history-unavailable' | 'failed'
+
+async function replyToTerminalWake(sock: Socket<undefined>, request: TerminalWakeRequest): Promise<void> {
+  const { id, key, sessionId, cwd } = request
+  if (!Number.isSafeInteger(id) || typeof key !== 'string' || typeof sessionId !== 'string' || !sessionId
+      || typeof cwd !== 'string' || !cwd) {
+    send(sock, { op: 'result', id, ok: false, error: 'Invalid terminal wake request' })
+    return
+  }
+  try {
+    keyToTarget(key)
+    const outcome = await updateLanes.run(key, () => wakeTerminal(request))
+    send(sock, { op: 'result', id, ok: true, result: outcome })
+  } catch (error) {
+    console.error('Terminal wake failed', error)
+    send(sock, { op: 'result', id, ok: false, error: 'Terminal wake failed' })
+  }
+}
+
+async function wakeTerminal({ key, cwd, sessionId }: TerminalWakeRequest): Promise<TerminalWakeOutcome> {
+  const bindings = loadBindings()
+  const binding = bindings[key]
+  if (!terminalBindingMatches(binding, { cwd, sessionId })) {
+    return 'changed'
+  }
+  if (closing.has(key) || unloading.has(key) || settingUp.has(key) || pendingModeChoice.has(key)) {
+    return 'busy'
+  }
+  if (spawningBindings.has(key)) {
+    return 'starting'
+  }
+  if (liveTerminalConnection(key)) {
+    return 'ready'
+  }
+  if (sessionOwner(bindings, cwd, sessionId, key) || forkRiskPids(binding).length > 0) {
+    return 'busy'
+  }
+  return resumeTerminal({ key, binding, sessionId })
+}
+
+function terminalBindingMatches(binding: BindingEntry | undefined, target: { cwd: string; sessionId: string }): binding is BindingEntry {
+  return binding !== undefined && !binding.dsh && binding.dir === target.cwd && binding.sessionId === target.sessionId
+}
+
+function liveTerminalConnection(key: string): boolean {
+  return router.byBindingKey(key).some(connection => !!router.get(connection)?.pane && !isHeadlessSession(connection))
+}
+
+async function resumeTerminal({ key, binding, sessionId }: { key: string; binding: BindingEntry; sessionId: string }): Promise<TerminalWakeOutcome> {
+  if (!adapterForBinding(binding).sessionMtimes(binding.dir).has(sessionId)) {
+    return 'history-unavailable'
+  }
+  let refused = false
+  await spawnSession(key, binding, 'resume', { exactResume: sessionId, quiet: true, say: message => {
+    refused = true
+    log(`terminal wake ${key}: ${message}`)
+  } })
+  if (refused) {
+    return 'failed'
+  }
+  return liveTerminalConnection(key) ? 'ready' : 'starting'
 }
 
 /** Рестарт по tgc-ctl: тот же путь и тот же пост в топике, что у `/restart` из чата, но ответ

@@ -255,7 +255,7 @@ message in the topic, then prints the outcome once the session is up:
 tgc-ctl restart -1001234567890/447
 ```
 
-Only `restart` exists so far. Access equals access to the machine: the socket belongs to its user.
+The DSH terminal panel uses the same local socket to resume the saved conversation for an exact binding and working folder. This request does not restart a live terminal or replace missing history with a new conversation. Access equals access to the machine: the socket belongs to its user.
 
 ## Who can use it
 
